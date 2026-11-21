@@ -224,6 +224,285 @@ jobs:
           fi
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
 
+          # Δημιουργία αυτόνομου VnFrameRateManager.kt (Auto / 30 / 60 / 90 / 120 FPS + Anti-30Hz Watchdog)
+          mkdir -p app/src/main/java/com/music/spotui/ui/screens
+          cat <<'EOF' > app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
+          package com.music.spotui.ui.screens
+
+          import android.app.Activity
+          import android.app.Application
+          import android.content.Context
+          import android.content.ContextWrapper
+          import android.os.Build
+          import android.os.Bundle
+          import android.view.Choreographer
+          import android.view.Display
+          import android.view.ViewTreeObserver
+          import androidx.compose.foundation.horizontalScroll
+          import androidx.compose.foundation.layout.Arrangement
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.material3.FilterChip
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Surface
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.DisposableEffect
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.dp
+          import kotlinx.coroutines.delay
+          import kotlin.math.abs
+          import kotlin.math.roundToInt
+
+          object VnFpsPref {
+              private const val PREFS_NAME = "vnera_display_prefs"
+              private const val KEY_TARGET_FPS = "target_fps"
+
+              // 0 = Auto (μέγιστο διαθέσιμο), 30, 60, 90, 120
+              var targetFps by mutableStateOf(0)
+                  private set
+
+              private var initialized = false
+
+              fun init(context: Context) {
+                  if (initialized) return
+                  val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                  targetFps = prefs.getInt(KEY_TARGET_FPS, 0)
+                  initialized = true
+              }
+
+              fun update(context: Context, fps: Int) {
+                  targetFps = fps
+                  context.applicationContext
+                      .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                      .edit()
+                      .putInt(KEY_TARGET_FPS, fps)
+                      .apply()
+                  context.findActivity()?.let { applyWindowFrameRate(it, fps, forceReset = true) }
+              }
+          }
+
+          tailrec fun Context.findActivity(): Activity? = when (this) {
+              is Activity -> this
+              is ContextWrapper -> baseContext.findActivity()
+              else -> null
+          }
+
+          @Suppress("DEPRECATION")
+          private fun Activity.currentDisplay(): Display? {
+              return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                  display ?: windowManager?.defaultDisplay
+              } else {
+                  windowManager?.defaultDisplay
+              }
+          }
+
+          fun getSupportedRefreshRates(activity: Activity): List<Int> {
+              val display = activity.currentDisplay() ?: return listOf(60, 120)
+              val currentMode = display.mode
+              return display.supportedModes
+                  .filter { it.physicalWidth == currentMode.physicalWidth && it.physicalHeight == currentMode.physicalHeight }
+                  .map { it.refreshRate.roundToInt() }
+                  .distinct()
+                  .sorted()
+          }
+
+          fun applyWindowFrameRate(activity: Activity, targetFps: Int, forceReset: Boolean = false) {
+              val window = activity.window ?: return
+              val display = activity.currentDisplay() ?: return
+              val currentMode = display.mode
+              val sameResModes = display.supportedModes.filter {
+                  it.physicalWidth == currentMode.physicalWidth && it.physicalHeight == currentMode.physicalHeight
+              }
+
+              val desiredHz: Float = if (targetFps <= 0) {
+                  sameResModes.maxOfOrNull { it.refreshRate } ?: currentMode.refreshRate
+              } else {
+                  targetFps.toFloat()
+              }
+
+              val bestMode = sameResModes.minByOrNull { abs(it.refreshRate - desiredHz) }
+
+              if (forceReset) {
+                  val resetParams = window.attributes
+                  resetParams.preferredDisplayModeId = 0
+                  resetParams.preferredRefreshRate = 0f
+                  window.attributes = resetParams
+              }
+
+              val params = window.attributes
+              if (bestMode != null && abs(bestMode.refreshRate - desiredHz) <= 2.0f) {
+                  params.preferredDisplayModeId = bestMode.modeId
+              } else {
+                  params.preferredDisplayModeId = 0
+              }
+              params.preferredRefreshRate = desiredHz
+              window.attributes = params
+
+              if (Build.VERSION.SDK_INT >= 35) {
+                  window.decorView.requestedFrameRate = desiredHz
+              }
+              window.decorView.postInvalidateOnAnimation()
+          }
+
+          @Composable
+          fun VnFrameRateGuard() {
+              val context = LocalContext.current
+              val activity = remember(context) { context.findActivity() }
+              val selectedFps = VnFpsPref.targetFps
+
+              LaunchedEffect(context) {
+                  VnFpsPref.init(context)
+                  activity?.let { applyWindowFrameRate(it, VnFpsPref.targetFps, forceReset = true) }
+              }
+
+              LaunchedEffect(activity, selectedFps) {
+                  activity?.let { applyWindowFrameRate(it, selectedFps, forceReset = true) }
+              }
+
+              DisposableEffect(activity) {
+                  val act = activity ?: return@DisposableEffect onDispose {}
+                  val decorView = act.window?.decorView
+                  val app = act.application
+
+                  val lifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
+                      override fun onActivityCreated(a: Activity, b: Bundle?) {}
+                      override fun onActivityStarted(a: Activity) {
+                          if (a === act) applyWindowFrameRate(act, VnFpsPref.targetFps, forceReset = true)
+                      }
+                      override fun onActivityResumed(a: Activity) {
+                          if (a === act) applyWindowFrameRate(act, VnFpsPref.targetFps, forceReset = true)
+                      }
+                      override fun onActivityPaused(a: Activity) {}
+                      override fun onActivityStopped(a: Activity) {}
+                      override fun onActivitySaveInstanceState(a: Activity, outState: Bundle) {}
+                      override fun onActivityDestroyed(a: Activity) {}
+                  }
+
+                  val focusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+                      if (hasFocus) {
+                          applyWindowFrameRate(act, VnFpsPref.targetFps, forceReset = true)
+                      }
+                  }
+
+                  app.registerActivityLifecycleCallbacks(lifecycleCallbacks)
+                  decorView?.viewTreeObserver?.addOnWindowFocusChangeListener(focusListener)
+
+                  onDispose {
+                      app.unregisterActivityLifecycleCallbacks(lifecycleCallbacks)
+                      decorView?.viewTreeObserver?.removeOnWindowFocusChangeListener(focusListener)
+                  }
+              }
+
+              // Watchdog: επαναφέρει αυτόματα τα Hz αν το Android ARR κλειδώσει στα 30 FPS
+              LaunchedEffect(activity, selectedFps) {
+                  val act = activity ?: return@LaunchedEffect
+                  while (true) {
+                      delay(2_500L)
+                      val wantHighFps = selectedFps == 0 || selectedFps >= 60
+                      if (!wantHighFps) continue
+
+                      val maxSupported = getSupportedRefreshRates(act).maxOrNull() ?: 60
+                      if (maxSupported < 55) continue
+
+                      var lastNanos = 0L
+                      var slowFrames = 0
+                      var samples = 0
+                      val choreographer = Choreographer.getInstance()
+
+                      val callback = object : Choreographer.FrameCallback {
+                          override fun doFrame(frameTimeNanos: Long) {
+                              if (lastNanos != 0L) {
+                                  val deltaMs = (frameTimeNanos - lastNanos) / 1_000_000f
+                                  if (deltaMs in 29.0f..41.0f) {
+                                      slowFrames++
+                                  }
+                                  samples++
+                              }
+                              lastNanos = frameTimeNanos
+                              if (samples < 4) {
+                                  choreographer.postFrameCallback(this)
+                              }
+                          }
+                      }
+                      choreographer.postFrameCallback(callback)
+                      delay(250L)
+
+                      if (samples >= 3 && slowFrames >= 3) {
+                          applyWindowFrameRate(act, selectedFps, forceReset = true)
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun VnFpsSelectorCard(modifier: Modifier = Modifier) {
+              val context = LocalContext.current
+              LaunchedEffect(context) { VnFpsPref.init(context) }
+
+              val activity = remember(context) { context.findActivity() }
+              val supportedRates = remember(activity) {
+                  activity?.let { getSupportedRefreshRates(it) }.orEmpty()
+              }
+              val currentFps = VnFpsPref.targetFps
+              val options = listOf(0, 30, 60, 90, 120)
+
+              Surface(
+                  modifier = modifier
+                      .fillMaxWidth()
+                      .padding(bottom = 12.dp),
+                  shape = MaterialTheme.shapes.large,
+                  color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+              ) {
+                  Column(modifier = Modifier.padding(16.dp)) {
+                      Text(
+                          text = "Ρυθμός Ανανέωσης (FPS)",
+                          style = MaterialTheme.typography.titleMedium,
+                          fontWeight = FontWeight.SemiBold,
+                      )
+                      Spacer(modifier = Modifier.height(4.dp))
+                      Text(
+                          text = if (supportedRates.isNotEmpty()) {
+                              "Υποστηριζόμενα από την οθόνη: ${supportedRates.joinToString(" / ")} Hz"
+                          } else {
+                              "Προεπιλογή μέγιστου ρυθμού ανανέωσης"
+                          },
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      )
+                      Spacer(modifier = Modifier.height(12.dp))
+                      Row(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .horizontalScroll(rememberScrollState()),
+                          horizontalArrangement = Arrangement.spacedBy(8.dp),
+                      ) {
+                          options.forEach { fps ->
+                              val label = if (fps == 0) "Auto" else "$fps FPS"
+                              FilterChip(
+                                  selected = currentFps == fps,
+                                  onClick = { VnFpsPref.update(context, fps) },
+                                  label = { Text(label) },
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
           python3 <<'PY'
           import os
           import re
@@ -439,6 +718,50 @@ jobs:
                   )
               s = s.replace("awaitPointerEvent()", "awaitPointerEvent(PointerEventPass.Initial)").replace("change.positionChange().y", "change.positionChangeIgnoreConsumed().y").replace("76.dp.toPx()", "48.dp.toPx()")
               p2.write_text(s)
+
+          # 9. Σύνδεση VnFpsSelectorCard στις Ρυθμίσεις & VnFrameRateGuard στο Root UI
+          for settings_path in [
+              Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"),
+              Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"),
+          ]:
+              if settings_path.exists():
+                  st = settings_path.read_text()
+                  if "VnFpsSelectorCard" not in st:
+                      m = re.search(r'(?m)^([ \t]*)(?:com\.music\.spotui\.ui\.screens\.)?VnSettingsBackup\w*\s*\(', st)
+                      if m:
+                          indent = m.group(1)
+                          st = st[:m.start()] + f"{indent}com.music.spotui.ui.screens.VnFpsSelectorCard()\n" + st[m.start():]
+                          settings_path.write_text(st)
+                          print(f"Hooked VnFpsSelectorCard into {settings_path}")
+
+          guard_hooked = False
+          for act_path in sorted(Path("app/src/main/java").rglob("*Activity.kt")):
+              at = act_path.read_text()
+              if "setContent" in at and "VnFrameRateGuard" not in at:
+                  at_new, n = re.subn(
+                      r'(?m)^([ \t]*)(setContent(?:\([^)]*\))?\s*\{)\s*$',
+                      r'\1\2\n\1    com.music.spotui.ui.screens.VnFrameRateGuard()',
+                      at,
+                      count=1,
+                  )
+                  if n > 0:
+                      act_path.write_text(at_new)
+                      print(f"Hooked VnFrameRateGuard into {act_path}")
+                      guard_hooked = True
+                      break
+
+          if not guard_hooked and p2.exists():
+              it = p2.read_text()
+              if "VnFrameRateGuard" not in it:
+                  it_new, n = re.subn(
+                      r'(?m)^([ \t]*fun\s+ImmersivePlayer\b[^{]*\{)\s*$',
+                      r'\1\n    com.music.spotui.ui.screens.VnFrameRateGuard()',
+                      it,
+                      count=1,
+                  )
+                  if n > 0:
+                      p2.write_text(it_new)
+                      print("Hooked VnFrameRateGuard into ImmersivePlayer.kt")
           PY
 
       - name: Build Debug APK
