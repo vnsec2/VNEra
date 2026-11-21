@@ -236,7 +236,7 @@ jobs:
           # Δημιουργία αυτόνομου VnFrameRateManager.kt:
           # - FPS Guard & Selector
           # - Fullscreen Lyrics Red-Edge Scrolling (2.2x) + Immersive Mode
-          # - Fullscreen Tap-Only Volume Rocker (+/-) στη δεξιά άκρη
+          # - Fullscreen Tap-Only Volume Rocker (+/-) στη δεξιά άκρη (Popup)
           # - Εκτεταμένη Παλέτα Χρωμάτων & Element Animations (Mode 1, 2, 3 - ON/OFF)
           # - Αναδυόμενο Παράθυρο Ειδοποίησης για Λάθος Σειρά Επεκτάσεων & Πτώση Ποιότητας Ήχου
           # - Πλήρες Export/Restore & Αντιγραφή Extensions στο Clipboard
@@ -270,18 +270,17 @@ jobs:
           import androidx.compose.foundation.border
           import androidx.compose.foundation.clickable
           import androidx.compose.foundation.gestures.ScrollableState
+          import androidx.compose.foundation.gestures.awaitEachGesture
+          import androidx.compose.foundation.gestures.awaitFirstDown
           import androidx.compose.foundation.gestures.detectTapGestures
-          import androidx.compose.foundation.gestures.detectVerticalDragGestures
           import androidx.compose.foundation.horizontalScroll
           import androidx.compose.foundation.layout.Arrangement
           import androidx.compose.foundation.layout.Box
-          import androidx.compose.foundation.layout.BoxScope
           import androidx.compose.foundation.layout.Column
           import androidx.compose.foundation.layout.Row
           import androidx.compose.foundation.layout.Spacer
           import androidx.compose.foundation.layout.fillMaxWidth
           import androidx.compose.foundation.layout.height
-          import androidx.compose.foundation.layout.offset
           import androidx.compose.foundation.layout.padding
           import androidx.compose.foundation.layout.size
           import androidx.compose.foundation.layout.width
@@ -316,11 +315,16 @@ jobs:
           import androidx.compose.ui.draw.clip
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.graphics.graphicsLayer
+          import androidx.compose.ui.input.pointer.PointerEventPass
           import androidx.compose.ui.input.pointer.pointerInput
+          import androidx.compose.ui.input.pointer.positionChange
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.unit.IntOffset
           import androidx.compose.ui.unit.dp
           import androidx.compose.ui.unit.sp
+          import androidx.compose.ui.window.Popup
+          import androidx.compose.ui.window.PopupProperties
           import androidx.core.view.WindowCompat
           import androidx.core.view.WindowInsetsCompat
           import androidx.core.view.WindowInsetsControllerCompat
@@ -352,6 +356,9 @@ jobs:
 
               // True όσο ο χρήστης σκρολάρει στις κόκκινες άκρες των στίχων
               var isLyricsEdgeDragging by mutableStateOf(false)
+
+              // Ενεργό ScrollableState της λίστας στίχων (LazyListState / ScrollState)
+              var activeLyricsScrollState: ScrollableState? = null
 
               // 0L = Προεπιλογή εφαρμογής, αλλιώς ARGB Long
               var customAccentColorArgb by mutableLongStateOf(0L)
@@ -721,6 +728,19 @@ jobs:
               }
           }
 
+          @Composable
+          fun VnRegisterLyricsScrollState(state: Any?) {
+              val scrollable = state as? ScrollableState ?: return
+              DisposableEffect(scrollable) {
+                  VnFpsPref.activeLyricsScrollState = scrollable
+                  onDispose {
+                      if (VnFpsPref.activeLyricsScrollState === scrollable) {
+                          VnFpsPref.activeLyricsScrollState = null
+                      }
+                  }
+              }
+          }
+
           /**
            * Έλεγχος σειράς επεκτάσεων vs πηγών ήχου ΚΑΙ πτώσης ποιότητας ήχου σε σχέση με το προηγούμενο τραγούδι.
            */
@@ -823,14 +843,12 @@ jobs:
                   val cleanQuality = qualityLabel.trim()
                   val currScore = qualityScore(cleanQuality, bitrateKbps)
 
-                  // Περιμένουμε να φορτώσει η πληροφορία πηγής ή ποιότητας πριν κλειδώσουμε το κομμάτι
                   if (cleanSource.isEmpty() && currScore == 0) return
                   lastEvaluatedTrackKey = cleanKey
 
                   val warnings = mutableListOf<String>()
                   val (audioSourcesOrder, extensionsOrder) = readConfiguredOrders(context)
 
-                  // 1. Έλεγχος σειράς επεκτάσεων σε σχέση με τις πηγές ήχου
                   if (audioSourcesOrder.isNotEmpty()) {
                       if (extensionsOrder.isNotEmpty()) {
                           val commonInExt = extensionsOrder.filter { ext ->
@@ -865,7 +883,6 @@ jobs:
                       }
                   }
 
-                  // 2. Έλεγχος αν η ποιότητα του τρέχοντος τραγουδιού είναι μικρότερη από το προηγούμενο
                   if (previousQualityScore > 0 && currScore > 0 && currScore < previousQualityScore) {
                       val currDisplay = cleanQuality.ifBlank { "${bitrateKbps}kbps" }
                       val prevDisplay = previousQualityLabel.ifBlank { "Υψηλότερη" }
@@ -1008,7 +1025,6 @@ jobs:
           fun Modifier.vnLyricsCenterGestures(
               activity: Activity?,
               onClose: (() -> Unit)? = null,
-              scrollableState: ScrollableState? = null,
           ): Modifier = this
               .pointerInput(activity) {
                   detectTapGestures { offset ->
@@ -1018,50 +1034,46 @@ jobs:
                       }
                   }
               }
-              .pointerInput(onClose, scrollableState) {
-                  var dragY = 0f
-                  var startedInCenter = false
-                  var startedInEdge = false
-                  detectVerticalDragGestures(
-                      onDragStart = { startOffset ->
-                          val w = size.width.toFloat()
-                          startedInCenter = w > 0f && startOffset.x in (w * 0.22f)..(w * 0.78f)
-                          startedInEdge = w > 0f && !startedInCenter
-                          VnFpsPref.isLyricsEdgeDragging = startedInEdge
-                          dragY = 0f
-                      },
-                      onVerticalDrag = { change, dragAmount ->
-                          if (startedInEdge) {
-                              change.consume()
-                              scrollableState?.dispatchRawDelta(-dragAmount * 2.2f)
-                          } else if (startedInCenter) {
-                              dragY += dragAmount
+              .pointerInput(onClose) {
+                  awaitEachGesture {
+                      val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                      val w = size.width.toFloat()
+                      val startX = down.position.x
+                      val startedInCenter = w > 0f && startX in (w * 0.22f)..(w * 0.78f)
+                      val startedInEdge = w > 0f && !startedInCenter
+                      VnFpsPref.isLyricsEdgeDragging = startedInEdge
+                      var dragY = 0f
+
+                      try {
+                          while (true) {
+                              val event = awaitPointerEvent(PointerEventPass.Initial)
+                              val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
+                              if (change == null || !change.pressed) break
+                              val dy = change.positionChange().y
+                              if (abs(dy) > 0.1f) {
+                                  if (startedInEdge) {
+                                      change.consume()
+                                      VnFpsPref.activeLyricsScrollState?.dispatchRawDelta(-dy * 2.2f)
+                                  } else if (startedInCenter) {
+                                      dragY += dy
+                                  }
+                              }
                           }
-                      },
-                      onDragEnd = {
                           if (startedInCenter && onClose != null && dragY > 180.dp.toPx()) {
                               onClose()
                           }
-                          dragY = 0f
-                          startedInCenter = false
-                          startedInEdge = false
+                      } finally {
                           VnFpsPref.isLyricsEdgeDragging = false
-                      },
-                      onDragCancel = {
-                          dragY = 0f
-                          startedInCenter = false
-                          startedInEdge = false
-                          VnFpsPref.isLyricsEdgeDragging = false
-                      },
-                  )
+                      }
+                  }
               }
 
           /**
            * Κουμπί έντασης ήχου (+ επάνω / - κάτω) στο Fullscreen, τοποθετημένο στη δεξιά άκρη
-           * στο ύψος των φυσικών κουμπιών έντασης του κινητού (tap-only).
+           * στο ύψος των φυσικών κουμπιών έντασης του κινητού (tap-only, μέσω Popup ώστε να μπαίνει παντού).
            */
           @Composable
-          fun BoxScope.VnFullscreenVolumePill() {
+          fun VnFullscreenVolumePill() {
               val context = LocalContext.current
               val audioManager = remember(context) {
                   context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -1092,74 +1104,82 @@ jobs:
                   showPercent = true
               }
 
-              Column(
-                  modifier = Modifier
-                      .align(Alignment.CenterEnd)
-                      .offset(y = (-64).dp)
-                      .padding(end = 6.dp)
-                      .width(42.dp)
-                      .clip(RoundedCornerShape(21.dp))
-                      .background(Color.Black.copy(alpha = 0.56f))
-                      .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(21.dp)),
-                  horizontalAlignment = Alignment.CenterHorizontally,
+              Popup(
+                  alignment = Alignment.CenterEnd,
+                  offset = IntOffset(-16, -150),
+                  properties = PopupProperties(
+                      focusable = false,
+                      dismissOnBackPress = false,
+                      dismissOnClickOutside = false,
+                      clippingEnabled = false,
+                  ),
               ) {
-                  // + (Αύξηση έντασης με tap μόνο)
                   Column(
                       modifier = Modifier
-                          .fillMaxWidth()
-                          .clickable { stepVolume(AudioManager.ADJUST_RAISE) }
-                          .padding(vertical = 10.dp),
+                          .width(42.dp)
+                          .clip(RoundedCornerShape(21.dp))
+                          .background(Color.Black.copy(alpha = 0.58f))
+                          .border(1.dp, Color.White.copy(alpha = 0.24f), RoundedCornerShape(21.dp)),
                       horizontalAlignment = Alignment.CenterHorizontally,
                   ) {
-                      Text(
-                          text = "+",
-                          color = Color.White,
-                          fontSize = 15.sp,
-                          fontWeight = FontWeight.Bold,
-                      )
-                      Icon(
-                          imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
-                          contentDescription = "Αύξηση έντασης",
-                          tint = Color.White,
-                          modifier = Modifier.size(18.dp),
-                      )
-                  }
+                      // + (Αύξηση έντασης με tap μόνο)
+                      Column(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .clickable { stepVolume(AudioManager.ADJUST_RAISE) }
+                              .padding(vertical = 10.dp),
+                          horizontalAlignment = Alignment.CenterHorizontally,
+                      ) {
+                          Text(
+                              text = "+",
+                              color = Color.White,
+                              fontSize = 15.sp,
+                              fontWeight = FontWeight.Bold,
+                          )
+                          Icon(
+                              imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
+                              contentDescription = "Αύξηση έντασης",
+                              tint = Color.White,
+                              modifier = Modifier.size(18.dp),
+                          )
+                      }
 
-                  HorizontalDivider(
-                      modifier = Modifier.padding(horizontal = 8.dp),
-                      color = Color.White.copy(alpha = 0.22f),
-                  )
+                      HorizontalDivider(
+                          modifier = Modifier.padding(horizontal = 8.dp),
+                          color = Color.White.copy(alpha = 0.22f),
+                      )
 
-                  if (showPercent) {
-                      Text(
-                          text = "$volumePercent%",
-                          color = Color.White.copy(alpha = 0.85f),
-                          fontSize = 10.sp,
-                          fontWeight = FontWeight.SemiBold,
-                          modifier = Modifier.padding(vertical = 2.dp),
-                      )
-                  }
+                      if (showPercent) {
+                          Text(
+                              text = "$volumePercent%",
+                              color = Color.White.copy(alpha = 0.88f),
+                              fontSize = 10.sp,
+                              fontWeight = FontWeight.SemiBold,
+                              modifier = Modifier.padding(vertical = 2.dp),
+                          )
+                      }
 
-                  // - (Μείωση έντασης με tap μόνο)
-                  Column(
-                      modifier = Modifier
-                          .fillMaxWidth()
-                          .clickable { stepVolume(AudioManager.ADJUST_LOWER) }
-                          .padding(vertical = 10.dp),
-                      horizontalAlignment = Alignment.CenterHorizontally,
-                  ) {
-                      Icon(
-                          imageVector = Icons.AutoMirrored.Rounded.VolumeDown,
-                          contentDescription = "Μείωση έντασης",
-                          tint = Color.White,
-                          modifier = Modifier.size(18.dp),
-                      )
-                      Text(
-                          text = "−",
-                          color = Color.White,
-                          fontSize = 15.sp,
-                          fontWeight = FontWeight.Bold,
-                      )
+                      // - (Μείωση έντασης με tap μόνο)
+                      Column(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .clickable { stepVolume(AudioManager.ADJUST_LOWER) }
+                              .padding(vertical = 10.dp),
+                          horizontalAlignment = Alignment.CenterHorizontally,
+                      ) {
+                          Icon(
+                              imageVector = Icons.AutoMirrored.Rounded.VolumeDown,
+                              contentDescription = "Μείωση έντασης",
+                              tint = Color.White,
+                              modifier = Modifier.size(18.dp),
+                          )
+                          Text(
+                              text = "−",
+                              color = Color.White,
+                              fontSize = 15.sp,
+                              fontWeight = FontWeight.Bold,
+                          )
+                      }
                   }
               }
           }
@@ -1689,41 +1709,33 @@ jobs:
                           lines[end_line] = lines[end_line] + f"\n{indent}}}"
                           cast_msg.write_text("\n".join(lines) + "\n")
 
-          def inject_into_first_box(lines, sig_end, body_end, call_line):
-              box_start = None
-              for idx in range(sig_end + 1, body_end):
-                  if re.search(r'\bBox\s*(?:\(|\{)', lines[idx]):
-                      box_start = idx
-                      break
-              if box_start is None:
-                  return False
-              paren = 0
-              in_params = False
-              body_open = None
-              for idx in range(box_start, body_end + 1):
-                  for ch in lines[idx]:
-                      if ch == '(':
-                          paren += 1
-                          in_params = True
-                      elif ch == ')':
-                          paren -= 1
-                      elif ch == '{' and (not in_params or paren <= 0):
-                          body_open = idx
-                          break
-                  if body_open is not None:
-                      break
-              if body_open is None:
-                  return False
-              depth = 0
-              for idx in range(body_open, body_end + 1):
-                  depth += lines[idx].count("{") - lines[idx].count("}")
-                  if depth <= 0:
-                      indent = re.match(r'^(\s*)', lines[idx]).group(1) + "    "
-                      lines.insert(idx, f"{indent}{call_line}\n")
-                      return True
-              return False
+          def hook_lazy_column_states(src: str) -> str:
+              if "VnRegisterLyricsScrollState" in src:
+                  return src
+              lines = src.splitlines(keepends=True)
+              out = []
+              i = 0
+              while i < len(lines):
+                  m = re.match(r'^(\s*)LazyColumn\s*\(', lines[i])
+                  if m:
+                      indent = m.group(1)
+                      block = [lines[i]]
+                      paren = lines[i].count("(") - lines[i].count(")")
+                      while paren > 0 and i + 1 < len(lines):
+                          i += 1
+                          block.append(lines[i])
+                          paren += lines[i].count("(") - lines[i].count(")")
+                      call_txt = "".join(block)
+                      ms = re.search(r'\bstate\s*=\s*([A-Za-z0-9_.]+)', call_txt)
+                      if ms:
+                          out.append(f"{indent}com.music.spotui.ui.screens.VnRegisterLyricsScrollState({ms.group(1)})\n")
+                      out.extend(block)
+                  else:
+                      out.append(lines[i])
+                  i += 1
+              return "".join(out)
 
-          # 7. Fullscreen Lyrics Gestures + Red-Edge Scrolling + Volume Rocker Button (LyricsScreen.kt)
+          # 7. Fullscreen Lyrics Gestures + Red-Edge Scrolling + Popup Volume Rocker Button (LyricsScreen.kt)
           lyrics_file = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lyrics_file.exists():
               src = lyrics_file.read_text()
@@ -1732,6 +1744,7 @@ jobs:
               src_mod = re.sub(r'if\s*\(\s*drag\s*>\s*([^)]+)\)\s*onExpand\(\)', r'if (drag < -\1) onExpand()', src_mod)
               src_mod = re.sub(r'if\s*\(\s*drag\s*<\s*-\s*([^)]+)\)\s*onClose\(\)', r'if (drag > \1) onClose()', src_mod)
               src_mod = re.sub(r'\b(?:48|56|64|72|76|80)\.dp\.toPx\(\)', '180.dp.toPx()', src_mod)
+              src_mod = hook_lazy_column_states(src_mod)
 
               if "vnLyricsCenterGestures" not in src_mod:
                   lines = src_mod.splitlines(keepends=True)
@@ -1758,11 +1771,10 @@ jobs:
                                   if body_end is not None:
                                       body_text = "".join(lines[sig_end:body_end + 1])
                                       if ".fillMaxSize()" in body_text:
-                                          m_scroll = re.search(r'\bval\s+([A-Za-z0-9_]+)\s*=\s*remember(?:LazyList|Scroll)State\b', body_text)
-                                          scroll_arg = m_scroll.group(1) if m_scroll else "null"
                                           lines[sig_end] = (
                                               lines[sig_end]
                                               + "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
+                                              + "    com.music.spotui.ui.screens.VnFullscreenVolumePill()\n"
                                               + "    val vnLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
                                           )
                                           hooked = False
@@ -1770,7 +1782,7 @@ jobs:
                                               if not hooked and ".fillMaxSize()" in lines[k]:
                                                   lines[k] = lines[k].replace(
                                                       ".fillMaxSize()",
-                                                      f".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnLyricsActivity, onClose, {scroll_arg}))",
+                                                      ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnLyricsActivity, onClose))",
                                                       1,
                                                   )
                                                   hooked = True
@@ -1779,31 +1791,24 @@ jobs:
                                                       "onClick = onClose",
                                                       "onClick = { com.music.spotui.ui.screens.VnFpsPref.toggleSystemBars(vnLyricsActivity) }",
                                                   )
-                                          inject_into_first_box(
-                                              lines,
-                                              sig_end,
-                                              body_end + 1,
-                                              "com.music.spotui.ui.screens.VnFullscreenVolumePill()",
-                                          )
                                           src_mod = "".join(lines)
-                                          print(f"Hooked Red-Edge Scroll ({scroll_arg}) + VolumePill into LyricsScreen.kt")
+                                          print("Hooked Red-Edge Scroll + VolumePill into LyricsScreen.kt")
                                           break
                       i += 1
 
               if src_mod != src:
                   lyrics_file.write_text(src_mod)
 
-          # Υποστήριξη Red-Edge Scrolling & Immersive toggle και στο ImmersiveLyricsPanel.kt (imports ΜΕΤΑ το package!)
+          # Υποστήριξη Red-Edge Scrolling & Popup Volume Rocker και στο ImmersiveLyricsPanel.kt (imports ΜΕΤΑ το package!)
           imm_lyrics = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
           if imm_lyrics.exists():
               ilt = imm_lyrics.read_text()
-              if "vnLyricsCenterGestures" not in ilt and ".fillMaxSize()" in ilt:
-                  m_imm_scroll = re.search(r'\bval\s+([A-Za-z0-9_]+)\s*=\s*remember(?:LazyList|Scroll)State\b', ilt)
-                  imm_scroll_arg = m_imm_scroll.group(1) if m_imm_scroll else "null"
+              ilt_mod = hook_lazy_column_states(ilt)
+              if "vnLyricsCenterGestures" not in ilt_mod and ".fillMaxSize()" in ilt_mod:
                   ilt_new, n_imm = re.subn(
                       r'(@Composable\s+(?:internal\s+|private\s+|public\s+)?fun\s+ImmersiveLyricsPanel\b[^{]*\{)',
-                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()',
-                      ilt,
+                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n    com.music.spotui.ui.screens.VnFullscreenVolumePill()\n    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()',
+                      ilt_mod,
                       count=1,
                   )
                   if n_imm > 0:
@@ -1815,13 +1820,15 @@ jobs:
                       )
                       ilt_new = ilt_new.replace(
                           ".fillMaxSize()",
-                          f".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnImmLyricsActivity, null, {imm_scroll_arg}))",
+                          ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnImmLyricsActivity, null))",
                           1,
                       )
-                      imm_lyrics.write_text(ilt_new)
-                      print(f"Hooked Red-Edge Scroll ({imm_scroll_arg}) into ImmersiveLyricsPanel.kt")
+                      ilt_mod = ilt_new
+                      print("Hooked Red-Edge Scroll + VolumePill into ImmersiveLyricsPanel.kt")
+              if ilt_mod != ilt:
+                  imm_lyrics.write_text(ilt_mod)
 
-          # 8. Immersive Player fix (μην κλείνει το sheet όταν σκρολάρουμε στις κόκκινες άκρες + VolumePill)
+          # 8. Immersive Player fix (μην κλείνει το sheet όταν σκρολάρουμε στις κόκκινες άκρες)
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               s = p2.read_text()
@@ -1842,28 +1849,6 @@ jobs:
                       r'(!com.music.spotui.ui.screens.VnFpsPref.isLyricsEdgeDragging && \1 > 48.dp.toPx())',
                       s,
                   )
-              if "VnFullscreenVolumePill" not in s:
-                  p2_lines = s.splitlines(keepends=True)
-                  for idx, l in enumerate(p2_lines):
-                      if re.search(r'\bfun\s+ImmersivePlayer\b', l):
-                          sig_end = next((j for j in range(idx, min(idx + 25, len(p2_lines))) if "{" in p2_lines[j]), None)
-                          if sig_end is not None:
-                              depth = 0
-                              body_end = None
-                              for k in range(sig_end, len(p2_lines)):
-                                  depth += p2_lines[k].count("{") - p2_lines[k].count("}")
-                                  if depth <= 0:
-                                      body_end = k
-                                      break
-                              if body_end is not None and inject_into_first_box(
-                                  p2_lines,
-                                  sig_end,
-                                  body_end,
-                                  "com.music.spotui.ui.screens.VnFullscreenVolumePill()",
-                              ):
-                                  s = "".join(p2_lines)
-                                  print("Hooked VnFullscreenVolumePill into ImmersivePlayer.kt")
-                          break
               p2.write_text(s)
 
           # 9. Επέκταση χρωμάτων σε όσες ρυθμίσεις/αρχεία έχουν λίστες χρωμάτων + εφαρμογή custom accent color στο Theme
@@ -1929,24 +1914,16 @@ jobs:
                           print(f"Hooked vnAnimatedElement into {anim_target}")
 
           # 11. Σύνδεση VnPlaybackMonitor με την αναπαραγωγή (έλεγχος σειράς επεκτάσεων & ποιότητας)
-          player_state_file = Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerState.kt")
-          if player_state_file.exists():
-              pst = player_state_file.read_text()
-              print("PlayerState.kt found; scanning fields for VnPlaybackMonitor bridge")
-
-          # Αναζήτηση σημείου όπου ενημερώνεται το τρέχον κομμάτι / ποιότητα / πηγή για reporting στο VnPlaybackMonitor
           for scan_file in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
               if scan_file.name == "VnFrameRateManager.kt":
                   continue
               ft = scan_file.read_text()
               if "onTrackPlaybackObserved" in ft:
                   continue
-              # Αν το αρχείο εμφανίζει/διαχειρίζεται το badge ποιότητας ("Lossless") μαζί με title/source
               if '"Lossless"' in ft and "LocalContext.current" in ft and "@Composable" in ft:
                   lines = ft.splitlines(keepends=True)
                   for idx, l in enumerate(lines):
                       if '"Lossless"' in l:
-                          # Εύρεση του πλησιέστερου context & quality variable
                           window_txt = "".join(lines[max(0, idx - 25):min(len(lines), idx + 15)])
                           m_ctx = re.search(r'\bval\s+([A-Za-z0-9_]+)\s*=\s*LocalContext\.current\b', window_txt)
                           m_q = re.search(r'\bval\s+([A-Za-z0-9_]*(?:quality|Quality|format|Format|badge|Badge)[A-Za-z0-9_]*)\b', window_txt)
@@ -1957,7 +1934,6 @@ jobs:
                               q_n = m_q.group(1)
                               t_obj = m_t.group(1)
                               s_expr = f"{m_s.group(1)}.source.orEmpty()" if m_s else '""'
-                              # Βρίσκουμε το τέλος της δήλωσης val q_n = ...
                               for k in range(max(0, idx - 25), idx + 1):
                                   if re.search(rf'\bval\s+{re.escape(q_n)}\b', lines[k]) and "=" in lines[k]:
                                       indent = re.match(r'^(\s*)', lines[k]).group(1)
