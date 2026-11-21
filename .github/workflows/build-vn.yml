@@ -1,4 +1,3 @@
-
 name: VN-Revera Private APK
 
 on:
@@ -10,16 +9,31 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout private repository
         uses: actions/checkout@v4
 
-      - name: Extract VN-Revera source
+      - name: Find and extract source ZIP
+        shell: bash
         run: |
-          mkdir source
-          unzip -q VN-Revera-1.0.7-vn1-source.zip -d source
-          echo "PROJECT_DIR=$(find source -type f -name gradlew -printf '%h\n' | head -1)" >> "$GITHUB_ENV"
+          set -euo pipefail
+          ZIP_FILE="$(find . -maxdepth 4 -type f -iname '*.zip' -not -path './.git/*' | head -n 1)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo 'No source ZIP found in the repository.'
+            echo 'Upload the VN-Revera source ZIP to the repository root.'
+            exit 1
+          fi
+          echo "Using source archive: $ZIP_FILE"
+          mkdir -p source
+          unzip -q "$ZIP_FILE" -d source
+          GRADLEW="$(find source -type f -name gradlew | head -n 1)"
+          if [ -z "$GRADLEW" ]; then
+            echo 'Could not find gradlew inside the source ZIP.'
+            exit 1
+          fi
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Found Android project at: $PROJECT_DIR"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -30,17 +44,21 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build APK
+      - name: Build VN-Revera debug APK
+        shell: bash
         run: |
+          set -euo pipefail
           cd "$PROJECT_DIR"
-          chmod +x gradlew
+          chmod +x ./gradlew
           ./gradlew :app:assembleDebug -Pabis=arm64-v8a --no-daemon
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          find app/build/outputs/apk -type f -name '*.apk' -exec cp {} "$GITHUB_WORKSPACE/output/" \;
+          test -n "$(find "$GITHUB_WORKSPACE/output" -type f -name '*.apk' -print -quit)"
 
-      - name: Upload private APK
+      - name: Upload private APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VN-Revera-APK
-          path: source/**/base/app/build/outputs/apk/debug/*.apk
+          name: VN-Revera-ARM64-debug-APK
+          path: output/*.apk
           if-no-files-found: error
           retention-days: 14
-          
