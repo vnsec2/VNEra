@@ -719,20 +719,31 @@ jobs:
               s = s.replace("awaitPointerEvent()", "awaitPointerEvent(PointerEventPass.Initial)").replace("change.positionChange().y", "change.positionChangeIgnoreConsumed().y").replace("76.dp.toPx()", "48.dp.toPx()")
               p2.write_text(s)
 
-          # 9. Σύνδεση VnFpsSelectorCard στις Ρυθμίσεις & VnFrameRateGuard στο Root UI
-          for settings_path in [
-              Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"),
-              Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"),
-          ]:
-              if settings_path.exists():
-                  st = settings_path.read_text()
-                  if "VnFpsSelectorCard" not in st:
-                      m = re.search(r'(?m)^([ \t]*)(?:com\.music\.spotui\.ui\.screens\.)?VnSettingsBackup\w*\s*\(', st)
-                      if m:
-                          indent = m.group(1)
-                          st = st[:m.start()] + f"{indent}com.music.spotui.ui.screens.VnFpsSelectorCard()\n" + st[m.start():]
-                          settings_path.write_text(st)
-                          print(f"Hooked VnFpsSelectorCard into {settings_path}")
+          # 9. Σύνδεση VnFpsSelectorCard πάνω από το VnSettingsBackup σε όλα τα UI αρχεία που το καλούν
+          for ui_file in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
+              if ui_file.name in ("VnSettingsBackup.kt", "VnFrameRateManager.kt"):
+                  continue
+              st = ui_file.read_text()
+              if "VnFpsSelectorCard" in st:
+                  continue
+              lines = st.splitlines(keepends=True)
+              changed = False
+              for i, line in enumerate(lines):
+                  stripped = line.lstrip()
+                  indent = line[:len(line) - len(stripped)]
+                  if stripped.startswith(("import ", "package ", "//", "/*", "*", "fun ", "object ", "class ")):
+                      continue
+                  if re.match(r'^item\b.*\{.*\bVn(?:Settings)?Backup\w*', stripped):
+                      lines.insert(i, f"{indent}item {{ com.music.spotui.ui.screens.VnFpsSelectorCard() }}\n")
+                      changed = True
+                      break
+                  if re.match(r'^(?:com\.music\.spotui\.ui\.screens\.)?Vn(?:Settings)?Backup(?:\.[A-Za-z0-9_]+|\w*)\s*\(', stripped):
+                      lines.insert(i, f"{indent}com.music.spotui.ui.screens.VnFpsSelectorCard()\n")
+                      changed = True
+                      break
+              if changed:
+                  ui_file.write_text("".join(lines))
+                  print(f"Hooked VnFpsSelectorCard into {ui_file}")
 
           guard_hooked = False
           for act_path in sorted(Path("app/src/main/java").rglob("*Activity.kt")):
