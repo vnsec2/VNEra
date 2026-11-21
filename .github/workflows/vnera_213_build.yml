@@ -81,7 +81,74 @@ jobs:
                   text += '\nandroid {\n    packaging {\n        resources {\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/versions/9/module-info.class"\n        }\n    }\n}\n'
               gradle.write_text(text)
 
-          # 4. Add Classic Player lyrics swipe gestures
+          # 4. Fix CastMessage.kt expression-body return (Kotlin 2.2 compatibility)
+          cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
+          if cast_msg.exists():
+              lines = cast_msg.read_text().splitlines()
+              target_idx = min(36, len(lines) - 1)
+              fun_idx = None
+              for i in range(target_idx, -1, -1):
+                  if re.search(r'\bfun\b', lines[i]):
+                      fun_idx = i
+                      break
+              if fun_idx is not None:
+                  # Βρίσκουμε το '=' της συνάρτησης (εκτός παρενθέσεων)
+                  paren = 0
+                  eq_line = None
+                  eq_col = None
+                  for i in range(fun_idx, target_idx + 1):
+                      line = lines[i]
+                      for c_idx, ch in enumerate(line):
+                          if ch == '(':
+                              paren += 1
+                          elif ch == ')':
+                              paren -= 1
+                          elif ch == '=' and paren == 0:
+                              prev_ch = line[c_idx - 1] if c_idx > 0 else ''
+                              next_ch = line[c_idx + 1] if c_idx + 1 < len(line) else ''
+                              if prev_ch not in ('=', '!', '<', '>') and next_ch not in ('=', '>'):
+                                  eq_line = i
+                                  eq_col = c_idx
+                                  break
+                      if eq_line is not None:
+                          break
+
+                  if eq_line is not None:
+                      indent = re.match(r'^(\s*)', lines[fun_idx]).group(1)
+                      brace = 0
+                      paren = 0
+                      bracket = 0
+                      has_body = False
+                      end_line = eq_line
+                      for i in range(eq_line, len(lines)):
+                          seg = lines[i][eq_col + 1:] if i == eq_line else lines[i]
+                          code_part = seg.split('//')[0]
+                          if code_part.strip():
+                              has_body = True
+                          for ch in code_part:
+                              if ch == '{': brace += 1
+                              elif ch == '}': brace -= 1
+                              elif ch == '(': paren += 1
+                              elif ch == ')': paren -= 1
+                              elif ch == '[': bracket += 1
+                              elif ch == ']': bracket -= 1
+                          if has_body and brace <= 0 and paren <= 0 and bracket <= 0 and i >= target_idx:
+                              nxt = lines[i + 1].lstrip() if i + 1 < len(lines) else ''
+                              if not nxt.startswith(('.', '?.', '?:', '&&', '||')):
+                                  end_line = i
+                                  break
+
+                      before_eq = lines[eq_line][:eq_col].rstrip()
+                      after_eq = lines[eq_line][eq_col + 1:].lstrip()
+                      if after_eq:
+                          lines[eq_line] = f"{before_eq} {{\n{indent}    return {after_eq}"
+                      else:
+                          lines[eq_line] = f"{before_eq} {{"
+                          lines[eq_line + 1] = f"{indent}    return " + lines[eq_line + 1].lstrip()
+                      lines[end_line] = lines[end_line] + f"\n{indent}}}"
+                      cast_msg.write_text("\n".join(lines) + "\n")
+
+          # 5. Add Classic Player lyrics swipe gestures
           path = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if path.exists():
               source = path.read_text()
@@ -132,7 +199,7 @@ jobs:
                   source = source.replace(card_old, card_new, 1)
               path.write_text(source)
 
-          # 5. Immersive Player fix
+          # 6. Immersive Player fix
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               s = p2.read_text()
