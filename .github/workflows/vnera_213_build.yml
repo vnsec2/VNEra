@@ -175,7 +175,7 @@ jobs:
           find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" ! -name "_keystore_repo" -exec rm -rf {} +
           tar --exclude='.git' -cf - -C /tmp/merge_repo . | tar -xf - -C .
 
-          # Αντιγραφή του μόνιμου keystore μέσα στο app/ από το /tmp (που δεν σβήνεται από το checkout)
+          # Αντιγραφή του μόνιμου keystore μέσα στο app/ από το /tmp
           mkdir -p app
           if [ -f "/tmp/vnera-debug.keystore" ]; then
             cp -f "/tmp/vnera-debug.keystore" "app/vnera-debug.keystore"
@@ -246,6 +246,8 @@ jobs:
           import android.content.ContextWrapper
           import android.os.Build
           import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
           import android.view.Choreographer
           import android.view.Display
           import android.view.ViewTreeObserver
@@ -486,6 +488,13 @@ jobs:
                   } catch (_: Exception) {
                   }
                   reload(context)
+                  context.findActivity()?.let { act ->
+                      Handler(Looper.getMainLooper()).postDelayed({
+                          if (!act.isFinishing && !act.isDestroyed) {
+                              act.recreate()
+                          }
+                      }, 350L)
+                  }
                   return rawText
               }
 
@@ -1091,7 +1100,7 @@ jobs:
                           lines[end_line] = lines[end_line] + f"\n{indent}}}"
                           cast_msg.write_text("\n".join(lines) + "\n")
 
-          # 7. Fullscreen Lyrics Gestures (όχι ευαίσθητο, ποτέ έξοδος με κάτω->πάνω, άκρες ελεύθερες, μέση toggle fullscreen)
+          # 7. Fullscreen Lyrics Gestures (LyricsScreen.kt - ίδιο package com.music.spotui.ui.screens, χωρίς extra imports)
           lyrics_file = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lyrics_file.exists():
               src = lyrics_file.read_text()
@@ -1101,60 +1110,59 @@ jobs:
               src_mod = re.sub(r'if\s*\(\s*drag\s*<\s*-\s*([^)]+)\)\s*onClose\(\)', r'if (drag > \1) onClose()', src_mod)
               src_mod = re.sub(r'\b(?:48|56|64|72|76|80)\.dp\.toPx\(\)', '130.dp.toPx()', src_mod)
 
-              # Εισαγωγή VnLyricsFullscreenEffect() & vnLyricsActivity στην αρχή της Fullscreen Lyrics composable
-              if "VnLyricsFullscreenEffect" not in src_mod:
-                  src_mod, n_eff = re.subn(
-                      r'(?ms)(@Composable\s+(?:internal\s+|private\s+|public\s+)?fun\s+[A-Za-z0-9_]+\s*\([^)]*\bonClose\s*:\s*\(\)\s*->\s*Unit[^)]*\)\s*\{)',
-                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n    val vnLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()',
-                      src_mod,
-                      count=1,
-                  )
-                  if n_eff > 0:
-                      print("Hooked VnLyricsFullscreenEffect into LyricsScreen.kt")
-
-              # Προσθήκη vnLyricsCenterGestures στο root container των fullscreen lyrics (μόνο μέσα στο σώμα της συνάρτησης)
-              if "vnLyricsCenterGestures" not in src_mod and "vnLyricsActivity" in src_mod:
+              if "vnLyricsCenterGestures" not in src_mod:
                   lines = src_mod.splitlines(keepends=True)
-                  in_fs_lyrics = False
-                  seen_body_brace = False
-                  brace_depth = 0
-                  hooked_gestures = False
-                  for i, line in enumerate(lines):
-                      if not in_fs_lyrics and re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', line):
-                          sig_block = "".join(lines[i:min(i + 15, len(lines))])
-                          if re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit', sig_block):
-                              in_fs_lyrics = True
-                              seen_body_brace = False
-                              brace_depth = 0
-                      if in_fs_lyrics:
-                          if "{" in line:
-                              seen_body_brace = True
-                          brace_depth += line.count("{") - line.count("}")
-                          if seen_body_brace and ".fillMaxSize()" in line and not hooked_gestures:
-                              line = line.replace(
-                                  ".fillMaxSize()",
-                                  ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnLyricsActivity, onClose))",
-                                  1,
-                              )
-                              lines[i] = line
-                              hooked_gestures = True
-                          # Αποτροπή background tap-to-close στα fullscreen lyrics: το tap κάνει toggle fullscreen system bars
-                          if seen_body_brace and "indication = null" in line and "onClick = onClose" in line:
-                              line = line.replace(
-                                  "onClick = onClose",
-                                  "onClick = { com.music.spotui.ui.screens.VnFpsPref.toggleSystemBars(vnLyricsActivity) }",
-                              )
-                              lines[i] = line
-                          if seen_body_brace and brace_depth <= 0:
-                              in_fs_lyrics = False
-                  if hooked_gestures:
-                      src_mod = "import com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnLyricsCenterGestures\n" + "".join(lines)
-                      print("Hooked vnLyricsCenterGestures into fullscreen lyrics in LyricsScreen.kt")
+                  i = 0
+                  while i < len(lines):
+                      if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', lines[i]):
+                          sig_end = None
+                          paren = 0
+                          for j in range(i, min(i + 25, len(lines))):
+                              paren += lines[j].count("(") - lines[j].count(")")
+                              if paren <= 0 and "{" in lines[j]:
+                                  sig_end = j
+                                  break
+                          if sig_end is not None:
+                              sig_text = "".join(lines[i:sig_end + 1])
+                              if re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit', sig_text):
+                                  depth = 0
+                                  body_end = None
+                                  for k in range(sig_end, len(lines)):
+                                      depth += lines[k].count("{") - lines[k].count("}")
+                                      if depth <= 0:
+                                          body_end = k
+                                          break
+                                  if body_end is not None:
+                                      body_text = "".join(lines[sig_end:body_end + 1])
+                                      if ".fillMaxSize()" in body_text:
+                                          lines[sig_end] = (
+                                              lines[sig_end]
+                                              + "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
+                                              + "    val vnLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
+                                          )
+                                          hooked = False
+                                          for k in range(sig_end + 1, body_end + 1):
+                                              if not hooked and ".fillMaxSize()" in lines[k]:
+                                                  lines[k] = lines[k].replace(
+                                                      ".fillMaxSize()",
+                                                      ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnLyricsActivity, onClose))",
+                                                      1,
+                                                  )
+                                                  hooked = True
+                                              if "indication = null" in lines[k] and "onClick = onClose" in lines[k]:
+                                                  lines[k] = lines[k].replace(
+                                                      "onClick = onClose",
+                                                      "onClick = { com.music.spotui.ui.screens.VnFpsPref.toggleSystemBars(vnLyricsActivity) }",
+                                                  )
+                                          src_mod = "".join(lines)
+                                          print("Hooked VnLyricsFullscreenEffect & vnLyricsCenterGestures into LyricsScreen.kt")
+                                          break
+                      i += 1
 
               if src_mod != src:
                   lyrics_file.write_text(src_mod)
 
-          # Υποστήριξη Immersive toggle & ελεύθερων άκρων και στο ImmersiveLyricsPanel.kt
+          # Υποστήριξη Immersive toggle & ελεύθερων άκρων και στο ImmersiveLyricsPanel.kt (imports ΜΕΤΑ το package!)
           imm_lyrics = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
           if imm_lyrics.exists():
               ilt = imm_lyrics.read_text()
@@ -1166,7 +1174,12 @@ jobs:
                       count=1,
                   )
                   if n_imm > 0:
-                      ilt_new = "import com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnLyricsCenterGestures\n" + ilt_new
+                      ilt_new = re.sub(
+                          r'(?m)^(package\s+[^\r\n]+)',
+                          r'\1\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnLyricsCenterGestures',
+                          ilt_new,
+                          count=1,
+                      )
                       ilt_new = ilt_new.replace(
                           ".fillMaxSize()",
                           ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnImmLyricsActivity, null))",
@@ -1188,19 +1201,22 @@ jobs:
               s = s.replace("awaitPointerEvent()", "awaitPointerEvent(PointerEventPass.Initial)").replace("change.positionChange().y", "change.positionChangeIgnoreConsumed().y").replace("76.dp.toPx()", "48.dp.toPx()")
               p2.write_text(s)
 
-          # 9. Βελτίωση VnSettingsBackup.kt:
-          #    - Εξαγωγή & Restore ΟΛΩΝ των SharedPreferences αρχείων (Απόκρυψη DJ κ.λπ.)
-          #    - Αποθήκευση τελευταίου backup για αντιγραφή Extensions στο Clipboard
-          #    - Reload προτιμήσεων + recreate Activity μετά το restore
+          # 9. Βελτίωση VnSettingsBackup.kt (Full Export/Restore + κουμπί Αντιγραφής Extensions στο Column)
           backup_file = Path("app/src/main/java/com/music/spotui/ui/screens/VnSettingsBackup.kt")
           if backup_file.exists():
               bt = backup_file.read_text()
               bt_mod = bt
 
+              ctx_var = "context"
+              for cand in ["context", "ctx", "localContext", "appContext"]:
+                  if re.search(rf'\b{cand}\b', bt_mod):
+                      ctx_var = cand
+                      break
+
               if "onBackupImported" not in bt_mod:
                   bt_mod = re.sub(
                       r'\bJSONObject\(\s*([A-Za-z0-9_]+)\s*\)',
-                      r'JSONObject(com.music.spotui.ui.screens.VnFpsPref.onBackupImported(context, \1))',
+                      rf'JSONObject(com.music.spotui.ui.screens.VnFpsPref.onBackupImported({ctx_var}, \1))',
                       bt_mod,
                       count=1,
                   )
@@ -1208,38 +1224,35 @@ jobs:
               if "enrichBackupJson" not in bt_mod:
                   bt_mod = re.sub(
                       r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)?\s*\))',
-                      r'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson(context, \1)',
+                      rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({ctx_var}, \1)',
                       bt_mod,
                       count=1,
                   )
 
-              if "VnFpsPref.reload" not in bt_mod:
-                  bt_mod = re.sub(
-                      r'(\.(?:commit|apply)\(\))',
-                      r'\1; com.music.spotui.ui.screens.VnFpsPref.reload(context)',
-                      bt_mod,
-                  )
-                  bt_mod = re.sub(
-                      r'(Toast\.makeText\([^;]+(?:επαναφ|restore|εισαγ|import|φορτ)[^;]+\)\.show\(\))',
-                      r'\1; (context as? android.app.Activity)?.recreate()',
-                      bt_mod,
-                      flags=re.IGNORECASE,
-                  )
-
               if "VnCopyBackupExtensionsButton" not in bt_mod:
                   lines = bt_mod.splitlines(keepends=True)
-                  inserted = False
-                  for idx in range(len(lines) - 1, -1, -1):
-                      if re.match(r'^\s*\}\s*$', lines[idx]) and idx > 15:
-                          prev_block = "".join(lines[max(0, idx - 8):idx])
-                          if "Button" in prev_block or "Row" in prev_block:
-                              indent = re.match(r'^(\s*)', lines[idx]).group(1)
-                              lines.insert(idx, f"{indent}com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
-                              inserted = True
-                              break
-                  if inserted:
-                      bt_mod = "".join(lines)
-                      print("Hooked VnCopyBackupExtensionsButton into VnSettingsBackup.kt")
+                  comp_start = next((idx for idx, l in enumerate(lines) if "@Composable" in l), None)
+                  if comp_start is not None:
+                      col_start = next(
+                          (idx for idx in range(comp_start, len(lines)) if re.search(r'\bColumn\b', lines[idx])),
+                          None,
+                      )
+                      if col_start is not None:
+                          depth = 0
+                          opened = False
+                          for idx in range(col_start, len(lines)):
+                              depth += lines[idx].count("{") - lines[idx].count("}")
+                              if "{" in lines[idx]:
+                                  opened = True
+                              if opened and depth <= 0:
+                                  indent = re.match(r'^(\s*)', lines[idx]).group(1) + "    "
+                                  lines.insert(
+                                      idx,
+                                      f"{indent}com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n",
+                                  )
+                                  bt_mod = "".join(lines)
+                                  print(f"Hooked VnCopyBackupExtensionsButton into VnSettingsBackup.kt at line {idx + 1}")
+                                  break
 
               if bt_mod != bt:
                   backup_file.write_text(bt_mod)
