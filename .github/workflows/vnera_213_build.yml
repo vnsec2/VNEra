@@ -16,6 +16,48 @@ jobs:
           ref: work/source-review
           fetch-depth: 0
 
+      - name: Merge Revera 1.0.8 Base Update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/carunodev/Revera.git
+          git fetch upstream --tags --prune
+
+          # Εντοπισμός του tag 1.0.8 ή του βασικού branch (main) του Revera
+          UPSTREAM_REF=""
+          for candidate in "v1.0.8" "1.0.8"; do
+            if git rev-parse "refs/tags/$candidate" >/dev/null 2>&1; then
+              UPSTREAM_REF="refs/tags/$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$UPSTREAM_REF" ]; then
+            DEFAULT_BRANCH=$(git ls-remote --symref upstream HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2; exit}')
+            UPSTREAM_REF="upstream/${DEFAULT_BRANCH:-main}"
+          fi
+
+          echo "Merging Revera base update from: $UPSTREAM_REF"
+          if ! git merge "$UPSTREAM_REF" --no-edit --allow-unrelated-histories; then
+            echo "Resolving merge conflicts favoring Revera 1.0.8 base while keeping VNEra resources..."
+            CONFLICTED=$(git diff --name-only --diff-filter=U)
+            for f in $CONFLICTED; do
+              case "$f" in
+                app/src/main/res/*)
+                  git checkout --ours -- "$f"
+                  ;;
+                *)
+                  git checkout --theirs -- "$f"
+                  ;;
+              esac
+              git add -- "$f"
+            done
+            git commit -m "Merge Revera 1.0.8 base update"
+          fi
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
@@ -71,7 +113,14 @@ jobs:
                   if t != t_new:
                       gradle_file.write_text(t_new)
 
-          # 3. Update Version & Packaging Excludes
+          # 3. Διατήρηση ονόματος VNEra στο strings.xml (αν επηρεάστηκε από το merge)
+          strings_xml = Path("app/src/main/res/values/strings.xml")
+          if strings_xml.exists():
+              s_xml = strings_xml.read_text()
+              s_xml = re.sub(r'<string name="app_name">.*?</string>', '<string name="app_name">VNEra</string>', s_xml)
+              strings_xml.write_text(s_xml)
+
+          # 4. Update Version & Packaging Excludes
           gradle = Path("app/build.gradle.kts")
           if gradle.exists():
               text = gradle.read_text()
@@ -81,74 +130,75 @@ jobs:
                   text += '\nandroid {\n    packaging {\n        resources {\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/versions/9/module-info.class"\n        }\n    }\n}\n'
               gradle.write_text(text)
 
-          # 4. Fix CastMessage.kt expression-body return (Kotlin 2.2 compatibility)
+          # 5. Fix CastMessage.kt expression-body return (μόνο αν υπάρχει ακόμα στον κώδικα)
           cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
           if cast_msg.exists():
-              lines = cast_msg.read_text().splitlines()
+              raw_cast = cast_msg.read_text()
+              lines = raw_cast.splitlines()
               target_idx = min(36, len(lines) - 1)
-              fun_idx = None
-              for i in range(target_idx, -1, -1):
-                  if re.search(r'\bfun\b', lines[i]):
-                      fun_idx = i
-                      break
-              if fun_idx is not None:
-                  # Βρίσκουμε το '=' της συνάρτησης (εκτός παρενθέσεων)
-                  paren = 0
-                  eq_line = None
-                  eq_col = None
-                  for i in range(fun_idx, target_idx + 1):
-                      line = lines[i]
-                      for c_idx, ch in enumerate(line):
-                          if ch == '(':
-                              paren += 1
-                          elif ch == ')':
-                              paren -= 1
-                          elif ch == '=' and paren == 0:
-                              prev_ch = line[c_idx - 1] if c_idx > 0 else ''
-                              next_ch = line[c_idx + 1] if c_idx + 1 < len(line) else ''
-                              if prev_ch not in ('=', '!', '<', '>') and next_ch not in ('=', '>'):
-                                  eq_line = i
-                                  eq_col = c_idx
-                                  break
-                      if eq_line is not None:
+              if "return" in lines[target_idx]:
+                  fun_idx = None
+                  for i in range(target_idx, -1, -1):
+                      if re.search(r'\bfun\b', lines[i]):
+                          fun_idx = i
                           break
-
-                  if eq_line is not None:
-                      indent = re.match(r'^(\s*)', lines[fun_idx]).group(1)
-                      brace = 0
+                  if fun_idx is not None:
                       paren = 0
-                      bracket = 0
-                      has_body = False
-                      end_line = eq_line
-                      for i in range(eq_line, len(lines)):
-                          seg = lines[i][eq_col + 1:] if i == eq_line else lines[i]
-                          code_part = seg.split('//')[0]
-                          if code_part.strip():
-                              has_body = True
-                          for ch in code_part:
-                              if ch == '{': brace += 1
-                              elif ch == '}': brace -= 1
-                              elif ch == '(': paren += 1
-                              elif ch == ')': paren -= 1
-                              elif ch == '[': bracket += 1
-                              elif ch == ']': bracket -= 1
-                          if has_body and brace <= 0 and paren <= 0 and bracket <= 0 and i >= target_idx:
-                              nxt = lines[i + 1].lstrip() if i + 1 < len(lines) else ''
-                              if not nxt.startswith(('.', '?.', '?:', '&&', '||')):
-                                  end_line = i
-                                  break
+                      eq_line = None
+                      eq_col = None
+                      for i in range(fun_idx, target_idx + 1):
+                          line = lines[i]
+                          for c_idx, ch in enumerate(line):
+                              if ch == '(':
+                                  paren += 1
+                              elif ch == ')':
+                                  paren -= 1
+                              elif ch == '=' and paren == 0:
+                                  prev_ch = line[c_idx - 1] if c_idx > 0 else ''
+                                  next_ch = line[c_idx + 1] if c_idx + 1 < len(line) else ''
+                                  if prev_ch not in ('=', '!', '<', '>') and next_ch not in ('=', '>'):
+                                      eq_line = i
+                                      eq_col = c_idx
+                                      break
+                          if eq_line is not None:
+                              break
 
-                      before_eq = lines[eq_line][:eq_col].rstrip()
-                      after_eq = lines[eq_line][eq_col + 1:].lstrip()
-                      if after_eq:
-                          lines[eq_line] = f"{before_eq} {{\n{indent}    return {after_eq}"
-                      else:
-                          lines[eq_line] = f"{before_eq} {{"
-                          lines[eq_line + 1] = f"{indent}    return " + lines[eq_line + 1].lstrip()
-                      lines[end_line] = lines[end_line] + f"\n{indent}}}"
-                      cast_msg.write_text("\n".join(lines) + "\n")
+                      if eq_line is not None:
+                          indent = re.match(r'^(\s*)', lines[fun_idx]).group(1)
+                          brace = paren = bracket = 0
+                          has_body = False
+                          end_line = eq_line
+                          for i in range(eq_line, len(lines)):
+                              seg = lines[i][eq_col + 1:] if i == eq_line else lines[i]
+                              code_part = seg.split('//')[0]
+                              if code_part.strip():
+                                  has_body = True
+                              for ch in code_part:
+                                  if ch == '{': brace += 1
+                                  elif ch == '}': brace -= 1
+                                  elif ch == '(': paren += 1
+                                  elif ch == ')': paren -= 1
+                                  elif ch == '[': bracket += 1
+                                  elif ch == ']': bracket -= 1
+                              if has_body and brace <= 0 and paren <= 0 and bracket <= 0 and i >= target_idx:
+                                  nxt = lines[i + 1].lstrip() if i + 1 < len(lines) else ''
+                                  if not nxt.startswith(('.', '?.', '?:', '&&', '||')):
+                                      end_line = i
+                                      break
 
-          # 5. Add Classic Player lyrics swipe gestures
+                          before_eq = lines[eq_line][:eq_col].rstrip()
+                          after_eq = lines[eq_line][eq_col + 1:].lstrip()
+                          if after_eq:
+                              lines[eq_line] = f"{before_eq} {{\n{indent}    return {after_eq}"
+                          else:
+                              lines[eq_line] = f"{before_eq} {{"
+                              lines[eq_line + 1] = f"{indent}    return " + lines[eq_line + 1].lstrip()
+                          lines[end_line] = lines[end_line] + f"\n{indent}}}"
+                          cast_msg.write_text("\n".join(lines) + "\n")
+
+          # 6. Classic Player Lyrics Swipe Gestures:
+          #    - Σύρσιμο από κάτω προς τα πάνω (drag < 0) -> Άνοιγμα fullscreen (onExpand)
+          #    - Σύρσιμο από πάνω προς τα κάτω (drag > 0) -> Κλείσιμο fullscreen (onClose)
           path = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if path.exists():
               source = path.read_text()
@@ -169,15 +219,17 @@ jobs:
                                   change.consume()
                               },
                               onDragEnd = {
-                                  if (drag < -72.dp.toPx()) onClose()
+                                  if (drag > 56.dp.toPx()) onClose()
                                   drag = 0f
                               },
                               onDragCancel = { drag = 0f },
                           )
                       }
                       .revealIn(reveal, 0.3f, 8f),"""
+              header_patched = False
               if source.count(header_old) == 1:
                   source = source.replace(header_old, header_new, 1)
+                  header_patched = True
 
               card_old = ".clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onExpand() }"
               card_new = """.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onExpand() }
@@ -189,21 +241,30 @@ jobs:
                                       change.consume()
                                   },
                                   onDragEnd = {
-                                      if (drag > 72.dp.toPx()) onExpand()
+                                      if (drag < -56.dp.toPx()) onExpand()
                                       drag = 0f
                                   },
                                   onDragCancel = { drag = 0f },
                               )
                           }"""
+              card_patched = False
               if source.count(card_old) == 1:
                   source = source.replace(card_old, card_new, 1)
+                  card_patched = True
+
+              print(f"LyricsScreen patched -> header(swipe-down-close)={header_patched}, card(swipe-up-open)={card_patched}")
               path.write_text(source)
 
-          # 6. Immersive Player fix
+          # 7. Immersive Player fix
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               s = p2.read_text()
-              if "PointerEventPass" not in s: s = s.replace("import androidx.compose.ui.input.pointer.positionChange", "import androidx.compose.ui.input.pointer.positionChange\nimport androidx.compose.ui.input.pointer.PointerEventPass\nimport androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed", 1)
+              if "PointerEventPass" not in s:
+                  s = s.replace(
+                      "import androidx.compose.ui.input.pointer.positionChange",
+                      "import androidx.compose.ui.input.pointer.positionChange\nimport androidx.compose.ui.input.pointer.PointerEventPass\nimport androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed",
+                      1,
+                  )
               s = s.replace("awaitPointerEvent()", "awaitPointerEvent(PointerEventPass.Initial)").replace("change.positionChange().y", "change.positionChangeIgnoreConsumed().y").replace("76.dp.toPx()", "48.dp.toPx()")
               p2.write_text(s)
           PY
