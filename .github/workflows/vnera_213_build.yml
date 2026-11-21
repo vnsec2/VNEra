@@ -22,7 +22,7 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install Real SDK 37 & Fix Versions & Apply Patches
+      - name: Install SDK 37.0 & Fix Versions & Apply Patches
         shell: bash
         run: |
           set -euo pipefail
@@ -34,20 +34,19 @@ jobs:
             SUDO="sudo"
           fi
 
-          if [ -n "$SDK_MGR" ]; then
-            yes | $SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
-            PLAT_PKG=$($SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" --list --channel=3 2>/dev/null | grep -oE 'platforms;android-(37|[A-Z][A-Za-z0-9._-]*)' | tail -n 1 || true)
-            echo "Selected SDK 37 package: $PLAT_PKG"
-            if [ -n "$PLAT_PKG" ]; then
-              $SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" --channel=3 "$PLAT_PKG" "build-tools;36.0.0" || true
-            fi
-            if [ ! -d "$SDK_ROOT/platforms/android-37" ]; then
-              PREVIEW_DIR=$(ls -1d "$SDK_ROOT/platforms/android-"[A-Z]* 2>/dev/null | tail -n 1 || true)
-              if [ -n "$PREVIEW_DIR" ]; then
-                $SUDO ln -sfn "$PREVIEW_DIR" "$SDK_ROOT/platforms/android-37"
-              fi
+          if [ ! -d "$SDK_ROOT/platforms/android-37" ] && [ ! -d "$SDK_ROOT/platforms/android-37.0" ]; then
+            if [ -n "$SDK_MGR" ]; then
+              yes | $SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+              $SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" "platforms;android-37.0" "build-tools;37.0.0" || \
+              $SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" "platforms;android-37" "build-tools;36.0.0" || true
             fi
           fi
+
+          if [ -d "$SDK_ROOT/platforms/android-37.0" ] && [ ! -e "$SDK_ROOT/platforms/android-37" ]; then
+            $SUDO ln -sfn "$SDK_ROOT/platforms/android-37.0" "$SDK_ROOT/platforms/android-37"
+          fi
+
+          ls -la "$SDK_ROOT/platforms" || true
 
           HAS_SDK_37="false"
           if [ -d "$SDK_ROOT/platforms/android-37" ]; then
@@ -62,9 +61,9 @@ jobs:
 
           has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
           print(f"HAS_SDK_37 = {has_sdk_37}")
-          target_agp = '9.1.0' if has_sdk_37 else '8.7.2'
+          target_agp = '9.2.0' if has_sdk_37 else '8.7.2'
 
-          # 1. Διόρθωση εκδόσεων Kotlin (2.2.20) & AGP
+          # 1. Διόρθωση εκδόσεων Kotlin (2.2.20) & AGP (9.2.0)
           for toml_path in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
               if toml_path.exists():
                   t = toml_path.read_text()
@@ -74,7 +73,7 @@ jobs:
                       t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', r'\g<1> = "35"', t)
                   toml_path.write_text(t)
 
-          # 2. Ρύθμιση compileSdk / targetSdk μόνο αν όντως λείπει το SDK 37
+          # 2. Ρύθμιση compileSdk / targetSdk μόνο αν λείπει το SDK 37
           if not has_sdk_37:
               for gradle_file in Path(".").rglob("*.gradle.kts"):
                   t = gradle_file.read_text()
