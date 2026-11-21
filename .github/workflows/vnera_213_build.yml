@@ -23,8 +23,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git remote add upstream https://github.com/carunodev/Revera.git
-          git fetch upstream --tags --prune
+          git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
+          git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
           # Εντοπισμός του tag 1.0.8 ή του βασικού branch (main) του Revera
           UPSTREAM_REF=""
@@ -36,8 +36,11 @@ jobs:
           done
 
           if [ -z "$UPSTREAM_REF" ]; then
-            DEFAULT_BRANCH=$(git ls-remote --symref upstream HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2; exit}')
-            UPSTREAM_REF="upstream/${DEFAULT_BRANCH:-main}"
+            if git rev-parse "refs/remotes/upstream/main" >/dev/null 2>&1; then
+              UPSTREAM_REF="upstream/main"
+            else
+              UPSTREAM_REF="upstream/master"
+            fi
           fi
 
           echo "Merging Revera base update from: $UPSTREAM_REF"
@@ -113,7 +116,7 @@ jobs:
                   if t != t_new:
                       gradle_file.write_text(t_new)
 
-          # 3. Διατήρηση ονόματος VNEra στο strings.xml (αν επηρεάστηκε από το merge)
+          # 3. Διατήρηση ονόματος VNEra στο strings.xml
           strings_xml = Path("app/src/main/res/values/strings.xml")
           if strings_xml.exists():
               s_xml = strings_xml.read_text()
