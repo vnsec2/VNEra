@@ -1,0 +1,116 @@
+name: Port Revera 1.0.8 Auto-Merge
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-port:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/caruno-git/Revera.git
+          git fetch --no-tags upstream refs/tags/v1.0.7:refs/tags/v1.0.7
+          git fetch --no-tags upstream refs/tags/v1.0.8:refs/tags/v1.0.8
+
+      - name: Create and Execute Porting Script
+        run: |
+          cat << 'EOF' > run_port.py
+          import os, subprocess, tempfile, re
+          from pathlib import Path
+
+          paths = [
+              "app/src/main/java/com/music/spotui/data/preferences/SettingsPref.kt",
+              "app/src/main/java/com/music/spotui/ui/components/AddSongsScreen.kt",
+              "app/src/main/java/com/music/spotui/ui/components/QueueDiscovery.kt",
+              "app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveQueuePanel.kt",
+              "app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt",
+              "app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt",
+              "app/src/main/java/com/music/spotui/ui/screens/QueueScreen.kt",
+              "app/src/main/java/com/music/spotui/ui/screens/SettingsSearch.kt",
+              "app/src/main/res/values-ru/player_chrome_options.xml",
+              "app/src/main/res/values-ru/strings.xml",
+              "app/src/main/res/values/player_chrome_options.xml",
+              "app/src/main/res/values/strings.xml",
+              "app/src/test/java/com/music/spotui/ui/components/QueueDiscoveryTest.kt",
+              "automix/build.gradle.kts",
+              "engine-android/src/main/kotlin/app/myspoti/engine/android/Media3DrmPlayer.kt",
+              "engine/src/commonMain/kotlin/app/myspoti/engine/Resolver.kt",
+          ]
+
+          def git_show(ref, path):
+              return subprocess.check_output(["git", "show", f"{ref}:base/{path}"])
+
+          for name in paths:
+              target = Path(name)
+              if not target.is_file(): continue
+              try:
+                  ours = target.read_bytes()
+                  base = git_show("v1.0.7", name)
+                  upstream = git_show("v1.0.8", name)
+                  with tempfile.TemporaryDirectory() as tmp:
+                      tmp = Path(tmp)
+                      o, b, u = tmp/"ours", tmp/"base", tmp/"upstream"
+                      o.write_bytes(ours)
+                      b.write_bytes(base)
+                      u.write_bytes(upstream)
+                      res = subprocess.run(["git", "merge-file", "-p", str(o), str(b), str(u)], stdout=subprocess.PIPE)
+                      target.write_bytes(res.stdout)
+              except:
+                  pass
+
+          gradle = Path("app/build.gradle.kts")
+          if gradle.exists():
+              gradle.write_text(gradle.read_text().replace('onnxruntime-android:1.23.2', 'onnxruntime-android:1.32.0'))
+
+          p = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
+          if p.exists():
+              s = p.read_text()
+              needed = ["import androidx.compose.foundation.gestures.awaitEachGesture", "import androidx.compose.foundation.gestures.awaitFirstDown", "import androidx.compose.ui.input.pointer.PointerEventPass", "import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed"]
+              for imp in needed:
+                  if imp not in s: s = s.replace("import androidx.compose.ui.input.pointer.pointerInput", f"import androidx.compose.ui.input.pointer.pointerInput\n{imp}", 1)
+              
+              s = re.sub(r'\.pointerInput\(onExpand\)\s*\{.*?onDragCancel = \{ drag = 0f \},\s*\}', '.lyricsVerticalSwipe(threshold = 48.dp, direction = 1, onSwipe = onExpand)', s, flags=re.DOTALL)
+              s = re.sub(r'\.pointerInput\(onClose\)\s*\{.*?onDragCancel = \{ drag = 0f \},\s*\}', '.lyricsVerticalSwipe(threshold = 48.dp, direction = -1, onSwipe = onClose)', s, flags=re.DOTALL)
+              
+              helper = "\nprivate fun Modifier.lyricsVerticalSwipe(threshold: androidx.compose.ui.unit.Dp, direction: Int, onSwipe: () -> Unit): Modifier = pointerInput(threshold, direction, onSwipe) { awaitEachGesture { val down = awaitFirstDown(requireUnconsumed = false); var total = 0f; var fired = false; while (!fired) { val event = awaitPointerEvent(PointerEventPass.Initial); val change = event.changes.firstOrNull { it.id == down.id } ?: break; total += change.positionChangeIgnoreConsumed().y; if (total * direction >= threshold.toPx()) { change.consume(); onSwipe(); fired = true }; if (!change.pressed) break } } }\n"
+              marker = "/** The inline card's layout node, so the full screen can grow out of it and fold back into it. */"
+              if "lyricsVerticalSwipe" not in s and marker in s: s = s.replace(marker, helper + marker, 1)
+              p.write_text(s)
+
+          p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
+          if p2.exists():
+              s = p2.read_text()
+              if "PointerEventPass" not in s: s = s.replace("import androidx.compose.ui.input.pointer.positionChange", "import androidx.compose.ui.input.pointer.positionChange\nimport androidx.compose.ui.input.pointer.PointerEventPass\nimport androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed", 1)
+              s = s.replace("awaitPointerEvent()", "awaitPointerEvent(PointerEventPass.Initial)").replace("change.positionChange().y", "change.positionChangeIgnoreConsumed().y").replace("76.dp.toPx()", "48.dp.toPx()")
+              p2.write_text(s)
+
+          Path(".vnera-revera-1.0.8-port").write_text("Ported via GitHub Actions\n")
+          EOF
+          python3 run_port.py
+          rm run_port.py
+
+      - name: Commit and Push
+        run: |
+          git add .
+          if ! git diff --staged --quiet; then
+            git commit -m "Automated port of Revera 1.0.8 changes"
+            git push
+          else
+            echo "No changes to commit."
+          fi
