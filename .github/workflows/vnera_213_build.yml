@@ -278,24 +278,21 @@ jobs:
                   text += '\nandroid {\n    packaging {\n        resources {\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/versions/9/module-info.class"\n        }\n    }\n}\n'
               gradle.write_text(text)
 
-          # 5. Compatibility guard για UpdateChecker.kt (αν η 1.0.8 αφαίρεσε constants που καλεί το VNEra)
+          # 5. Compatibility guard για UpdateChecker.kt (μόνο αν λείπουν standalone constants)
           upd = Path("app/src/main/java/com/music/spotui/data/api/UpdateChecker.kt")
           if upd.exists():
               ut = upd.read_text()
               missing_consts = []
-              if "UPDATE_BASE_URL" in ut and "val UPDATE_BASE_URL" not in ut:
+              if re.search(r'(?<![.\w])UPDATE_BASE_URL\b', ut) and not re.search(r'\bval\s+UPDATE_BASE_URL\b', ut):
                   missing_consts.append('private const val UPDATE_BASE_URL = "https://api.github.com/repos/vnsec2/VNEra"')
-              if "PROJECT_URL" in ut and "val PROJECT_URL" not in ut:
+              if re.search(r'(?<![.\w])PROJECT_URL\b', ut) and not re.search(r'\bval\s+PROJECT_URL\b', ut):
                   missing_consts.append('private const val PROJECT_URL = "https://github.com/vnsec2/VNEra"')
               if missing_consts:
-                  ut = re.sub(
-                      r'(package\s+[^\n]+\n)',
-                      r'\1\n' + "\n".join(missing_consts) + "\n",
-                      ut,
-                      count=1,
-                  )
-                  upd.write_text(ut)
-                  print("Injected missing UpdateChecker constants for VNEra")
+                  lines = ut.splitlines()
+                  last_import_idx = max((i for i, l in enumerate(lines) if l.startswith("import ")), default=0)
+                  lines.insert(last_import_idx + 1, "\n" + "\n".join(missing_consts))
+                  upd.write_text("\n".join(lines) + "\n")
+                  print("Injected missing UpdateChecker constants after imports")
 
           # 6. Fix CastMessage.kt expression-body return
           cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
