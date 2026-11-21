@@ -19,6 +19,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Locate Project Root
+        id: locate
+        run: |
+          echo "Ψάχνω τον φάκελο του Android project..."
+          PROJECT_ROOT=$(dirname "$(find . -name "settings.gradle*" | head -n 1)")
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "ΣΦΑΛΜΑ: Δεν βρέθηκε πουθενά το αρχείο settings.gradle. Βεβαιώσου ότι έχεις ανεβάσει όντως τον κώδικα της εφαρμογής στο GitHub σε αυτό το branch!"
+            exit 1
+          fi
+          echo "Το project βρέθηκε στο: $PROJECT_ROOT"
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> $GITHUB_ENV
+
       - name: Fetch Revera 1.0.7 and 1.0.8
         shell: bash
         run: |
@@ -34,11 +46,14 @@ jobs:
         run: |
           set -euo pipefail
           python3 <<'PY'
+          import os
           from pathlib import Path
           import subprocess
           import tempfile
           import re
 
+          project_root = os.environ.get('PROJECT_ROOT', '.')
+          
           paths = [
               "app/src/main/java/com/music/spotui/data/preferences/SettingsPref.kt",
               "app/src/main/java/com/music/spotui/ui/components/AddSongsScreen.kt",
@@ -59,10 +74,10 @@ jobs:
           ]
 
           def git_show(ref, path):
-              return subprocess.check_output(["git", "show", f"{ref}:base/{path}"])
+              return subprocess.check_output(["git", "show", f"{ref}:{path}"])
 
           for name in paths:
-              target = Path(name)
+              target = Path(project_root) / name
               if not target.is_file(): continue
               try:
                   ours = target.read_bytes()
@@ -79,7 +94,7 @@ jobs:
               except Exception as e:
                   pass
 
-          gradle = Path("app/build.gradle.kts")
+          gradle = Path(project_root) / "app/build.gradle.kts"
           if gradle.exists():
               text = gradle.read_text()
               text = text.replace('onnxruntime-android:1.23.2', 'onnxruntime-android:1.32.0')
@@ -87,7 +102,7 @@ jobs:
               text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 213', text)
               gradle.write_text(text)
 
-          p = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
+          p = Path(project_root) / "app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt"
           if p.exists():
               s = p.read_text()
               needed = ["import androidx.compose.foundation.gestures.awaitEachGesture", "import androidx.compose.foundation.gestures.awaitFirstDown", "import androidx.compose.ui.input.pointer.PointerEventPass", "import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed"]
@@ -100,7 +115,7 @@ jobs:
               if "lyricsVerticalSwipe" not in s and marker in s: s = s.replace(marker, helper + marker, 1)
               p.write_text(s)
 
-          p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
+          p2 = Path(project_root) / "app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt"
           if p2.exists():
               s = p2.read_text()
               if "PointerEventPass" not in s: s = s.replace("import androidx.compose.ui.input.pointer.positionChange", "import androidx.compose.ui.input.pointer.positionChange\\nimport androidx.compose.ui.input.pointer.PointerEventPass\\nimport androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed", 1)
@@ -118,13 +133,16 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Build Release APK
+        working-directory: ${{ env.PROJECT_ROOT }}
         run: |
-          gradle :app:assembleRelease \
-            -PappVersionName="$APP_VERSION_NAME" \
-            -PappVersionCode="$APP_VERSION_CODE" \
-            -Pabis=arm64-v8a \
-            -PupdateRepo=vnsec2/VNEra \
-            --no-daemon
+          if [ -f "gradlew" ]; then
+            echo "Χρήση του τοπικού gradlew..."
+            chmod +x gradlew
+            ./gradlew :app:assembleRelease -PappVersionName="$APP_VERSION_NAME" -PappVersionCode="$APP_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          else
+            echo "Δεν βρέθηκε gradlew, χρήση του global gradle..."
+            gradle :app:assembleRelease -PappVersionName="$APP_VERSION_NAME" -PappVersionCode="$APP_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          fi
 
       - name: Commit version updates and port changes
         run: |
@@ -140,5 +158,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VNEra-2.1.3-Release
-          path: app/build/outputs/apk/release/*.apk
+          path: ${{ env.PROJECT_ROOT }}/app/build/outputs/apk/release/*.apk
           retention-days: 14
