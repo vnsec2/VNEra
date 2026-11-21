@@ -28,6 +28,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.DragInteraction
@@ -553,7 +554,23 @@ fun LyricsScreen(
         // ── Header: close, title / artist, more ──
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp).revealIn(reveal, 0.3f, 8f),
+            modifier = Modifier
+        .fillMaxWidth().height(64.dp).padding(horizontal = 4.dp)
+        .pointerInput(onClose) {
+            var drag = 0f
+            detectVerticalDragGestures(
+                onVerticalDrag = { change, amount ->
+                    drag += amount
+                    change.consume()
+                },
+                onDragEnd = {
+                    if (drag < -72.dp.toPx()) onClose()
+                    drag = 0f
+                },
+                onDragCancel = { drag = 0f },
+            )
+        }
+        .revealIn(reveal, 0.3f, 8f),
         ) {
             Box(
                 contentAlignment = Alignment.Center,
@@ -976,6 +993,20 @@ fun InlineLyrics(
             .clip(RoundedCornerShape(12.dp))
             .background(palette.background)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onExpand() }
+            .pointerInput(onExpand) {
+                var drag = 0f
+                detectVerticalDragGestures(
+                    onVerticalDrag = { change, amount ->
+                        drag += amount
+                        change.consume()
+                    },
+                    onDragEnd = {
+                        if (drag > 72.dp.toPx()) onExpand()
+                        drag = 0f
+                    },
+                    onDragCancel = { drag = 0f },
+                )
+            }
             .padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
