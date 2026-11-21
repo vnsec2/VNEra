@@ -116,13 +116,10 @@ jobs:
 
       - name: Setup Gradle caching
         uses: gradle/actions/setup-gradle@v3
-        
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
 
       - name: Build Release APK
         run: |
-          ./gradlew :app:assembleRelease \
+          gradle :app:assembleRelease \
             -PappVersionName="$APP_VERSION_NAME" \
             -PappVersionCode="$APP_VERSION_CODE" \
             -Pabis=arm64-v8a \
