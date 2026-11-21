@@ -60,7 +60,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Αποθήκευση εικονιδίων VNEra πριν την επαναφορά στη βάση 1.0.8
+          # 1. Αποθήκευση Gradle wrapper πριν το reset (το Revera.git δεν περιέχει το gradlew binary)
+          mkdir -p /tmp/vnera_gradle
+          [ -f "gradlew" ] && cp -f "gradlew" /tmp/vnera_gradle/
+          [ -f "gradlew.bat" ] && cp -f "gradlew.bat" /tmp/vnera_gradle/
+          if [ -d "gradle/wrapper" ]; then
+            mkdir -p /tmp/vnera_gradle/wrapper
+            cp -rf gradle/wrapper/* /tmp/vnera_gradle/wrapper/
+          fi
+
+          # 2. Αποθήκευση εικονιδίων VNEra πριν την επαναφορά στη βάση 1.0.8
           mkdir -p /tmp/vnera_res
           if [ -d "app/src/main/res" ]; then
             cp -rn app/src/main/res/mipmap* /tmp/vnera_res/ 2>/dev/null || true
@@ -70,10 +79,25 @@ jobs:
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
-          # Καθαρή επαναφορά στον κώδικα του Revera 1.0.8
+          # 3. Καθαρή επαναφορά στον κώδικα του Revera 1.0.8
           git reset --hard refs/tags/v1.0.8
 
-          # Επαναφορά εικονιδίων VNEra
+          # 4. Επαναφορά Gradle wrapper
+          if [ ! -f "gradlew" ] && [ -f "/tmp/vnera_gradle/gradlew" ]; then
+            cp -f /tmp/vnera_gradle/gradlew ./gradlew
+            [ -f "/tmp/vnera_gradle/gradlew.bat" ] && cp -f /tmp/vnera_gradle/gradlew.bat ./gradlew.bat
+            mkdir -p gradle/wrapper
+            [ -f "/tmp/vnera_gradle/wrapper/gradle-wrapper.jar" ] && cp -f /tmp/vnera_gradle/wrapper/gradle-wrapper.jar gradle/wrapper/
+            if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ] && [ -f "/tmp/vnera_gradle/wrapper/gradle-wrapper.properties" ]; then
+              cp -f /tmp/vnera_gradle/wrapper/gradle-wrapper.properties gradle/wrapper/
+            fi
+          fi
+          if [ ! -f "gradlew" ]; then
+            gradle wrapper
+          fi
+          chmod +x ./gradlew
+
+          # 5. Επαναφορά εικονιδίων VNEra
           if [ -d "/tmp/vnera_res" ]; then
             cp -rf /tmp/vnera_res/mipmap* app/src/main/res/ 2>/dev/null || true
             if [ -d "/tmp/vnera_res/app/src/main/res" ]; then
@@ -219,6 +243,11 @@ jobs:
           for kt_name in ["LyricsScreen.kt", "PlayerScreen.kt"]:
               for kt_file in Path("app/src/main/java").rglob(kt_name):
                   src = kt_file.read_text()
+                  print(f"=== Inspecting {kt_file} ===")
+                  for idx, ln in enumerate(src.splitlines(), 1):
+                      if any(k in ln for k in ["onExpand", "onClose", "detectVerticalDragGestures", "verticalDrag", "LyricsCard", "showLyrics"]):
+                          print(f"  L{idx}: {ln.strip()}")
+
                   src_mod = re.sub(
                       r'if\s*\(\s*drag\s*>\s*([^)]+)\)\s*onExpand\(\)',
                       r'if (drag < -\1) onExpand()',
