@@ -1,4 +1,4 @@
- name: Build VNEra Debug APK
+name: Build VNEra Debug APK
 
 on:
   workflow_dispatch:
