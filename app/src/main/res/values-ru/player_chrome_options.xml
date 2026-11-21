@@ -5,4 +5,6 @@
     <string name="chrome_stats_detail">Кнопка статистики в правом нижнем углу плеера</string>
     <string name="chrome_canvas">Canvas без элементов управления</string>
     <string name="chrome_canvas_detail">Скрывать кнопки во время Canvas; коснитесь видео, чтобы вернуть их</string>
+    <string name="player_cover_fullscreen">Полноэкранная обложка</string>
+    <string name="player_cover_fullscreen_detail">Выключите, чтобы показывать обложку квадратной карточкой</string>
 </resources>

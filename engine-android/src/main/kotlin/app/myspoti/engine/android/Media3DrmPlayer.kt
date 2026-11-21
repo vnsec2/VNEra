@@ -244,10 +244,13 @@ class Media3DrmPlayer(
 
     private suspend fun loadNow(media: PlayableMedia, positionMs: Long, playWhenReady: Boolean, licence: LicenceChannel) {
         this.licence = licence
+        val item = items.getOrPut(uriOf(media)) { CdnItem(media, http, log) }
+        if (item.prefetchJob == null && item.peekInit() == null) {
+            item.prefetchJob = scope.async { item.prefetch() }
+        }
         ensureCertificate(licence)
         withContext(appDispatcher) { holdDrm() }
         withContext(appDispatcher) {
-            val item = items.getOrPut(uriOf(media)) { CdnItem(media, http, log) }
             val preloaded = preloads.containsKey(media.fileId)
             // Items neither current nor preloaded are dropped with their buffers.
             items.keys.retainAll(setOf(item.uri.toString()) + preloads.keys.mapNotNull { id -> items.values.firstOrNull { it.media.fileId == id }?.uri?.toString() })

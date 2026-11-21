@@ -81,19 +81,21 @@ fun QueueScreen(navController: NavController) {
     }
     var saveDialogOpen by remember { androidx.compose.runtime.mutableStateOf(false) }
     var activeMood by remember { androidx.compose.runtime.mutableStateOf<com.music.spotui.ui.components.QueueMood?>(null) }
+    var recProvider by remember { androidx.compose.runtime.mutableStateOf(com.music.spotui.ui.components.RecProviderPrefs.queue(context)) }
     var moodBusy by remember { androidx.compose.runtime.mutableStateOf(false) }
     val discoveryScope = androidx.compose.runtime.rememberCoroutineScope()
 
     if (saveDialogOpen) {
         val defaultName = SongPlayer.nowPlaying.value.contextName.ifBlank { stringResource(R.string.action_queue_label) }
-        NameDialog(
-            title = stringResource(R.string.save_queue_as_playlist),
-            initial = defaultName,
-            confirm = stringResource(R.string.create_playlist_create_button),
+        com.music.spotui.ui.components.SaveQueueDialog(
+            initialName = defaultName,
+            currentId = q.current?.spotifyTrackId,
+            queuedIds = q.queued.map { it.song.spotifyTrackId },
+            nextUpIds = q.nextUp.map { it.song.spotifyTrackId },
             onDismiss = { saveDialogOpen = false },
-        ) { name ->
+        ) { name, ids ->
             saveDialogOpen = false
-            com.music.spotui.data.api.SpotifySync.createPlaylistWithTracks(context, name, saveableTrackIds) { ok ->
+            com.music.spotui.data.api.SpotifySync.createPlaylistWithTracks(context, name, ids) { ok ->
                 val msg = context.getString(if (ok) R.string.save_queue_saved else R.string.save_queue_failed, name)
                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
             }
@@ -145,7 +147,7 @@ fun QueueScreen(navController: NavController) {
                         moodBusy = true
                         discoveryScope.launch {
                             try {
-                                com.music.spotui.ui.components.QueueDiscovery.surpriseMe(context)
+                                com.music.spotui.ui.components.QueueDiscovery.surpriseMe(context, recProvider)
                             } finally {
                                 moodBusy = false
                             }
@@ -167,6 +169,15 @@ fun QueueScreen(navController: NavController) {
                 )
             }
         }
+        com.music.spotui.ui.components.RecProviderChipRow(
+            selected = recProvider,
+            immersive = false,
+            onSelect = {
+                recProvider = it
+                com.music.spotui.ui.components.RecProviderPrefs.setQueue(context, it)
+            },
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+        )
         com.music.spotui.ui.components.QueueMoodChipStrip(
             activeMood = activeMood,
             busy = moodBusy,
@@ -176,7 +187,7 @@ fun QueueScreen(navController: NavController) {
                 moodBusy = true
                 discoveryScope.launch {
                     try {
-                        val added = com.music.spotui.ui.components.QueueDiscovery.reshapeQueue(context, mood)
+                        val added = com.music.spotui.ui.components.QueueDiscovery.reshapeQueue(context, mood, recProvider)
                         val msg = if (added > 0) context.getString(R.string.queue_mood_added, added, context.getString(mood.labelRes))
                         else context.getString(R.string.queue_mood_empty)
                         android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()

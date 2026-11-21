@@ -99,6 +99,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -993,20 +997,7 @@ fun InlineLyrics(
             .clip(RoundedCornerShape(12.dp))
             .background(palette.background)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onExpand() }
-            .pointerInput(onExpand) {
-                var drag = 0f
-                detectVerticalDragGestures(
-                    onVerticalDrag = { change, amount ->
-                        drag += amount
-                        change.consume()
-                    },
-                    onDragEnd = {
-                        if (drag > 72.dp.toPx()) onExpand()
-                        drag = 0f
-                    },
-                    onDragCancel = { drag = 0f },
-                )
-            }
+            .lyricsVerticalSwipe(threshold = 48.dp, direction = 1, onSwipe = onExpand)
             .padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -1068,6 +1059,30 @@ private fun CardIconButton(palette: LyricsPalette, description: String, icon: @C
             .background(Color.Black.copy(alpha = 0.25f))
             .clickable(onClick = onClick),
     ) { icon() }
+}
+
+
+private fun Modifier.lyricsVerticalSwipe(
+    threshold: androidx.compose.ui.unit.Dp,
+    direction: Int,
+    onSwipe: () -> Unit,
+): Modifier = pointerInput(threshold, direction, onSwipe) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var total = 0f
+        var fired = false
+        while (!fired) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            total += change.positionChangeIgnoreConsumed().y
+            if (total * direction >= threshold.toPx()) {
+                change.consume()
+                onSwipe()
+                fired = true
+            }
+            if (!change.pressed) break
+        }
+    }
 }
 
 /** The inline card's layout node, so the full screen can grow out of it and fold back into it. */

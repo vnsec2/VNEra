@@ -96,16 +96,25 @@ fun AddSongsScreen(page: ContextPageModel, onClose: (added: Boolean) -> Unit) {
     var results by remember { mutableStateOf<List<SongsModel>?>(null) }
     var suggestions by remember { mutableStateOf<List<SongsModel>?>(null) }
     var suggestionsRound by remember { mutableStateOf(0) }
+    var recProvider by remember { mutableStateOf(RecProviderPrefs.playlist(context)) }
     val seen = remember { HashSet<String>() }
     val focus = remember { FocusRequester() }
 
-    LaunchedEffect(suggestionsRound) {
+    LaunchedEffect(suggestionsRound, recProvider) {
         suggestions = null
         val skip = (inList + added + seen).map { "spotify:track:$it" }
         val got = withContext(Dispatchers.IO) {
-            runCatching { MyspotiRuntime.api.playlists.recommended(page.uri, limit = SUGGESTIONS, skip = skip) }
-                .getOrDefault(emptyList()).map(Graph.api::songOf)
-        }.filter { it.spotifyTrackId !in inList }
+            val spotifyGot = if (recProvider == RecProvider.SPOTIFY || recProvider == RecProvider.BOTH) {
+                runCatching { MyspotiRuntime.api.playlists.recommended(page.uri, limit = SUGGESTIONS, skip = skip) }
+                    .getOrDefault(emptyList()).map(Graph.api::songOf)
+            } else emptyList()
+            val ytmGot = if (recProvider == RecProvider.YTMUSIC || recProvider == RecProvider.BOTH) {
+                val artists = QueueDiscovery.dominantArtists(page.tracks.map { it.singer }, limit = 2)
+                val q = if (artists.isNotEmpty()) "${artists.joinToString(" ")} mix" else page.name
+                QueueDiscovery.recommendTracks(q, RecProvider.YTMUSIC, limit = SUGGESTIONS).map(Graph.api::songOf)
+            } else emptyList()
+            (spotifyGot + ytmGot).distinctBy { it.spotifyTrackId }
+        }.filter { it.spotifyTrackId.isNotBlank() && it.spotifyTrackId !in inList }
         got.forEach { seen += it.spotifyTrackId }
         suggestions = got
     }
@@ -151,11 +160,22 @@ fun AddSongsScreen(page: ContextPageModel, onClose: (added: Boolean) -> Unit) {
             val list = if (searching) results else suggestions
             LazyColumn(Modifier.weight(1f).padding(top = 8.dp)) {
                 if (!searching) item(key = "suggestions-title") {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp)) {
-                        Text(stringResource(R.string.recommended_songs), color = AppText, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { suggestionsRound++ }) {
-                            Text(stringResource(R.string.recommended_songs_refresh), color = AppText, fontWeight = FontWeight.Bold)
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp)) {
+                            Text(stringResource(R.string.recommended_songs), color = AppText, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { suggestionsRound++ }) {
+                                Text(stringResource(R.string.recommended_songs_refresh), color = AppText, fontWeight = FontWeight.Bold)
+                            }
                         }
+                        RecProviderChipRow(
+                            selected = recProvider,
+                            immersive = false,
+                            onSelect = {
+                                recProvider = it
+                                RecProviderPrefs.setPlaylist(context, it)
+                            },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
                     }
                 }
                 when {

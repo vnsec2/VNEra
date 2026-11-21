@@ -103,6 +103,8 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
@@ -707,7 +709,9 @@ fun ImmersivePlayer(
                 sidePane = sidePane,
             ) else {
                 val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-                val heroMode = !window.large
+                // The contained style shares the large-window square layout, while full screen
+                // keeps the current phone-first artwork treatment.
+                val heroMode = !window.large && com.music.spotui.data.preferences.ImmersivePlayerCoverPref.fullScreen
                 Box(Modifier.fillMaxSize()) {
                 Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 Box(Modifier.fillMaxWidth().zIndex(2f)) {
@@ -1018,10 +1022,10 @@ private fun Modifier.lyricsExpandGesture(
         var total = 0f
         var triggered = false
         while (!triggered) {
-            val event = awaitPointerEvent()
+            val event = awaitPointerEvent(PointerEventPass.Initial)
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            total += change.positionChange().y
-            val threshold = 76.dp.toPx()
+            total += change.positionChangeIgnoreConsumed().y
+            val threshold = 48.dp.toPx()
             if (total >= threshold) {
                 change.consume()
                 onExpand()
@@ -1106,13 +1110,82 @@ private fun PlayerBackdrop(
                     scaleX = 1.35f
                     scaleY = -1.35f
                     alpha = 0.44f
-                }
-                .blur(76.dp),
-            requestBuilderTransform = { it.override(256) },
+                },
+            requestBuilderTransform = { it.override(96).transform(BackdropBlurTransformation) },
         )
     }
     if (portrait) {
         Box(Modifier.fillMaxSize().background(PortraitBackdropShade))
+    }
+}
+
+private object BackdropBlurTransformation : com.bumptech.glide.load.resource.bitmap.BitmapTransformation() {
+    private val ID_BYTES = "revera.backdrop.blur.v1".toByteArray(Charsets.UTF_8)
+
+    override fun updateDiskCacheKey(messageDigest: java.security.MessageDigest) {
+        messageDigest.update(ID_BYTES)
+    }
+
+    override fun equals(other: Any?): Boolean = other === this
+    override fun hashCode(): Int = ID_BYTES.contentHashCode()
+
+    override fun transform(
+        pool: com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool,
+        toTransform: android.graphics.Bitmap,
+        outWidth: Int,
+        outHeight: Int,
+    ): android.graphics.Bitmap {
+        val w = toTransform.width.coerceAtLeast(1)
+        val h = toTransform.height.coerceAtLeast(1)
+        val out = pool.get(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val src = if (toTransform.config == android.graphics.Bitmap.Config.ARGB_8888) toTransform
+        else toTransform.copy(android.graphics.Bitmap.Config.ARGB_8888, false)
+        val a = IntArray(w * h)
+        val b = IntArray(w * h)
+        src.getPixels(a, 0, w, 0, 0, w, h)
+        if (src !== toTransform) src.recycle()
+        boxBlur(a, b, w, h, radius = 10)
+        boxBlur(b, a, w, h, radius = 10)
+        out.setPixels(a, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    private fun boxBlur(src: IntArray, dst: IntArray, w: Int, h: Int, radius: Int) {
+        val tmp = IntArray(w * h)
+        val div = radius * 2 + 1
+        for (y in 0 until h) {
+            val row = y * w
+            var sa = 0; var sr = 0; var sg = 0; var sb = 0
+            for (k in -radius..radius) {
+                val c = src[row + k.coerceIn(0, w - 1)]
+                sa += (c ushr 24) and 0xff; sr += (c ushr 16) and 0xff; sg += (c ushr 8) and 0xff; sb += c and 0xff
+            }
+            for (x in 0 until w) {
+                tmp[row + x] = ((sa / div) shl 24) or ((sr / div) shl 16) or ((sg / div) shl 8) or (sb / div)
+                val outC = src[row + (x - radius).coerceIn(0, w - 1)]
+                val inC = src[row + (x + radius + 1).coerceIn(0, w - 1)]
+                sa += ((inC ushr 24) and 0xff) - ((outC ushr 24) and 0xff)
+                sr += ((inC ushr 16) and 0xff) - ((outC ushr 16) and 0xff)
+                sg += ((inC ushr 8) and 0xff) - ((outC ushr 8) and 0xff)
+                sb += (inC and 0xff) - (outC and 0xff)
+            }
+        }
+        for (x in 0 until w) {
+            var sa = 0; var sr = 0; var sg = 0; var sb = 0
+            for (k in -radius..radius) {
+                val c = tmp[k.coerceIn(0, h - 1) * w + x]
+                sa += (c ushr 24) and 0xff; sr += (c ushr 16) and 0xff; sg += (c ushr 8) and 0xff; sb += c and 0xff
+            }
+            for (y in 0 until h) {
+                dst[y * w + x] = ((sa / div) shl 24) or ((sr / div) shl 16) or ((sg / div) shl 8) or (sb / div)
+                val outC = tmp[(y - radius).coerceIn(0, h - 1) * w + x]
+                val inC = tmp[(y + radius + 1).coerceIn(0, h - 1) * w + x]
+                sa += ((inC ushr 24) and 0xff) - ((outC ushr 24) and 0xff)
+                sr += ((inC ushr 16) and 0xff) - ((outC ushr 16) and 0xff)
+                sg += ((inC ushr 8) and 0xff) - ((outC ushr 8) and 0xff)
+                sb += (inC and 0xff) - (outC and 0xff)
+            }
+        }
     }
 }
 
