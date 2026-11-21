@@ -40,6 +40,7 @@ jobs:
             cd ..
           fi
           cp -f "_keystore_repo/.github/vnera-debug.keystore" "$HOME/.android/debug.keystore"
+          cp -f "_keystore_repo/.github/vnera-debug.keystore" "/tmp/vnera-debug.keystore"
 
       - name: Checkout source-review
         uses: actions/checkout@v4
@@ -174,9 +175,13 @@ jobs:
           find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" ! -name "_keystore_repo" -exec rm -rf {} +
           tar --exclude='.git' -cf - -C /tmp/merge_repo . | tar -xf - -C .
 
-          # Αντιγραφή του μόνιμου keystore μέσα στο app/ ώστε το Gradle να υπογράφει ΠΑΝΤΑ με το ίδιο κλειδί
+          # Αντιγραφή του μόνιμου keystore μέσα στο app/ από το /tmp (που δεν σβήνεται από το checkout)
           mkdir -p app
-          cp -f "_keystore_repo/.github/vnera-debug.keystore" "app/vnera-debug.keystore"
+          if [ -f "/tmp/vnera-debug.keystore" ]; then
+            cp -f "/tmp/vnera-debug.keystore" "app/vnera-debug.keystore"
+          else
+            cp -f "$HOME/.android/debug.keystore" "app/vnera-debug.keystore"
+          fi
 
           # 6. Επαναφορά Gradle wrapper & εικονιδίων VNEra
           if [ ! -f "gradlew" ] && [ -f "/tmp/vnera_gradle/gradlew" ]; then
@@ -228,7 +233,7 @@ jobs:
           export BUILD_VERSION_CODE=$((214000 + RUN_NUM))
           echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
 
-          # Δημιουργία αυτόνομου VnFrameRateManager.kt (FPS + Lyrics Fullscreen Immersive + Backup/Clipboard Helpers)
+          # Δημιουργία αυτόνομου VnFrameRateManager.kt (FPS + Lyrics Fullscreen Immersive + Full Backup/Clipboard Helpers)
           mkdir -p app/src/main/java/com/music/spotui/ui/screens
           cat <<'EOF' > app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
           package com.music.spotui.ui.screens
@@ -257,7 +262,6 @@ jobs:
           import androidx.compose.foundation.layout.padding
           import androidx.compose.foundation.rememberScrollState
           import androidx.compose.material3.FilterChip
-          import androidx.compose.material3.HorizontalDivider
           import androidx.compose.material3.MaterialTheme
           import androidx.compose.material3.OutlinedButton
           import androidx.compose.material3.Surface
@@ -307,18 +311,14 @@ jobs:
               var cachedExtensionsText by mutableStateOf("")
                   private set
 
-              private var initialized = false
-
               fun init(context: Context) {
                   val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                   targetFps = prefs.getInt(KEY_TARGET_FPS, 0)
                   lyricsImmersiveEnabled = prefs.getBoolean(KEY_LYRICS_IMMERSIVE, true)
                   cachedExtensionsText = prefs.getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
-                  initialized = true
               }
 
               fun reload(context: Context) {
-                  initialized = false
                   init(context)
                   context.findActivity()?.let { applyWindowFrameRate(it, targetFps, forceReset = true) }
               }
@@ -359,6 +359,136 @@ jobs:
                   setSystemBarsHidden(activity, !lyricsBarsHidden)
               }
 
+              /**
+               * Εξάγει όλα τα SharedPreferences αρχεία της εφαρμογής (ώστε να περιλαμβάνονται
+               * ρυθμίσεις όπως Απόκρυψη DJ, FPS, Lyrics Immersive Mode κ.λπ.).
+               */
+              fun exportAllPrefsJson(context: Context): JSONObject {
+                  val allFilesObj = JSONObject()
+                  val prefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
+                  prefsDir.listFiles()?.forEach { file ->
+                      if (file.name.endsWith(".xml")) {
+                          val spName = file.name.removeSuffix(".xml")
+                          val sp = context.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE)
+                          val entriesObj = JSONObject()
+                          sp.all.forEach { (k, v) ->
+                              when (v) {
+                                  is Boolean -> entriesObj.put(k, JSONObject().put("t", "b").put("v", v))
+                                  is Int -> entriesObj.put(k, JSONObject().put("t", "i").put("v", v))
+                                  is Long -> entriesObj.put(k, JSONObject().put("t", "l").put("v", v))
+                                  is Float -> entriesObj.put(k, JSONObject().put("t", "f").put("v", v.toDouble()))
+                                  is String -> entriesObj.put(k, JSONObject().put("t", "s").put("v", v))
+                                  is Set<*> -> {
+                                      val arr = JSONArray()
+                                      v.forEach { item -> if (item != null) arr.put(item.toString()) }
+                                      entriesObj.put(k, JSONObject().put("t", "set").put("v", arr))
+                                  }
+                              }
+                          }
+                          allFilesObj.put(spName, entriesObj)
+                      }
+                  }
+                  return allFilesObj
+              }
+
+              fun enrichBackupJson(context: Context, jsonStr: String): String {
+                  return try {
+                      val obj = JSONObject(jsonStr)
+                      obj.put("__vnera_all_prefs__", exportAllPrefsJson(context))
+                      val enriched = obj.toString(2)
+                      recordBackupAndExtractExtensions(context, enriched)
+                      enriched
+                  } catch (_: Exception) {
+                      recordBackupAndExtractExtensions(context, jsonStr)
+                      jsonStr
+                  }
+              }
+
+              fun onBackupImported(context: Context, rawText: String): String {
+                  recordBackupAndExtractExtensions(context, rawText)
+                  try {
+                      val root = JSONObject(rawText)
+                      val allPrefs = root.optJSONObject("__vnera_all_prefs__")
+                      if (allPrefs != null) {
+                          val fileKeys = allPrefs.keys()
+                          while (fileKeys.hasNext()) {
+                              val spName = fileKeys.next()
+                              val entries = allPrefs.optJSONObject(spName) ?: continue
+                              val sp = context.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE)
+                              val editor = sp.edit()
+                              val kIter = entries.keys()
+                              while (kIter.hasNext()) {
+                                  val k = kIter.next()
+                                  if (k == KEY_LAST_BACKUP_JSON || k == KEY_LAST_BACKUP_EXTENSIONS) continue
+                                  val item = entries.optJSONObject(k) ?: continue
+                                  when (item.optString("t")) {
+                                      "b" -> editor.putBoolean(k, item.optBoolean("v"))
+                                      "i" -> editor.putInt(k, item.optInt("v"))
+                                      "l" -> editor.putLong(k, item.optLong("v"))
+                                      "f" -> editor.putFloat(k, item.optDouble("v").toFloat())
+                                      "s" -> editor.putString(k, item.optString("v"))
+                                      "set" -> {
+                                          val arr = item.optJSONArray("v")
+                                          val set = LinkedHashSet<String>()
+                                          if (arr != null) {
+                                              for (idx in 0 until arr.length()) {
+                                                  set.add(arr.optString(idx))
+                                              }
+                                          }
+                                          editor.putStringSet(k, set)
+                                      }
+                                  }
+                              }
+                              editor.commit()
+                          }
+                      } else {
+                          // Fallback για παλαιότερα backups: συγχρονισμός matching keys σε όλα τα shared_prefs
+                          val prefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
+                          prefsDir.listFiles()?.forEach { file ->
+                              if (file.name.endsWith(".xml")) {
+                                  val spName = file.name.removeSuffix(".xml")
+                                  val sp = context.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE)
+                                  val existing = sp.all
+                                  val editor = sp.edit()
+                                  var modified = false
+                                  val kIter = root.keys()
+                                  while (kIter.hasNext()) {
+                                      val k = kIter.next()
+                                      if (existing.containsKey(k)) {
+                                          when (val cur = existing[k]) {
+                                              is Boolean -> {
+                                                  editor.putBoolean(k, root.optBoolean(k, cur))
+                                                  modified = true
+                                              }
+                                              is Int -> {
+                                                  editor.putInt(k, root.optInt(k, cur))
+                                                  modified = true
+                                              }
+                                              is Long -> {
+                                                  editor.putLong(k, root.optLong(k, cur))
+                                                  modified = true
+                                              }
+                                              is Float -> {
+                                                  editor.putFloat(k, root.optDouble(k, cur.toDouble()).toFloat())
+                                                  modified = true
+                                              }
+                                              is String -> {
+                                                  editor.putString(k, root.optString(k, cur))
+                                                  modified = true
+                                              }
+                                          }
+                                      }
+                                  }
+                                  if (modified) editor.commit()
+                              }
+                          }
+                      }
+                  } catch (_: Exception) {
+                  }
+                  reload(context)
+                  return rawText
+              }
+
               fun recordBackupAndExtractExtensions(context: Context, rawBackupText: String) {
                   val extracted = extractExtensionsFromBackup(rawBackupText)
                   cachedExtensionsText = extracted
@@ -367,7 +497,7 @@ jobs:
                       .edit()
                       .putString(KEY_LAST_BACKUP_JSON, rawBackupText)
                       .putString(KEY_LAST_BACKUP_EXTENSIONS, extracted)
-                      .apply()
+                      .commit()
               }
 
               fun extractExtensionsFromBackup(rawBackupText: String): String {
@@ -392,7 +522,11 @@ jobs:
                                               }
                                           }
                                           is JSONObject -> {
-                                              if (v.length() > 0) found.add(v.toString(2))
+                                              if (v.length() > 0 && !v.has("t")) {
+                                                  found.add(v.toString(2))
+                                              } else if (v.has("v")) {
+                                                  scanJson(v.opt("v"), k)
+                                              }
                                           }
                                           else -> {
                                               val s = v?.toString()?.trim().orEmpty()
@@ -457,7 +591,6 @@ jobs:
                       }
                   }
                   if (text.isBlank()) {
-                      // Fallback: έλεγχος στα τρέχοντα SharedPreferences για αποθηκευμένα extensions
                       val prefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
                       val collected = LinkedHashSet<String>()
                       prefsDir.listFiles()?.forEach { file ->
@@ -552,9 +685,6 @@ jobs:
               window.decorView.postInvalidateOnAnimation()
           }
 
-          /**
-           * Διαχειρίζεται αυτόματα το Immersive Fullscreen mode όσο είσαι στα Fullscreen Lyrics.
-           */
           @Composable
           fun VnLyricsFullscreenEffect() {
               val context = LocalContext.current
@@ -607,8 +737,6 @@ jobs:
                           }
                       },
                       onDragEnd = {
-                          // Μόνο έντονο σύρσιμο από πάνω προς τα κάτω στη μέση κλείνει.
-                          // Το κάτω προς τα πάνω (dragY < 0) ΔΕΝ βγαίνει ποτέ!
                           if (startedInCenter && dragY > 130.dp.toPx()) {
                               onClose()
                           }
@@ -671,7 +799,6 @@ jobs:
                   }
               }
 
-              // Watchdog: επαναφέρει αυτόματα τα Hz αν το Android ARR κλειδώσει στα 30 FPS
               LaunchedEffect(activity, selectedFps) {
                   val act = activity ?: return@LaunchedEffect
                   while (true) {
@@ -765,7 +892,7 @@ jobs:
                           }
                       }
 
-                      HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                      Spacer(modifier = Modifier.height(14.dp))
 
                       Row(
                           modifier = Modifier.fillMaxWidth(),
@@ -970,47 +1097,55 @@ jobs:
               src = lyrics_file.read_text()
               src_mod = src
 
-              # Διόρθωση ανάποδης φοράς αν υπάρχει: κάτω->πάνω (drag < 0) = expand/scroll, πάνω->κάτω (drag > 0) = close
               src_mod = re.sub(r'if\s*\(\s*drag\s*>\s*([^)]+)\)\s*onExpand\(\)', r'if (drag < -\1) onExpand()', src_mod)
               src_mod = re.sub(r'if\s*\(\s*drag\s*<\s*-\s*([^)]+)\)\s*onClose\(\)', r'if (drag > \1) onClose()', src_mod)
-              # Μείωση ευαισθησίας (48/64/76.dp -> 130.dp) ώστε να μην βγαίνει κατά λάθος
               src_mod = re.sub(r'\b(?:48|56|64|72|76|80)\.dp\.toPx\(\)', '130.dp.toPx()', src_mod)
 
-              # Εισαγωγή VnLyricsFullscreenEffect() στην αρχή της Fullscreen Lyrics composable (όπου υπάρχει onClose: () -> Unit)
+              # Εισαγωγή VnLyricsFullscreenEffect() & vnLyricsActivity στην αρχή της Fullscreen Lyrics composable
               if "VnLyricsFullscreenEffect" not in src_mod:
                   src_mod, n_eff = re.subn(
                       r'(?ms)(@Composable\s+(?:internal\s+|private\s+|public\s+)?fun\s+[A-Za-z0-9_]+\s*\([^)]*\bonClose\s*:\s*\(\)\s*->\s*Unit[^)]*\)\s*\{)',
-                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()',
+                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n    val vnLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()',
                       src_mod,
                       count=1,
                   )
                   if n_eff > 0:
                       print("Hooked VnLyricsFullscreenEffect into LyricsScreen.kt")
 
-              # Προσθήκη vnLyricsCenterGestures στο root container των fullscreen lyrics (`.fillMaxSize()`)
-              if "vnLyricsCenterGestures" not in src_mod:
+              # Προσθήκη vnLyricsCenterGestures στο root container των fullscreen lyrics (μόνο μέσα στο σώμα της συνάρτησης)
+              if "vnLyricsCenterGestures" not in src_mod and "vnLyricsActivity" in src_mod:
                   lines = src_mod.splitlines(keepends=True)
                   in_fs_lyrics = False
+                  seen_body_brace = False
                   brace_depth = 0
                   hooked_gestures = False
                   for i, line in enumerate(lines):
                       if not in_fs_lyrics and re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', line):
-                          # Έλεγχος στις επόμενες 12 γραμμές αν η συνάρτηση δέχεται `onClose: () -> Unit`
                           sig_block = "".join(lines[i:min(i + 15, len(lines))])
                           if re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit', sig_block):
                               in_fs_lyrics = True
+                              seen_body_brace = False
                               brace_depth = 0
                       if in_fs_lyrics:
+                          if "{" in line:
+                              seen_body_brace = True
                           brace_depth += line.count("{") - line.count("}")
-                          if ".fillMaxSize()" in line and not hooked_gestures:
+                          if seen_body_brace and ".fillMaxSize()" in line and not hooked_gestures:
                               line = line.replace(
                                   ".fillMaxSize()",
-                                  ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(androidx.compose.ui.platform.LocalContext.current.findActivity(), onClose))",
+                                  ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnLyricsActivity, onClose))",
                                   1,
                               )
                               lines[i] = line
                               hooked_gestures = True
-                          if brace_depth <= 0 and "}" in line:
+                          # Αποτροπή background tap-to-close στα fullscreen lyrics: το tap κάνει toggle fullscreen system bars
+                          if seen_body_brace and "indication = null" in line and "onClick = onClose" in line:
+                              line = line.replace(
+                                  "onClick = onClose",
+                                  "onClick = { com.music.spotui.ui.screens.VnFpsPref.toggleSystemBars(vnLyricsActivity) }",
+                              )
+                              lines[i] = line
+                          if seen_body_brace and brace_depth <= 0:
                               in_fs_lyrics = False
                   if hooked_gestures:
                       src_mod = "import com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnLyricsCenterGestures\n" + "".join(lines)
@@ -1019,25 +1154,26 @@ jobs:
               if src_mod != src:
                   lyrics_file.write_text(src_mod)
 
-          # Υποστήριξη Immersive toggle & ελεύθερων άκρων και στο ImmersiveLyricsPanel.kt (αν χρησιμοποιείται)
+          # Υποστήριξη Immersive toggle & ελεύθερων άκρων και στο ImmersiveLyricsPanel.kt
           imm_lyrics = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
           if imm_lyrics.exists():
               ilt = imm_lyrics.read_text()
               if "vnLyricsCenterGestures" not in ilt and ".fillMaxSize()" in ilt:
-                  ilt = "import com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnLyricsCenterGestures\n" + ilt
-                  ilt = re.sub(
+                  ilt_new, n_imm = re.subn(
                       r'(@Composable\s+(?:internal\s+|private\s+|public\s+)?fun\s+ImmersiveLyricsPanel\b[^{]*\{)',
-                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()',
+                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()',
                       ilt,
                       count=1,
                   )
-                  ilt = ilt.replace(
-                      ".fillMaxSize()",
-                      ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(androidx.compose.ui.platform.LocalContext.current.findActivity(), null))",
-                      1,
-                  )
-                  imm_lyrics.write_text(ilt)
-                  print("Hooked VnLyricsFullscreenEffect & vnLyricsCenterGestures into ImmersiveLyricsPanel.kt")
+                  if n_imm > 0:
+                      ilt_new = "import com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnLyricsCenterGestures\n" + ilt_new
+                      ilt_new = ilt_new.replace(
+                          ".fillMaxSize()",
+                          ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnImmLyricsActivity, null))",
+                          1,
+                      )
+                      imm_lyrics.write_text(ilt_new)
+                      print("Hooked VnLyricsFullscreenEffect & vnLyricsCenterGestures into ImmersiveLyricsPanel.kt")
 
           # 8. Immersive Player fix
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
@@ -1053,31 +1189,36 @@ jobs:
               p2.write_text(s)
 
           # 9. Βελτίωση VnSettingsBackup.kt:
-          #    - Εξαγωγή/Restore ΟΛΩΝ των SharedPreferences αρχείων (ώστε να πιάνει και Απόκρυψη DJ κ.λπ.)
+          #    - Εξαγωγή & Restore ΟΛΩΝ των SharedPreferences αρχείων (Απόκρυψη DJ κ.λπ.)
           #    - Αποθήκευση τελευταίου backup για αντιγραφή Extensions στο Clipboard
-          #    - Reload προτιμήσεων + recreate Activity μετά το restore ώστε οι αλλαγές να φαίνονται αμέσως
+          #    - Reload προτιμήσεων + recreate Activity μετά το restore
           backup_file = Path("app/src/main/java/com/music/spotui/ui/screens/VnSettingsBackup.kt")
           if backup_file.exists():
               bt = backup_file.read_text()
               bt_mod = bt
 
-              # Καταγραφή του raw JSON string όταν γίνεται import ή export
-              if "recordBackupAndExtractExtensions" not in bt_mod:
+              if "onBackupImported" not in bt_mod:
                   bt_mod = re.sub(
-                      r'(JSONObject\(\s*([A-Za-z0-9_]+)\s*\))',
-                      r'JSONObject(\2.also { com.music.spotui.ui.screens.VnFpsPref.recordBackupAndExtractExtensions(context, it) })',
+                      r'\bJSONObject\(\s*([A-Za-z0-9_]+)\s*\)',
+                      r'JSONObject(com.music.spotui.ui.screens.VnFpsPref.onBackupImported(context, \1))',
                       bt_mod,
                       count=1,
                   )
 
-              # Μετά από επιτυχές restore (commit/apply), reload VnFpsPref & recreate activity για άμεση εφαρμογή (π.χ. Απόκρυψη DJ)
+              if "enrichBackupJson" not in bt_mod:
+                  bt_mod = re.sub(
+                      r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)?\s*\))',
+                      r'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson(context, \1)',
+                      bt_mod,
+                      count=1,
+                  )
+
               if "VnFpsPref.reload" not in bt_mod:
                   bt_mod = re.sub(
                       r'(\.(?:commit|apply)\(\))',
                       r'\1; com.music.spotui.ui.screens.VnFpsPref.reload(context)',
                       bt_mod,
                   )
-                  # Αν υπάρχει Toast επιτυχούς επαναφοράς/restore, κάνε recreate τη δραστηριότητα αμέσως μετά
                   bt_mod = re.sub(
                       r'(Toast\.makeText\([^;]+(?:επαναφ|restore|εισαγ|import|φορτ)[^;]+\)\.show\(\))',
                       r'\1; (context as? android.app.Activity)?.recreate()',
@@ -1085,18 +1226,11 @@ jobs:
                       flags=re.IGNORECASE,
                   )
 
-              # Προσθήκη του κουμπιού "Αντιγραφή Extensions στο Clipboard" κάτω από τα κουμπιά του Backup Card
               if "VnCopyBackupExtensionsButton" not in bt_mod:
-                  # Βρες το τέλος του Column μέσα στο κύριο Composable του VnSettingsBackup.kt
                   lines = bt_mod.splitlines(keepends=True)
-                  for idx in range(len(lines) - 1, -1, -1):
-                      if "Toast.makeText" in lines[idx] or "rememberLauncherForActivityResult" in lines[idx]:
-                          break
-                  # Εισαγωγή πριν το κλείσιμο του τελευταίου Column/Card στο file
                   inserted = False
                   for idx in range(len(lines) - 1, -1, -1):
                       if re.match(r'^\s*\}\s*$', lines[idx]) and idx > 15:
-                          # Ψάξε λίγο πιο πάνω για κλείσιμο Row ή OutlinedButton/Button
                           prev_block = "".join(lines[max(0, idx - 8):idx])
                           if "Button" in prev_block or "Row" in prev_block:
                               indent = re.match(r'^(\s*)', lines[idx]).group(1)
