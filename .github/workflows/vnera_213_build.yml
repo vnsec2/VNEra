@@ -22,35 +22,24 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install SDK 37.0 & Fix Versions & Apply Patches
+      - name: Link SDK 37 & Fix Versions & Apply Patches
         shell: bash
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          SDK_MGR=$(find "$SDK_ROOT" -name "sdkmanager" -type f 2>/dev/null | head -n 1 || true)
 
           SUDO=""
-          if command -v sudo >/dev/null 2>&1 && [ ! -w "$SDK_ROOT" ]; then
+          if command -v sudo >/dev/null 2>&1 && [ ! -w "$SDK_ROOT/platforms" ]; then
             SUDO="sudo"
-          fi
-
-          if [ ! -d "$SDK_ROOT/platforms/android-37" ] && [ ! -d "$SDK_ROOT/platforms/android-37.0" ]; then
-            if [ -n "$SDK_MGR" ]; then
-              yes | $SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
-              $SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" "platforms;android-37.0" "build-tools;37.0.0" || \
-              $SUDO "$SDK_MGR" --sdk_root="$SDK_ROOT" "platforms;android-37" "build-tools;36.0.0" || true
-            fi
           fi
 
           if [ -d "$SDK_ROOT/platforms/android-37.0" ] && [ ! -e "$SDK_ROOT/platforms/android-37" ]; then
             $SUDO ln -sfn "$SDK_ROOT/platforms/android-37.0" "$SDK_ROOT/platforms/android-37"
           fi
 
-          ls -la "$SDK_ROOT/platforms" || true
-
-          HAS_SDK_37="false"
+          export HAS_SDK_37="false"
           if [ -d "$SDK_ROOT/platforms/android-37" ]; then
-            HAS_SDK_37="true"
+            export HAS_SDK_37="true"
           fi
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
 
@@ -61,17 +50,17 @@ jobs:
 
           has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
           print(f"HAS_SDK_37 = {has_sdk_37}")
-          target_agp = '9.2.0' if has_sdk_37 else '8.7.2'
+          target_agp = '9.1.0' if has_sdk_37 else '8.7.2'
 
-          # 1. Διόρθωση εκδόσεων Kotlin (2.2.20) & AGP (9.2.0)
-          for toml_path in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
-              if toml_path.exists():
-                  t = toml_path.read_text()
+          # 1. Διόρθωση εκδόσεων Kotlin (2.2.20) & AGP (9.1.0)
+          for cfg_path in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
+              if cfg_path.exists():
+                  t = cfg_path.read_text()
                   t = t.replace('2.4.10', '2.2.20').replace('2.4.21', '2.2.20')
                   t = t.replace('9.4.1', target_agp)
                   if not has_sdk_37:
                       t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', r'\g<1> = "35"', t)
-                  toml_path.write_text(t)
+                  cfg_path.write_text(t)
 
           # 2. Ρύθμιση compileSdk / targetSdk μόνο αν λείπει το SDK 37
           if not has_sdk_37:
