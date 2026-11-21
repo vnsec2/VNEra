@@ -66,10 +66,10 @@ jobs:
             find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
           fi
 
-          # Αντιγραφή του τρέχοντος VNEra tree
-          tar --exclude='.git' --exclude='.github' --exclude='_keystore_repo' -cf - . | tar -xf - -C /tmp/vnera_custom
+          # Αντιγραφή του τρέχοντος VNEra tree (χωρίς μεγάλα archives)
+          tar --exclude='.git' --exclude='.github' --exclude='_keystore_repo' --exclude='*.zip' -cf - . | tar -xf - -C /tmp/vnera_custom
 
-          # 2. Λήψη Revera 1.0.8 (και ιστορικού tags για εντοπισμό του παλιού base)
+          # 2. Λήψη Revera 1.0.8 και ιστορικού upstream για ακριβή εντοπισμό του παλιού base
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
@@ -82,67 +82,73 @@ jobs:
           NEW_BASE_ROOT=$(dirname "$GRADLE_SETTINGS")
           echo "Revera 1.0.8 Gradle root: $NEW_BASE_ROOT"
 
-          # 3. Εντοπισμός παλιού base commit/tag ώστε να εξαχθούν καθαρά ΜΟΝΟ οι δικές σου αλλαγές
-          MERGE_BASE=$(git merge-base HEAD refs/tags/v1.0.8 2>/dev/null || true)
-          if [ -n "$MERGE_BASE" ]; then
-            echo "Found shared git merge-base: $MERGE_BASE"
-            git archive "$MERGE_BASE" | tar -x -C /tmp/revera_old
-            OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
-            OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
-          else
-            ROOT_COMMIT=$(git rev-list --max-parents=0 HEAD | tail -n 1)
-            mkdir -p /tmp/vnera_root
-            git archive "$ROOT_COMMIT" | tar -x -C /tmp/vnera_root
-
-            BEST_TAG=$(python3 <<'PY'
+          # 3. Εντοπισμός του ακριβούς commit/tag της Revera από το οποίο ξεκίνησε το work/source-review
+          python3 <<'PY'
+          import shutil
           import subprocess
           from pathlib import Path
 
-          root_files = {
-              str(p.relative_to("/tmp/vnera_root")): p.read_bytes()
-              for p in Path("/tmp/vnera_root").rglob("*")
-              if p.is_file() and ".git" not in p.parts and ".github" not in p.parts
+          exts = {".kt", ".kts", ".xml", ".toml", ".properties", ".pro"}
+          vnera_files = {
+              str(p.relative_to("/tmp/vnera_custom")): p.read_bytes()
+              for p in Path("/tmp/vnera_custom").rglob("*")
+              if p.is_file() and p.suffix in exts and ".git" not in p.parts and ".github" not in p.parts
           }
+          print(f"Comparing {len(vnera_files)} VNEra source files against upstream Revera revisions...")
 
+          candidates = []
           tags = subprocess.check_output(["git", "tag", "-l", "v1.0.*"], text=True).splitlines()
-          tags = [t for t in tags if t != "v1.0.8"]
-          best_tag = "v1.0.7"
+          for t in sorted(tags):
+              if t != "v1.0.8":
+                  candidates.append((t, f"refs/tags/{t}"))
+
+          # Έλεγχος και στα commits μεταξύ v1.0.6 και v1.0.8 μήπως το fork έγινε ενδιάμεσα
+          if "v1.0.6" in tags:
+              commits = subprocess.check_output(
+                  ["git", "rev-list", "--first-parent", "refs/tags/v1.0.6..refs/tags/v1.0.8^"],
+                  text=True,
+              ).splitlines()
+              for idx, c in enumerate(commits[:25]):
+                  candidates.append((f"commit-{c[:8]}", c))
+
+          best_label = "v1.0.7"
+          best_ref = "refs/tags/v1.0.7"
           best_score = -1
 
-          for tag in sorted(tags):
-              tmp_dir = Path(f"/tmp/tag_chk_{tag}")
+          for label, ref in candidates:
+              tmp_dir = Path("/tmp/rev_cand")
+              if tmp_dir.exists():
+                  shutil.rmtree(tmp_dir)
               tmp_dir.mkdir(parents=True, exist_ok=True)
-              subprocess.run(f"git archive refs/tags/{tag} | tar -x -C {tmp_dir}", shell=True, check=True)
+              subprocess.run(f"git archive {ref} | tar -x -C {tmp_dir}", shell=True, check=True)
               base_dir = tmp_dir / "base" if (tmp_dir / "base").exists() else tmp_dir
               matches = 0
-              for rel, data in root_files.items():
+              for rel, data in vnera_files.items():
                   cand = base_dir / rel
                   if cand.exists() and cand.read_bytes() == data:
                       matches += 1
-              print(f"Tag {tag}: {matches}/{len(root_files)} matching files")
+              print(f"Candidate {label}: {matches}/{len(vnera_files)} matching files")
               if matches > best_score:
                   best_score = matches
-                  best_tag = tag
+                  best_label = label
+                  best_ref = ref
 
-          print(f"SELECTED_BASE_TAG={best_tag}")
-          Path("/tmp/best_base_tag.txt").write_text(best_tag)
+          print(f"SELECTED_OLD_BASE={best_label} ({best_score}/{len(vnera_files)} files matched)")
+          Path("/tmp/best_base_ref.txt").write_text(best_ref)
           PY
-            )
-            echo "$BEST_TAG"
-            SELECTED_TAG=$(cat /tmp/best_base_tag.txt)
-            echo "Using $SELECTED_TAG as old Revera base"
-            git archive "refs/tags/$SELECTED_TAG" | tar -x -C /tmp/revera_old
-            OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
-            OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
-          fi
 
-          # 4. 3-Way Git Merge: Εφαρμογή των δικών σου αλλαγών πάνω στη Revera 1.0.8
+          SELECTED_REF=$(cat /tmp/best_base_ref.txt)
+          git archive "$SELECTED_REF" | tar -x -C /tmp/revera_old
+          OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
+          OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
+
+          # 4. 3-Way Git Merge: Εφαρμογή ΜΟΝΟ των δικών σου αλλαγών πάνω στη Revera 1.0.8
           git init /tmp/merge_repo
           cd /tmp/merge_repo
           git config user.name "VNEra Merge Bot"
           git config user.email "bot@vnera.local"
 
-          # Commit 1: Παλιά βάση Revera
+          # Commit 1: Ακριβής παλιά βάση Revera
           cp -a "$OLD_BASE_ROOT"/. .
           git add -A
           git commit -q -m "Old Revera base"
@@ -154,14 +160,14 @@ jobs:
           git add -A
           git commit -q -m "VNEra custom changes"
 
-          # Branch main από Commit 1 -> Νέα βάση Revera 1.0.8
+          # Branch revera-108 από Commit 1 -> Νέα βάση Revera 1.0.8
           git checkout -q -b revera-108 HEAD~1
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
           cp -a "$NEW_BASE_ROOT"/. .
           git add -A
           git commit -q -m "Revera 1.0.8 base"
 
-          # Εφαρμογή όλων των VNEra commits/αλλαγών πάνω στη 1.0.8
+          # Εφαρμογή των δικών σου VNEra αλλαγών πάνω στη 1.0.8
           echo "=== Applying VNEra changes onto Revera 1.0.8 ==="
           git cherry-pick -X theirs vnera-custom
 
@@ -246,12 +252,13 @@ jobs:
                   if t != t_new:
                       gradle_file.write_text(t_new)
 
-          # 3. Όνομα εφαρμογής VNEra στο strings.xml
-          strings_xml = Path("app/src/main/res/values/strings.xml")
-          if strings_xml.exists():
-              s_xml = strings_xml.read_text()
-              s_xml = re.sub(r'<string name="app_name">.*?</string>', '<string name="app_name">VNEra</string>', s_xml)
-              strings_xml.write_text(s_xml)
+          # 3. Όνομα εφαρμογής VNEra σε όλα τα strings.xml
+          for s_path in Path("app/src/main/res").rglob("strings.xml"):
+              s_xml = s_path.read_text()
+              s_xml_new = re.sub(r'<string name="app_name"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', s_xml)
+              if s_xml != s_xml_new:
+                  s_path.write_text(s_xml_new)
+                  print(f"Updated app_name -> VNEra in {s_path}")
 
           # 4. Update Version, Unique ApplicationId & Packaging Excludes
           gradle = Path("app/build.gradle.kts")
@@ -264,7 +271,26 @@ jobs:
                   text += '\nandroid {\n    packaging {\n        resources {\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/versions/9/module-info.class"\n        }\n    }\n}\n'
               gradle.write_text(text)
 
-          # 5. Fix CastMessage.kt expression-body return (μόνο αν υπάρχει)
+          # 5. Compatibility guard για UpdateChecker.kt (αν η 1.0.8 αφαίρεσε constants που καλεί το VNEra)
+          upd = Path("app/src/main/java/com/music/spotui/data/api/UpdateChecker.kt")
+          if upd.exists():
+              ut = upd.read_text()
+              missing_consts = []
+              if "UPDATE_BASE_URL" in ut and "val UPDATE_BASE_URL" not in ut:
+                  missing_consts.append('private const val UPDATE_BASE_URL = "https://api.github.com/repos/vnsec2/VNEra"')
+              if "PROJECT_URL" in ut and "val PROJECT_URL" not in ut:
+                  missing_consts.append('private const val PROJECT_URL = "https://github.com/vnsec2/VNEra"')
+              if missing_consts:
+                  ut = re.sub(
+                      r'(package\s+[^\n]+\n)',
+                      r'\1\n' + "\n".join(missing_consts) + "\n",
+                      ut,
+                      count=1,
+                  )
+                  upd.write_text(ut)
+                  print("Injected missing UpdateChecker constants for VNEra")
+
+          # 6. Fix CastMessage.kt expression-body return
           cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
           if cast_msg.exists():
               lines = cast_msg.read_text().splitlines()
@@ -329,7 +355,7 @@ jobs:
                           lines[end_line] = lines[end_line] + f"\n{indent}}}"
                           cast_msg.write_text("\n".join(lines) + "\n")
 
-          # 6. Lyrics Swipe Gestures (ασφαλές injection μόνο στα modifier chains, ποτέ έξω από Row)
+          # 7. Lyrics Swipe Gestures
           lyrics_file = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lyrics_file.exists():
               src = lyrics_file.read_text()
@@ -397,7 +423,7 @@ jobs:
               if src_mod != src:
                   lyrics_file.write_text(src_mod)
 
-          # 7. Immersive Player fix
+          # 8. Immersive Player fix
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               s = p2.read_text()
