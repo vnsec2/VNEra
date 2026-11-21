@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Wyczyść tymczasowe multimedia przy następnej sesji</string>
+    <string name="settings_storage_clear_on_start_detail">Domyślnie wyłączone. Pobrane pliki zostają zachowane.</string>
+</resources>

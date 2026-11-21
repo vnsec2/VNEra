@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">מוזיקה במהלך שיחות</string>
+    <string name="music_during_calls_detail">הניגון יימשך כש-Android מאפשר זאת. שיחות עדיין עשויות להשהות את הניגון או להשתיק אותו.</string>
+</resources>

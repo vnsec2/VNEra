@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Glazba tijekom poziva</string>
+    <string name="music_during_calls_detail">Reprodukcija se nastavlja kada Android to dopušta. Pozivi je ipak mogu pauzirati ili utišati.</string>
+</resources>

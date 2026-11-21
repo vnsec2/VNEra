@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">కాల్‌ల సమయంలో సంగీతం</string>
+    <string name="music_during_calls_detail">Android అనుమతిస్తే సంగీతం కొనసాగుతుంది. అయినప్పటికీ కాల్‌ల వల్ల సంగీతం తాత్కాలికంగా ఆగవచ్చు లేదా శబ్దం వినిపించకపోవచ్చు.</string>
+</resources>

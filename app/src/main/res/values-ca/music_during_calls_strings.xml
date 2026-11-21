@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Música durant les trucades</string>
+    <string name="music_during_calls_detail">La reproducció continua quan Android ho permet. Les trucades encara poden posar-la en pausa o silenciar-la.</string>
+</resources>

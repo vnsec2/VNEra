@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">通話中の音楽再生</string>
+    <string name="music_during_calls_detail">Android が許可する場合は再生を続けます。通話によって再生が一時停止したり、音が出なくなったりする場合があります。</string>
+</resources>

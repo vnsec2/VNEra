@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Hapus media sementara pada sesi berikutnya</string>
+    <string name="settings_storage_clear_on_start_detail">Nonaktif secara default. Unduhan tetap disimpan.</string>
+</resources>

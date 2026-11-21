@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Tyhjennä väliaikainen media seuraavalla istunnolla</string>
+    <string name="settings_storage_clear_on_start_detail">Oletuksena pois käytöstä. Lataukset säilytetään.</string>
+</resources>

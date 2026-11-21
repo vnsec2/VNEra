@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">ಮುಂದಿನ ಸೆಷನ್‌ನಲ್ಲಿ ತಾತ್ಕಾಲಿಕ ಮಾಧ್ಯಮ ತೆರವುಗೊಳಿಸಿ</string>
+    <string name="settings_storage_clear_on_start_detail">ಪೂರ್ವನಿಯೋಜಿತವಾಗಿ ಆಫ್. ಡೌನ್‌ಲೋಡ್‌ಗಳನ್ನು ಉಳಿಸಲಾಗುತ್ತದೆ.</string>
+</resources>

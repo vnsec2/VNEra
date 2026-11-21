@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Rensa tillfälliga medier vid nästa session</string>
+    <string name="settings_storage_clear_on_start_detail">Av som standard. Hämtade filer behålls.</string>
+</resources>

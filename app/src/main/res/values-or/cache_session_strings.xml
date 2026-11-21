@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">ପରବର୍ତ୍ତୀ ସେସନରେ ଅସ୍ଥାୟୀ ମିଡିଆ ସଫା କରନ୍ତୁ</string>
+    <string name="settings_storage_clear_on_start_detail">ପୂର୍ବନିର୍ଦ୍ଧାରିତ ଭାବେ ବନ୍ଦ। ଡାଉନଲୋଡ୍ ରଖାଯାଏ।</string>
+</resources>

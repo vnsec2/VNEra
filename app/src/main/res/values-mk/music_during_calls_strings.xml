@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Музика за време на повици</string>
+    <string name="music_during_calls_detail">Репродукцијата продолжува кога Android го дозволува тоа. Повиците сепак може да ја паузираат или да го исклучат звукот.</string>
+</resources>

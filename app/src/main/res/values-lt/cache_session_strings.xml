@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Išvalyti laikinąją mediją per kitą seansą</string>
+    <string name="settings_storage_clear_on_start_detail">Pagal numatymą išjungta. Atsisiuntimai išsaugomi.</string>
+</resources>

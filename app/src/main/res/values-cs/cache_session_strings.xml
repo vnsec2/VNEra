@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Vymazat dočasná média při příští relaci</string>
+    <string name="settings_storage_clear_on_start_detail">Ve výchozím stavu vypnuto. Stažené soubory zůstanou zachovány.</string>
+</resources>

@@ -1,0 +1,3 @@
+<resources>
+    <string name="voice_recognition_unavailable">No speech recognition app is available.</string>
+</resources>

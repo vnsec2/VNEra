@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Notīrīt pagaidu multividi nākamajā sesijā</string>
+    <string name="settings_storage_clear_on_start_detail">Pēc noklusējuma izslēgts. Lejupielādes tiek saglabātas.</string>
+</resources>

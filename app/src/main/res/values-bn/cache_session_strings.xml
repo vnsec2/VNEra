@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">পরের সেশনে অস্থায়ী মিডিয়া মুছুন</string>
+    <string name="settings_storage_clear_on_start_detail">ডিফল্টভাবে বন্ধ। ডাউনলোড রাখা হবে।</string>
+</resources>

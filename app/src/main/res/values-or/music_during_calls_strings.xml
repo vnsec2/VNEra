@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">କଲ୍ ସମୟରେ ସଙ୍ଗୀତ</string>
+    <string name="music_during_calls_detail">Android ଅନୁମତି ଦେଲେ ସଙ୍ଗୀତ ବାଜିବ। ତଥାପି କଲ୍ ଯୋଗୁଁ ସଙ୍ଗୀତ କିଛି ସମୟ ପାଇଁ ଅଟକିପାରେ କିମ୍ବା ଶବ୍ଦ ବନ୍ଦ ହୋଇପାରେ।</string>
+</resources>

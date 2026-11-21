@@ -1,0 +1,1 @@
+-keep class app.myspoti.engine.android.RustAudioTransport { *; }

@@ -1,0 +1,86 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <string name="app_name">Revera</string>
+    <string name="aa_playlists">Playlists</string>
+    <string name="aa_albums">Albums</string>
+    <string name="aa_artists">Artists</string>
+    <string name="settings_amoled_theme">AMOLED Theme</string>
+    <string name="settings_amoled_theme_subtitle">Pure black background to save battery</string>
+    <string name="main_update_available">A new update is available</string>
+
+    <string name="notif_action_play">Play</string>
+    <string name="notif_action_pause">Pause</string>
+    <string name="notif_shuffle_enable">Enable shuffle</string>
+    <string name="notif_shuffle_disable">Disable shuffle</string>
+    <string name="notif_shuffle_disable_smart">Disable smart shuffle</string>
+
+
+    <string name="energy_saver_title" tools:ignore="MissingTranslation">Battery saver</string>
+    <string name="energy_saver_summary" tools:ignore="MissingTranslation">Canvas off, lighter videos and animations</string>
+    <string name="playback_seek_description" tools:ignore="MissingTranslation">Playback position</string>
+    <string name="account_page_title">Spotify account</string>
+    <string name="account_page_detail">Plan, privacy and devices, on spotify.com</string>
+    <string name="player_source_downloaded">Downloaded</string>
+    <string name="extension_change_write">Now also allowed to send to Spotify: %1$s</string>
+    <string name="tv_tab_settings" tools:ignore="MissingTranslation">Settings</string>
+    <string name="tv_blackout_screen" tools:ignore="MissingTranslation">Blackout screen</string>
+    <string name="tv_blackout_summary" tools:ignore="MissingTranslation">Turn the TV screen black for the night while music keeps playing. Press any remote key to wake.</string>
+    <string name="tv_sleep_timer" tools:ignore="MissingTranslation">Sleep timer</string>
+    <string name="tv_sleep_off" tools:ignore="MissingTranslation">Off</string>
+    <string name="tv_sleep_end_of_track" tools:ignore="MissingTranslation">End of track</string>
+    <string name="tv_sleep_minutes" tools:ignore="MissingTranslation">%1$d min</string>
+    <string name="tv_settings_connect_title" tools:ignore="MissingTranslation">Spotify Connect &amp; phone steering</string>
+    <string name="tv_settings_connect_summary" tools:ignore="MissingTranslation">Sync extension playback with your account so you can control the TV from your phone over Wi-Fi</string>
+    <string name="tv_settings_autoplay_title" tools:ignore="MissingTranslation">Autoplay similar songs</string>
+    <string name="tv_settings_autoplay_summary" tools:ignore="MissingTranslation">Keep playing similar tracks when a playlist or album ends</string>
+    <string name="tv_settings_sign_out" tools:ignore="MissingTranslation">Sign out</string>
+    <string name="tv_search_button" tools:ignore="MissingTranslation">Search</string>
+    <string name="tv_clear_button" tools:ignore="MissingTranslation">Clear</string>
+    <string name="ab_loop_title" tools:ignore="MissingTranslation">A-B loop</string>
+    <string name="ab_loop_set_a" tools:ignore="MissingTranslation">Set A</string>
+    <string name="ab_loop_set_b" tools:ignore="MissingTranslation">Set B</string>
+    <string name="ab_loop_clear" tools:ignore="MissingTranslation">Clear</string>
+    <string name="ab_loop_waiting_b" tools:ignore="MissingTranslation">A: %1$s · Set B</string>
+    <string name="ab_loop_active" tools:ignore="MissingTranslation">Loop %1$s – %2$s</string>
+    <string name="vn_player_lyrics_wrap_title" tools:ignore="MissingTranslation">Wrap long lyric lines</string>
+    <string name="vn_lyrics_swipe_expand_title" tools:ignore="MissingTranslation">Swipe to expand lyrics</string>
+    <string name="vn_lyrics_swipe_expand_detail" tools:ignore="MissingTranslation">Swipe down on lyrics for full screen; swipe up to return to the player.</string>
+    <string name="vn_player_lyrics_wrap_detail" tools:ignore="MissingTranslation">Show the rest of the current lyric underneath instead of replacing it with the next lyric. On by default.</string>
+    <string name="vn_player_volume_buttons_title" tools:ignore="MissingTranslation">Volume buttons</string>
+    <string name="vn_player_volume_buttons_detail" tools:ignore="MissingTranslation">Tap the volume icons beside the slider to raise or lower volume. Off by default.</string>
+    <string name="vn_player_volume_step_title" tools:ignore="MissingTranslation">Volume step</string>
+    <string name="vn_player_volume_step_detail" tools:ignore="MissingTranslation">Percentage changed with each tap. Tap to cycle: 1, 2, 5, 10, 15%.</string>
+    <string name="settings_player_lyrics_two_lines_title" tools:ignore="MissingTranslation">Lyrics preview lines</string>
+    <string name="settings_player_lyrics_two_lines_detail" tools:ignore="MissingTranslation">Scroll 1, 2, or 3 lines in the player\u2019s fixed lyric strip</string>
+    <string name="settings_player_lyrics_lines_1" tools:ignore="MissingTranslation">1 line</string>
+    <string name="settings_player_lyrics_lines_2" tools:ignore="MissingTranslation">2 lines</string>
+    <string name="settings_player_lyrics_lines_3" tools:ignore="MissingTranslation">3 lines</string>
+    <string name="save_queue_as_playlist" tools:ignore="MissingTranslation">Save queue as playlist</string>
+    <string name="save_queue_saved" tools:ignore="MissingTranslation">Saved queue to %1$s</string>
+    <string name="save_queue_failed" tools:ignore="MissingTranslation">Could not save queue to %1$s</string>
+    <string name="output_profiles_title" tools:ignore="MissingTranslation">Output audio profiles</string>
+    <string name="output_profiles_detail" tools:ignore="MissingTranslation">Automatically switch streaming quality when USB DAC, wired headphones, Bluetooth, or speaker connects (for the active network)</string>
+    <string name="output_profile_default" tools:ignore="MissingTranslation">Default</string>
+    <string name="nerd_audio_api" tools:ignore="MissingTranslation">Audio API</string>
+    <string name="nerd_audio_api_direct" tools:ignore="MissingTranslation">AudioTrack · Direct / Hi-Res capable</string>
+    <string name="nerd_audio_api_mixer" tools:ignore="MissingTranslation">AudioTrack · Android mixer</string>
+    <string name="nerd_resampling" tools:ignore="MissingTranslation">Resampling</string>
+    <string name="nerd_resampling_no" tools:ignore="MissingTranslation">None (native rate)</string>
+    <string name="nerd_resampling_yes" tools:ignore="MissingTranslation">Resampled (%1$s → %2$s)</string>
+    <string name="nerd_bit_perfect" tools:ignore="MissingTranslation">Bit-perfect</string>
+    <string name="nerd_bit_perfect_direct" tools:ignore="MissingTranslation">Active (Direct USB)</string>
+    <string name="nerd_bit_perfect_dsp" tools:ignore="MissingTranslation">Bypassed (EQ / DSP active)</string>
+    <string name="nerd_bit_perfect_mixer" tools:ignore="MissingTranslation">No (Android mixer)</string>
+    <string name="nerd_audio_profile" tools:ignore="MissingTranslation">Audio profile</string>
+    <string name="nerd_profile_wifi" tools:ignore="MissingTranslation">Wi-Fi</string>
+    <string name="nerd_profile_cellular" tools:ignore="MissingTranslation">Mobile data</string>
+    <string name="queue_surprise_me" tools:ignore="MissingTranslation">Surprise me</string>
+    <string name="queue_surprise_started" tools:ignore="MissingTranslation">Playing %1$s mix</string>
+    <string name="queue_mood_chill" tools:ignore="MissingTranslation">Chill</string>
+    <string name="queue_mood_workout" tools:ignore="MissingTranslation">Workout</string>
+    <string name="queue_mood_focus" tools:ignore="MissingTranslation">Focus</string>
+    <string name="queue_mood_party" tools:ignore="MissingTranslation">Party</string>
+    <string name="queue_mood_late_night" tools:ignore="MissingTranslation">Late night</string>
+    <string name="queue_mood_discover" tools:ignore="MissingTranslation">Discover</string>
+    <string name="queue_mood_added" tools:ignore="MissingTranslation">Added %1$d %2$s tracks to queue</string>
+    <string name="queue_mood_empty" tools:ignore="MissingTranslation">No new tracks found for this mood</string>
+</resources>

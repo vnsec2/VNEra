@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Clear temporary media on next session</string>
+    <string name="settings_storage_clear_on_start_detail">Off by default. After the process closes, clear streamed media when the cache next opens. Downloads, artwork and account data are kept.</string>
+</resources>

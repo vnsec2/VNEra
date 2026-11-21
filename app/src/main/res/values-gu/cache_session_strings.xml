@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">આગલા સત્રમાં અસ્થાયી મીડિયા સાફ કરો</string>
+    <string name="settings_storage_clear_on_start_detail">ડિફૉલ્ટ રૂપે બંધ. ડાઉનલોડ જળવાય છે.</string>
+</resources>
