@@ -1,0 +1,287 @@
+name: VNEra 2.2.0 - Revera 1.0.8 port and Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_VERSION_NAME: 2.2.0
+  APP_VERSION_CODE: 222
+
+jobs:
+  port-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout VNEra feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: work/vnera-2.2.0
+          fetch-depth: 0
+
+      - name: Fetch Revera 1.0.7 and 1.0.8
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/caruno-git/Revera.git
+          git fetch --no-tags upstream refs/tags/v1.0.7:refs/tags/v1.0.7 refs/tags/v1.0.8:refs/tags/v1.0.8
+
+      - name: Port Revera 1.0.8 application changes (three-way merge)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f .vnera-revera-1.0.8-port ]; then
+            echo "Port marker exists; retaining the already-ported source."
+            exit 0
+          fi
+          python3 <<'PY'
+          from pathlib import Path
+          import subprocess
+          import tempfile
+
+          paths = [
+              "app/src/main/java/com/music/spotui/data/preferences/SettingsPref.kt",
+              "app/src/main/java/com/music/spotui/ui/components/AddSongsScreen.kt",
+              "app/src/main/java/com/music/spotui/ui/components/QueueDiscovery.kt",
+              "app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveQueuePanel.kt",
+              "app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt",
+              "app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt",
+              "app/src/main/java/com/music/spotui/ui/screens/QueueScreen.kt",
+              "app/src/main/java/com/music/spotui/ui/screens/SettingsSearch.kt",
+              "app/src/main/res/values-ru/player_chrome_options.xml",
+              "app/src/main/res/values-ru/strings.xml",
+              "app/src/main/res/values/player_chrome_options.xml",
+              "app/src/main/res/values/strings.xml",
+              "app/src/test/java/com/music/spotui/ui/components/QueueDiscoveryTest.kt",
+              "automix/build.gradle.kts",
+              "engine-android/src/main/kotlin/app/myspoti/engine/android/Media3DrmPlayer.kt",
+              "engine/src/commonMain/kotlin/app/myspoti/engine/Resolver.kt",
+          ]
+
+          def git_show(ref, path):
+              return subprocess.check_output(["git", "show", f"{ref}:base/{path}"])
+
+          for name in paths:
+              target = Path(name)
+              if not target.is_file():
+                  raise SystemExit(f"Required VNEra source file missing: {name}")
+              ours = target.read_bytes()
+              base = git_show("v1.0.7", name)
+              upstream = git_show("v1.0.8", name)
+              with tempfile.TemporaryDirectory() as tmp:
+                  tmp = Path(tmp)
+                  o, b, u = tmp/"ours", tmp/"base", tmp/"upstream"
+                  o.write_bytes(ours)
+                  b.write_bytes(base)
+                  u.write_bytes(upstream)
+                  result = subprocess.run(
+                      ["git", "merge-file", "-p", str(o), str(b), str(u)],
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                  )
+                  if result.returncode != 0:
+                      raise SystemExit(
+                          f"Three-way merge needs manual resolution in {name}; "
+                          "workflow stopped rather than discarding VNEra changes."
+                      )
+                  target.write_bytes(result.stdout)
+              print(f"Merged: {name}")
+
+          # Port the upstream ONNX runtime bump while keeping VNEra's own app ID,
+          # release signing configuration, versioning and GitHub update source.
+          gradle = Path("app/build.gradle.kts")
+          text = gradle.read_text()
+          old = 'onnxruntime-android:1.23.2'
+          if old not in text:
+              raise SystemExit("Expected ONNX Runtime 1.23.2 dependency not found.")
+          gradle.write_text(text.replace(old, 'onnxruntime-android:1.32.0'))
+
+          Path(".vnera-revera-1.0.8-port").write_text(
+              "Revera 1.0.8 application changes merged; VNEra identity/updater/signing retained.\n"
+          )
+          PY
+
+      - name: Fix Classic and Immersive lyrics swipe detection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          # Classic inline/fullscreen lyrics: observe the initial pointer pass,
+          # before a nested child can consume the vertical movement.
+          p = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
+          s = p.read_text()
+          needed = [
+              "import androidx.compose.foundation.gestures.awaitEachGesture",
+              "import androidx.compose.foundation.gestures.awaitFirstDown",
+              "import androidx.compose.ui.input.pointer.PointerEventPass",
+              "import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed",
+          ]
+          for imp in needed:
+              if imp not in s:
+                  anchor = "import androidx.compose.ui.input.pointer.pointerInput"
+                  if anchor not in s:
+                      raise SystemExit("Could not find LyricsScreen pointerInput import.")
+                  s = s.replace(anchor, anchor + "\n" + imp, 1)
+
+          old_card = """.pointerInput(onExpand) {
+                          var drag = 0f
+                          detectVerticalDragGestures(
+                              onVerticalDrag = { change, amount ->
+                                  drag += amount
+                                  change.consume()
+                              },
+                              onDragEnd = {
+                                  if (drag > 72.dp.toPx()) onExpand()
+                                  drag = 0f
+                              },
+                              onDragCancel = { drag = 0f },
+                          )
+                      }"""
+          new_card = ".lyricsVerticalSwipe(threshold = 48.dp, direction = 1, onSwipe = onExpand)"
+          if old_card in s:
+              s = s.replace(old_card, new_card, 1)
+
+          old_header = """.pointerInput(onClose) {
+                          var drag = 0f
+                          detectVerticalDragGestures(
+                              onVerticalDrag = { change, amount ->
+                                  drag += amount
+                                  change.consume()
+                              },
+                              onDragEnd = {
+                                  if (drag < -72.dp.toPx()) onClose()
+                                  drag = 0f
+                              },
+                              onDragCancel = { drag = 0f },
+                          )
+                      }"""
+          new_header = ".lyricsVerticalSwipe(threshold = 48.dp, direction = -1, onSwipe = onClose)"
+          if old_header in s:
+              s = s.replace(old_header, new_header, 1)
+
+          helper = """
+          private fun Modifier.lyricsVerticalSwipe(
+              threshold: androidx.compose.ui.unit.Dp,
+              direction: Int,
+              onSwipe: () -> Unit,
+          ): Modifier = pointerInput(threshold, direction, onSwipe) {
+              awaitEachGesture {
+                  val down = awaitFirstDown(requireUnconsumed = false)
+                  var total = 0f
+                  var fired = false
+                  while (!fired) {
+                      val event = awaitPointerEvent(PointerEventPass.Initial)
+                      val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                      total += change.positionChangeIgnoreConsumed().y
+                      if (total * direction >= threshold.toPx()) {
+                          change.consume()
+                          onSwipe()
+                          fired = true
+                      }
+                      if (!change.pressed) break
+                  }
+              }
+          }
+
+          """
+          marker = "/** The inline card's layout node, so the full screen can grow out of it and fold back into it. */"
+          if "private fun Modifier.lyricsVerticalSwipe(" not in s:
+              if marker not in s:
+                  raise SystemExit("Could not find LyricsScreen gesture helper insertion point.")
+              s = s.replace(marker, helper + marker, 1)
+          p.write_text(s)
+
+          # Immersive: same Initial-pass detection for the lyrics panel/fullscreen layer.
+          p = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
+          s = p.read_text()
+          if "import androidx.compose.ui.input.pointer.PointerEventPass" not in s:
+              anchor = "import androidx.compose.ui.input.pointer.positionChange"
+              if anchor not in s:
+                  raise SystemExit("Could not find ImmersivePlayer pointer imports.")
+              s = s.replace(
+                  anchor,
+                  anchor + "\nimport androidx.compose.ui.input.pointer.PointerEventPass\n"
+                  "import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed",
+                  1,
+              )
+          old = """val event = awaitPointerEvent()
+                      val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                      total += change.positionChange().y
+                      val threshold = 76.dp.toPx()"""
+          new = """val event = awaitPointerEvent(PointerEventPass.Initial)
+                      val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                      total += change.positionChangeIgnoreConsumed().y
+                      val threshold = 48.dp.toPx()"""
+          if old not in s:
+              raise SystemExit("Could not find the existing Immersive lyrics swipe detector to update.")
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          print("Lyrics swipe handlers updated.")
+          PY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare VNEra release signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.VNERA_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.VNERA_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64" || { echo 'Missing GitHub secret VNERA_KEYSTORE_BASE64'; exit 1; }
+          test -n "$KEYSTORE_PASSWORD" || { echo 'Missing GitHub secret VNERA_KEYSTORE_PASSWORD'; exit 1; }
+          mkdir -p "$RUNNER_TEMP/vnera-signing"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/vnera-signing/vnera-release.jks"
+          echo "MYSPOTI_KEYSTORE=$RUNNER_TEMP/vnera-signing/vnera-release.jks" >> "$GITHUB_ENV"
+          echo "MYSPOTI_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "MYSPOTI_KEY_ALIAS=vnera-release" >> "$GITHUB_ENV"
+          echo "MYSPOTI_KEY_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build optimized signed Release APK (ARM64 only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease \
+            -PappVersionName="$APP_VERSION_NAME" \
+            -PappVersionCode="$APP_VERSION_CODE" \
+            -Pabis=arm64-v8a \
+            -PupdateRepo=vnsec2/VNEra \
+            --no-daemon
+
+      - name: Verify APK identity, signature and size
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          APK="$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)"
+          test -n "$APK" || { echo 'Release APK not found'; exit 1; }
+          "$BUILD_TOOLS/aapt" dump badging "$APK" | grep -E "package: name='app.vnera.player'.*versionCode='222'.*versionName='2.2.0'"
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
+          ls -lh "$APK"
+
+      - name: Commit VNEra 2.2.0 source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app automix engine engine-android .vnera-revera-1.0.8-port
+          if ! git diff --cached --quiet; then
+            git commit -m "Port Revera 1.0.8 features into VNEra 2.2.0"
+            git push origin HEAD:work/vnera-2.2.0
+          fi
+
+      - name: Upload signed ARM64 Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VNEra-2.2.0-Release-arm64
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
