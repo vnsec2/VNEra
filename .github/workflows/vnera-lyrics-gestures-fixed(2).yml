@@ -1,0 +1,120 @@
+name: VNEra 2.2.0 - lyrics gestures
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source-review
+        uses: actions/checkout@v4
+        with:
+          ref: work/source-review
+          fetch-depth: 0
+
+      - name: Create feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C work/vnera-2.2.0
+
+      - name: Add Classic Player lyrics swipe gestures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
+          source = path.read_text()
+
+          # Add the Compose drag detector import only if it is not already present.
+          detector_import = "import androidx.compose.foundation.gestures.detectVerticalDragGestures"
+          if detector_import not in source:
+              anchor = "import androidx.compose.foundation.gestures.detectTapGestures"
+              if anchor not in source:
+                  raise SystemExit("Could not locate the existing Compose gesture imports; no source changed.")
+              source = source.replace(anchor, anchor + "\n" + detector_import, 1)
+
+          # Full-screen header: swipe UP to close the lyrics overlay and return to the player.
+          header_old = (
+              "modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp).revealIn(reveal, 0.3f, 8f),"
+          )
+          header_new = """modifier = Modifier
+                  .fillMaxWidth().height(64.dp).padding(horizontal = 4.dp)
+                  .pointerInput(onClose) {
+                      var drag = 0f
+                      detectVerticalDragGestures(
+                          onVerticalDrag = { change, amount ->
+                              drag += amount
+                              change.consume()
+                          },
+                          onDragEnd = {
+                              if (drag < -72.dp.toPx()) onClose()
+                              drag = 0f
+                          },
+                          onDragCancel = { drag = 0f },
+                      )
+                  }
+                  .revealIn(reveal, 0.3f, 8f),"""
+          header_count = source.count(header_old)
+          if header_count != 1:
+              raise SystemExit(f"Expected one fullscreen header modifier, found {header_count}; no commit made.")
+          source = source.replace(header_old, header_new, 1)
+
+          # Inline card: swipe DOWN to expand. Its embedded lyrics list has userScrollEnabled=false,
+          # so this gesture does not take over vertical lyric scrolling.
+          card_old = ".clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onExpand() }"
+          card_new = """.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onExpand() }
+                      .pointerInput(onExpand) {
+                          var drag = 0f
+                          detectVerticalDragGestures(
+                              onVerticalDrag = { change, amount ->
+                                  drag += amount
+                                  change.consume()
+                              },
+                              onDragEnd = {
+                                  if (drag > 72.dp.toPx()) onExpand()
+                                  drag = 0f
+                              },
+                              onDragCancel = { drag = 0f },
+                          )
+                      }"""
+          card_count = source.count(card_old)
+          if card_count != 1:
+              raise SystemExit(f"Expected one inline card click modifier, found {card_count}; no commit made.")
+          source = source.replace(card_old, card_new, 1)
+
+          path.write_text(source)
+          print("Classic Player gestures patched: swipe down opens; swipe up from fullscreen header closes.")
+          PY
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Commit changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt
+          git commit -m "Add Classic Player lyrics swipe gestures"
+          git push --force-with-lease origin work/vnera-2.2.0
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VNEra-2.2.0-lyrics-gestures-debug
+          path: '**/build/outputs/apk/debug/*.apk'
+          if-no-files-found: error
+          retention-days: 14
