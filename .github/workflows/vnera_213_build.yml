@@ -56,33 +56,53 @@ jobs:
           ref: work/source-review
           fetch-depth: 0
 
-      - name: Switch Base to Pure Revera 1.0.8
+      - name: Sync Base with Revera 1.0.8
         shell: bash
         run: |
           set -euo pipefail
-          # 1. Αποθήκευση Gradle wrapper πριν το reset (το Revera.git δεν περιέχει το gradlew binary)
-          mkdir -p /tmp/vnera_gradle
+          # 1. Αποθήκευση Gradle wrapper & εικονιδίων VNEra
+          mkdir -p /tmp/vnera_gradle /tmp/vnera_res
           [ -f "gradlew" ] && cp -f "gradlew" /tmp/vnera_gradle/
           [ -f "gradlew.bat" ] && cp -f "gradlew.bat" /tmp/vnera_gradle/
           if [ -d "gradle/wrapper" ]; then
             mkdir -p /tmp/vnera_gradle/wrapper
             cp -rf gradle/wrapper/* /tmp/vnera_gradle/wrapper/
           fi
-
-          # 2. Αποθήκευση εικονιδίων VNEra πριν την επαναφορά στη βάση 1.0.8
-          mkdir -p /tmp/vnera_res
           if [ -d "app/src/main/res" ]; then
             cp -rn app/src/main/res/mipmap* /tmp/vnera_res/ 2>/dev/null || true
             find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
           fi
 
+          # 2. Λήψη Revera 1.0.8 και έλεγχος δομής φακέλων
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
-          # 3. Καθαρή επαναφορά στον κώδικα του Revera 1.0.8
-          git reset --hard refs/tags/v1.0.8
+          rm -rf /tmp/revera_108
+          mkdir -p /tmp/revera_108
+          git archive refs/tags/v1.0.8 | tar -x -C /tmp/revera_108
 
-          # 4. Επαναφορά Gradle wrapper
+          echo "=== Contents of Revera v1.0.8 ==="
+          find /tmp/revera_108 -maxdepth 3
+
+          GRADLE_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
+          if [ -z "$GRADLE_SETTINGS" ] && git rev-parse "refs/remotes/upstream/main" >/dev/null 2>&1; then
+            rm -rf /tmp/revera_108/*
+            git archive refs/remotes/upstream/main | tar -x -C /tmp/revera_108
+            echo "=== Contents of Revera upstream/main ==="
+            find /tmp/revera_108 -maxdepth 3
+            GRADLE_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
+          fi
+
+          if [ -n "$GRADLE_SETTINGS" ]; then
+            SRC_ROOT=$(dirname "$GRADLE_SETTINGS")
+            echo "Found Revera Gradle root at: $SRC_ROOT"
+            find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" -exec rm -rf {} +
+            cp -a "$SRC_ROOT"/. .
+          else
+            echo "Notice: No standalone Gradle root found inside Revera tag; keeping current workspace base."
+          fi
+
+          # 3. Επαναφορά Gradle wrapper αν λείπει
           if [ ! -f "gradlew" ] && [ -f "/tmp/vnera_gradle/gradlew" ]; then
             cp -f /tmp/vnera_gradle/gradlew ./gradlew
             [ -f "/tmp/vnera_gradle/gradlew.bat" ] && cp -f /tmp/vnera_gradle/gradlew.bat ./gradlew.bat
@@ -92,13 +112,10 @@ jobs:
               cp -f /tmp/vnera_gradle/wrapper/gradle-wrapper.properties gradle/wrapper/
             fi
           fi
-          if [ ! -f "gradlew" ]; then
-            gradle wrapper
-          fi
           chmod +x ./gradlew
 
-          # 5. Επαναφορά εικονιδίων VNEra
-          if [ -d "/tmp/vnera_res" ]; then
+          # 4. Επαναφορά εικονιδίων VNEra
+          if [ -d "/tmp/vnera_res" ] && [ -d "app/src/main/res" ]; then
             cp -rf /tmp/vnera_res/mipmap* app/src/main/res/ 2>/dev/null || true
             if [ -d "/tmp/vnera_res/app/src/main/res" ]; then
               cp -rf /tmp/vnera_res/app/src/main/res/* app/src/main/res/ 2>/dev/null || true
@@ -172,7 +189,7 @@ jobs:
                   text += '\nandroid {\n    packaging {\n        resources {\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/versions/9/module-info.class"\n        }\n    }\n}\n'
               gradle.write_text(text)
 
-          # 5. Fix CastMessage.kt expression-body return (αν υπάρχει στη 1.0.8)
+          # 5. Fix CastMessage.kt expression-body return
           cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
           if cast_msg.exists():
               lines = cast_msg.read_text().splitlines()
@@ -237,10 +254,10 @@ jobs:
                           lines[end_line] = lines[end_line] + f"\n{indent}}}"
                           cast_msg.write_text("\n".join(lines) + "\n")
 
-          # 6. Lyrics Swipe Gestures στη 1.0.8:
+          # 6. Lyrics Swipe Gestures:
           #    - Σύρσιμο από κάτω προς τα πάνω (drag αρνητικό) -> Άνοιγμα fullscreen (onExpand)
           #    - Σύρσιμο από πάνω προς τα κάτω (drag θετικό) -> Κλείσιμο fullscreen (onClose)
-          for kt_name in ["LyricsScreen.kt", "PlayerScreen.kt"]:
+          for kt_name in ["LyricsScreen.kt", "PlayerScreen.kt", "ImmersiveLyricsPanel.kt"]:
               for kt_file in Path("app/src/main/java").rglob(kt_name):
                   src = kt_file.read_text()
                   print(f"=== Inspecting {kt_file} ===")
