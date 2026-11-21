@@ -22,7 +22,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Fix Gradle/Kotlin Versions & Apply Patches
+      - name: Fix Gradle/Kotlin/SDK Versions & Apply Patches
         shell: bash
         run: |
           set -euo pipefail
@@ -36,9 +36,18 @@ jobs:
                   t = toml_path.read_text()
                   t = t.replace('"2.4.10"', '"2.0.20"').replace('"2.4.21"', '"2.0.20"')
                   t = t.replace('"9.4.1"', '"8.7.2"')
+                  t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', r'\g<1> = "35"', t)
                   toml_path.write_text(t)
 
-          # 2. Update Versions and ONNX
+          # 2. Αλλαγή compileSdk / targetSdk από 37 σε 35 σε όλα τα modules
+          for gradle_file in Path(".").rglob("*.gradle.kts"):
+              t = gradle_file.read_text()
+              t_new = re.sub(r'(compileSdk|targetSdk)\s*=\s*37', r'\g<1> = 35', t)
+              t_new = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', r'\g<1>.set(35)', t_new)
+              if t != t_new:
+                  gradle_file.write_text(t_new)
+
+          # 3. Update Versions and ONNX
           gradle = Path("app/build.gradle.kts")
           if gradle.exists():
               text = gradle.read_text()
@@ -47,7 +56,7 @@ jobs:
               text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 213', text)
               gradle.write_text(text)
 
-          # 3. Add Classic Player lyrics swipe gestures
+          # 4. Add Classic Player lyrics swipe gestures
           path = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if path.exists():
               source = path.read_text()
@@ -98,7 +107,7 @@ jobs:
                   source = source.replace(card_old, card_new, 1)
               path.write_text(source)
 
-          # 4. Immersive Player fix
+          # 5. Immersive Player fix
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               s = p2.read_text()
