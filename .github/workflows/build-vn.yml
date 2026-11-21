@@ -1,19 +1,20 @@
+
 name: VNEra Release
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - 'VNEra-2.0.0-source.zip'
+      - 'VNEra-2.1.0-source.zip'
       - '.github/workflows/build-vn.yml'
 
 permissions:
   contents: read
 
 env:
-  SOURCE_ZIP: VNEra-2.0.0-source.zip
-  APP_VERSION_NAME: 2.0.0
-  APP_VERSION_CODE: 220
+  SOURCE_ZIP: VNEra-2.1.0-source.zip
+  APP_VERSION_NAME: 2.1.0
+  APP_VERSION_CODE: 221
 
 jobs:
   build:
@@ -67,7 +68,7 @@ jobs:
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.0.0-Release-arm64
+          name: VNEra-2.1.0-Release-arm64
           path: '**/build/outputs/apk/release/*.apk'
           if-no-files-found: error
           retention-days: 14
