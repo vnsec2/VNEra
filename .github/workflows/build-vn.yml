@@ -1,4 +1,3 @@
-
 name: VNEra Release
 
 on:
@@ -43,9 +42,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # GitHub's ubuntu-latest runner already includes the Android SDK.
+      # Avoid setup-android here: its sdkmanager bootstrap failed while
+      # looking for the obsolete "tools" package.
       - name: Prepare release signing key
         shell: bash
         env:
