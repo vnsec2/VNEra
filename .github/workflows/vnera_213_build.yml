@@ -1,4 +1,4 @@
-name: VNEra 2.1.3 Ultimate Build (Debug)
+ name: Build VNEra Debug APK
 
 on:
   workflow_dispatch:
@@ -9,13 +9,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    steps:
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
 
+    steps:
       - name: Checkout main for Persistent Signing Key
         uses: actions/checkout@v4
         with:
@@ -23,9 +18,7 @@ jobs:
           path: _keystore_repo
 
       - name: Prepare Persistent Debug Keystore
-        shell: bash
         run: |
-          set -euo pipefail
           mkdir -p "$HOME/.android"
           if [ ! -f "_keystore_repo/.github/vnera-debug.keystore" ]; then
             mkdir -p "_keystore_repo/.github"
@@ -38,17 +31,15 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=VNEra Debug,O=VNEra,C=GR"
-            (
-              cd _keystore_repo
-              git config user.name "github-actions[bot]"
-              git config user.email "github-actions[bot]@users.noreply.github.com"
-              git add .github/vnera-debug.keystore
-              git commit -m "Add persistent keystore for seamless VNEra updates"
-              git push || echo "Warning: Could not push keystore to main"
-            )
+            cd _keystore_repo
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .github/vnera-debug.keystore
+            git commit -m "Add persistent keystore for seamless VNEra updates"
+            git push || echo "Warning: Could not push keystore to main"
+            cd ..
           fi
           cp -f "_keystore_repo/.github/vnera-debug.keystore" "$HOME/.android/debug.keystore"
-          rm -rf _keystore_repo
 
       - name: Checkout source-review
         uses: actions/checkout@v4
@@ -56,12 +47,14 @@ jobs:
           ref: work/source-review
           fetch-depth: 0
 
-      - name: Sync Base with Revera 1.0.8
-        shell: bash
+      - name: Merge VNEra Custom Changes onto Revera 1.0.8 Base
         run: |
           set -euo pipefail
-          # 1. Αποθήκευση Gradle wrapper & εικονιδίων VNEra
-          mkdir -p /tmp/vnera_gradle /tmp/vnera_res
+
+          # 1. Backup Gradle wrapper, εικονιδίων και του δικού σου κώδικα (work/source-review)
+          rm -rf /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old /tmp/merge_repo
+          mkdir -p /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old
+
           [ -f "gradlew" ] && cp -f "gradlew" /tmp/vnera_gradle/
           [ -f "gradlew.bat" ] && cp -f "gradlew.bat" /tmp/vnera_gradle/
           if [ -d "gradle/wrapper" ]; then
@@ -73,29 +66,114 @@ jobs:
             find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
           fi
 
-          # 2. Λήψη Revera 1.0.8 και εντοπισμός του Gradle root (base/)
+          # Αντιγραφή του τρέχοντος VNEra tree
+          tar --exclude='.git' --exclude='.github' --exclude='_keystore_repo' -cf - . | tar -xf - -C /tmp/vnera_custom
+
+          # 2. Λήψη Revera 1.0.8 (και ιστορικού tags για εντοπισμό του παλιού base)
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
-          rm -rf /tmp/revera_108
-          mkdir -p /tmp/revera_108
           git archive refs/tags/v1.0.8 | tar -x -C /tmp/revera_108
-
           GRADLE_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
-          if [ -z "$GRADLE_SETTINGS" ] && git rev-parse "refs/remotes/upstream/main" >/dev/null 2>&1; then
-            rm -rf /tmp/revera_108/*
-            git archive refs/remotes/upstream/main | tar -x -C /tmp/revera_108
-            GRADLE_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
+          if [ -z "$GRADLE_SETTINGS" ]; then
+            echo "ERROR: Δεν βρέθηκε Gradle root στο Revera v1.0.8"
+            exit 1
+          fi
+          NEW_BASE_ROOT=$(dirname "$GRADLE_SETTINGS")
+          echo "Revera 1.0.8 Gradle root: $NEW_BASE_ROOT"
+
+          # 3. Εντοπισμός παλιού base commit/tag ώστε να εξαχθούν καθαρά ΜΟΝΟ οι δικές σου αλλαγές
+          MERGE_BASE=$(git merge-base HEAD refs/tags/v1.0.8 2>/dev/null || true)
+          if [ -n "$MERGE_BASE" ]; then
+            echo "Found shared git merge-base: $MERGE_BASE"
+            git archive "$MERGE_BASE" | tar -x -C /tmp/revera_old
+            OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
+            OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
+          else
+            ROOT_COMMIT=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+            mkdir -p /tmp/vnera_root
+            git archive "$ROOT_COMMIT" | tar -x -C /tmp/vnera_root
+
+            BEST_TAG=$(python3 <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          root_files = {
+              str(p.relative_to("/tmp/vnera_root")): p.read_bytes()
+              for p in Path("/tmp/vnera_root").rglob("*")
+              if p.is_file() and ".git" not in p.parts and ".github" not in p.parts
+          }
+
+          tags = subprocess.check_output(["git", "tag", "-l", "v1.0.*"], text=True).splitlines()
+          tags = [t for t in tags if t != "v1.0.8"]
+          best_tag = "v1.0.7"
+          best_score = -1
+
+          for tag in sorted(tags):
+              tmp_dir = Path(f"/tmp/tag_chk_{tag}")
+              tmp_dir.mkdir(parents=True, exist_ok=True)
+              subprocess.run(f"git archive refs/tags/{tag} | tar -x -C {tmp_dir}", shell=True, check=True)
+              base_dir = tmp_dir / "base" if (tmp_dir / "base").exists() else tmp_dir
+              matches = 0
+              for rel, data in root_files.items():
+                  cand = base_dir / rel
+                  if cand.exists() and cand.read_bytes() == data:
+                      matches += 1
+              print(f"Tag {tag}: {matches}/{len(root_files)} matching files")
+              if matches > best_score:
+                  best_score = matches
+                  best_tag = tag
+
+          print(f"SELECTED_BASE_TAG={best_tag}")
+          Path("/tmp/best_base_tag.txt").write_text(best_tag)
+          PY
+            )
+            echo "$BEST_TAG"
+            SELECTED_TAG=$(cat /tmp/best_base_tag.txt)
+            echo "Using $SELECTED_TAG as old Revera base"
+            git archive "refs/tags/$SELECTED_TAG" | tar -x -C /tmp/revera_old
+            OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
+            OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
           fi
 
-          if [ -n "$GRADLE_SETTINGS" ]; then
-            SRC_ROOT=$(dirname "$GRADLE_SETTINGS")
-            echo "Found Revera Gradle root at: $SRC_ROOT"
-            find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" -exec rm -rf {} +
-            cp -a "$SRC_ROOT"/. .
-          fi
+          # 4. 3-Way Git Merge: Εφαρμογή των δικών σου αλλαγών πάνω στη Revera 1.0.8
+          git init /tmp/merge_repo
+          cd /tmp/merge_repo
+          git config user.name "VNEra Merge Bot"
+          git config user.email "bot@vnera.local"
 
-          # 3. Επαναφορά Gradle wrapper αν λείπει
+          # Commit 1: Παλιά βάση Revera
+          cp -a "$OLD_BASE_ROOT"/. .
+          git add -A
+          git commit -q -m "Old Revera base"
+
+          # Commit 2 (branch vnera-custom): Ο δικός σου κώδικας VNEra
+          git checkout -q -b vnera-custom
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+          cp -a /tmp/vnera_custom/. .
+          git add -A
+          git commit -q -m "VNEra custom changes"
+
+          # Branch main από Commit 1 -> Νέα βάση Revera 1.0.8
+          git checkout -q -b revera-108 HEAD~1
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+          cp -a "$NEW_BASE_ROOT"/. .
+          git add -A
+          git commit -q -m "Revera 1.0.8 base"
+
+          # Εφαρμογή όλων των VNEra commits/αλλαγών πάνω στη 1.0.8
+          echo "=== Applying VNEra changes onto Revera 1.0.8 ==="
+          git cherry-pick -X theirs vnera-custom
+
+          echo "=== Summary of VNEra files merged onto 1.0.8 ==="
+          git diff --stat HEAD~1 HEAD
+
+          # 5. Επαναφορά στο workspace
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" ! -name "_keystore_repo" -exec rm -rf {} +
+          tar --exclude='.git' -cf - -C /tmp/merge_repo . | tar -xf - -C .
+
+          # 6. Επαναφορά Gradle wrapper & εικονιδίων VNEra
           if [ ! -f "gradlew" ] && [ -f "/tmp/vnera_gradle/gradlew" ]; then
             cp -f /tmp/vnera_gradle/gradlew ./gradlew
             [ -f "/tmp/vnera_gradle/gradlew.bat" ] && cp -f /tmp/vnera_gradle/gradlew.bat ./gradlew.bat
@@ -107,7 +185,6 @@ jobs:
           fi
           chmod +x ./gradlew
 
-          # 4. Επαναφορά εικονιδίων VNEra
           if [ -d "/tmp/vnera_res" ] && [ -d "app/src/main/res" ]; then
             cp -rf /tmp/vnera_res/mipmap* app/src/main/res/ 2>/dev/null || true
             if [ -d "/tmp/vnera_res/app/src/main/res" ]; then
@@ -115,8 +192,13 @@ jobs:
             fi
           fi
 
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
       - name: Link SDK 37 & Fix Versions & Apply Patches
-        shell: bash
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
@@ -182,7 +264,7 @@ jobs:
                   text += '\nandroid {\n    packaging {\n        resources {\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/versions/9/module-info.class"\n        }\n    }\n}\n'
               gradle.write_text(text)
 
-          # 5. Fix CastMessage.kt expression-body return
+          # 5. Fix CastMessage.kt expression-body return (μόνο αν υπάρχει)
           cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
           if cast_msg.exists():
               lines = cast_msg.read_text().splitlines()
@@ -247,86 +329,73 @@ jobs:
                           lines[end_line] = lines[end_line] + f"\n{indent}}}"
                           cast_msg.write_text("\n".join(lines) + "\n")
 
-          # 6. Lyrics Swipe Gestures στη 1.0.8:
-          #    - Σύρσιμο από κάτω προς τα πάνω (drag < 0) -> Άνοιγμα fullscreen (onExpand)
-          #    - Σύρσιμο από πάνω προς τα κάτω (drag > 0) -> Κλείσιμο fullscreen (onClose)
+          # 6. Lyrics Swipe Gestures (ασφαλές injection μόνο στα modifier chains, ποτέ έξω από Row)
           lyrics_file = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lyrics_file.exists():
               src = lyrics_file.read_text()
+              src_mod = re.sub(r'if\s*\(\s*drag\s*>\s*([^)]+)\)\s*onExpand\(\)', r'if (drag < -\1) onExpand()', src)
+              src_mod = re.sub(r'if\s*\(\s*drag\s*<\s*-\s*([^)]+)\)\s*onClose\(\)', r'if (drag > \1) onClose()', src_mod)
+
               detector_import = "import androidx.compose.foundation.gestures.detectVerticalDragGestures"
-              if detector_import not in src and "import androidx.compose.foundation.gestures.detectTapGestures" in src:
-                  src = src.replace(
+              if detector_import not in src_mod and "import androidx.compose.foundation.gestures.detectTapGestures" in src_mod:
+                  src_mod = src_mod.replace(
                       "import androidx.compose.foundation.gestures.detectTapGestures",
                       "import androidx.compose.foundation.gestures.detectTapGestures\n" + detector_import,
                       1,
                   )
-              if "pointerInput" not in src and "import androidx.compose.ui.input.pointer.pointerInput" not in src:
-                  src = src.replace(
+              if "pointerInput" not in src_mod and "import androidx.compose.ui.input.pointer.pointerInput" not in src_mod:
+                  src_mod = src_mod.replace(
                       detector_import,
                       detector_import + "\nimport androidx.compose.ui.input.pointer.pointerInput",
                       1,
                   )
 
-              def add_expand_swipe(m):
-                  line = m.group(1)
-                  comma = "," if line.endswith(",") else ""
-                  base = line[:-1] if comma else line
-                  return (
-                      f"{base}\n"
-                      f"                .pointerInput(onExpand) {{\n"
-                      f"                    var drag = 0f\n"
-                      f"                    detectVerticalDragGestures(\n"
-                      f"                        onVerticalDrag = {{ change, amount ->\n"
-                      f"                            drag += amount\n"
-                      f"                            change.consume()\n"
-                      f"                        }},\n"
-                      f"                        onDragEnd = {{\n"
-                      f"                            if (drag < -48.dp.toPx()) onExpand()\n"
-                      f"                            drag = 0f\n"
-                      f"                        }},\n"
-                      f"                        onDragCancel = {{ drag = 0f }},\n"
-                      f"                    )\n"
-                      f"                }}{comma}"
+              if "onExpand()" in src_mod and "pointerInput(onExpand)" not in src_mod:
+                  src_mod = re.sub(
+                      r'(\.clickable\([^)]*\)\s*\{\s*onExpand\(\)\s*\})',
+                      r'''\1
+                  .pointerInput(onExpand) {
+                      var drag = 0f
+                      detectVerticalDragGestures(
+                          onVerticalDrag = { change, amount ->
+                              drag += amount
+                              change.consume()
+                          },
+                          onDragEnd = {
+                              if (drag < -48.dp.toPx()) onExpand()
+                              drag = 0f
+                          },
+                          onDragCancel = { drag = 0f },
+                      )
+                  }''',
+                      src_mod,
+                      count=1,
                   )
 
-              src, n_expand = re.subn(
-                  r'(\.clickable\([^\n]*\)\s*\{\s*onExpand\(\)\s*\},?)',
-                  add_expand_swipe,
-                  src,
-                  count=1,
-              )
-
-              def add_close_swipe(m):
-                  line = m.group(1)
-                  comma = "," if line.endswith(",") else ""
-                  base = line[:-1] if comma else line
-                  return (
-                      f"{base}\n"
-                      f"            .pointerInput(onClose) {{\n"
-                      f"                var drag = 0f\n"
-                      f"                detectVerticalDragGestures(\n"
-                      f"                    onVerticalDrag = {{ change, amount ->\n"
-                      f"                        drag += amount\n"
-                      f"                        change.consume()\n"
-                      f"                    }},\n"
-                      f"                    onDragEnd = {{\n"
-                      f"                        if (drag > 48.dp.toPx()) onClose()\n"
-                      f"                        drag = 0f\n"
-                      f"                    }},\n"
-                      f"                    onDragCancel = {{ drag = 0f }},\n"
-                      f"                )\n"
-                      f"            }}{comma}"
+              if "onClose" in src_mod and "pointerInput(onClose)" not in src_mod:
+                  src_mod = re.sub(
+                      r'(\.height\(64\.dp\)(?:\.[a-zA-Z0-9_]+\([^()]*\))*)',
+                      r'''\1
+              .pointerInput(onClose) {
+                  var drag = 0f
+                  detectVerticalDragGestures(
+                      onVerticalDrag = { change, amount ->
+                          drag += amount
+                          change.consume()
+                      },
+                      onDragEnd = {
+                          if (drag > 48.dp.toPx()) onClose()
+                          drag = 0f
+                      },
+                      onDragCancel = { drag = 0f },
+                  )
+              }''',
+                      src_mod,
+                      count=1,
                   )
 
-              src, n_close = re.subn(
-                  r'(\.height\(64\.dp\)[^\n]*)',
-                  add_close_swipe,
-                  src,
-                  count=1,
-              )
-
-              print(f"LyricsScreen gestures patched -> expand(swipe-up)={n_expand}, close(swipe-down)={n_close}")
-              lyrics_file.write_text(src)
+              if src_mod != src:
+                  lyrics_file.write_text(src_mod)
 
           # 7. Immersive Player fix
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
@@ -343,13 +412,11 @@ jobs:
           PY
 
       - name: Build Debug APK
-        shell: bash
         run: |
-          set -euo pipefail
-          chmod +x ./gradlew
+          chmod +x gradlew
           EXTRA_FLAGS=""
-          if [ "${HAS_SDK_37:-false}" != "true" ]; then
-            EXTRA_FLAGS="-x checkDebugAarMetadata"
+          if [ "$HAS_SDK_37" != "true" ]; then
+            EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
           fi
           ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.3" -PappVersionCode="213" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
@@ -357,6 +424,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VNEra-2.1.3-Debug
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: "**/build/outputs/apk/debug/*.apk"
           if-no-files-found: error
           retention-days: 14
