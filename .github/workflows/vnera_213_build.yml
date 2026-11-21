@@ -77,34 +77,25 @@ jobs:
                       res = subprocess.run(["git", "merge-file", "-p", str(o), str(b), str(u)], stdout=subprocess.PIPE)
                       target.write_bytes(res.stdout)
               except Exception as e:
-                  print(f"Skipped {name}: {e}")
+                  pass
 
-          # Update ONNX dependency and set Version 2.1.3
           gradle = Path("app/build.gradle.kts")
           if gradle.exists():
               text = gradle.read_text()
               text = text.replace('onnxruntime-android:1.23.2', 'onnxruntime-android:1.32.0')
-              
-              # Set version logic here if version name is hardcoded instead of from properties
-              if 'versionName = ' in text:
-                  text = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.3"', text)
-              if 'versionCode = ' in text:
-                  text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 213', text)
-                  
+              text = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.3"', text)
+              text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 213', text)
               gradle.write_text(text)
 
-          # Patch Lyrics Gestures
           p = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if p.exists():
               s = p.read_text()
               needed = ["import androidx.compose.foundation.gestures.awaitEachGesture", "import androidx.compose.foundation.gestures.awaitFirstDown", "import androidx.compose.ui.input.pointer.PointerEventPass", "import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed"]
               for imp in needed:
-                  if imp not in s: s = s.replace("import androidx.compose.ui.input.pointer.pointerInput", f"import androidx.compose.ui.input.pointer.pointerInput\n{imp}", 1)
+                  if imp not in s: s = s.replace("import androidx.compose.ui.input.pointer.pointerInput", "import androidx.compose.ui.input.pointer.pointerInput\\n" + imp, 1)
               s = re.sub(r'\.pointerInput\(onExpand\)\s*\{.*?onDragCancel = \{ drag = 0f \},\s*\}', '.lyricsVerticalSwipe(threshold = 48.dp, direction = 1, onSwipe = onExpand)', s, flags=re.DOTALL)
               s = re.sub(r'\.pointerInput\(onClose\)\s*\{.*?onDragCancel = \{ drag = 0f \},\s*\}', '.lyricsVerticalSwipe(threshold = 48.dp, direction = -1, onSwipe = onClose)', s, flags=re.DOTALL)
-              helper = "
-private fun Modifier.lyricsVerticalSwipe(threshold: androidx.compose.ui.unit.Dp, direction: Int, onSwipe: () -> Unit): Modifier = pointerInput(threshold, direction, onSwipe) { awaitEachGesture { val down = awaitFirstDown(requireUnconsumed = false); var total = 0f; var fired = false; while (!fired) { val event = awaitPointerEvent(PointerEventPass.Initial); val change = event.changes.firstOrNull { it.id == down.id } ?: break; total += change.positionChangeIgnoreConsumed().y; if (total * direction >= threshold.toPx()) { change.consume(); onSwipe(); fired = true }; if (!change.pressed) break } } }
-"
+              helper = "\\nprivate fun Modifier.lyricsVerticalSwipe(threshold: androidx.compose.ui.unit.Dp, direction: Int, onSwipe: () -> Unit): Modifier = pointerInput(threshold, direction, onSwipe) { awaitEachGesture { val down = awaitFirstDown(requireUnconsumed = false); var total = 0f; var fired = false; while (!fired) { val event = awaitPointerEvent(PointerEventPass.Initial); val change = event.changes.firstOrNull { it.id == down.id } ?: break; total += change.positionChangeIgnoreConsumed().y; if (total * direction >= threshold.toPx()) { change.consume(); onSwipe(); fired = true }; if (!change.pressed) break } } }\\n"
               marker = "/** The inline card's layout node, so the full screen can grow out of it and fold back into it. */"
               if "lyricsVerticalSwipe" not in s and marker in s: s = s.replace(marker, helper + marker, 1)
               p.write_text(s)
@@ -112,14 +103,9 @@ private fun Modifier.lyricsVerticalSwipe(threshold: androidx.compose.ui.unit.Dp,
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               s = p2.read_text()
-              if "PointerEventPass" not in s: s = s.replace("import androidx.compose.ui.input.pointer.positionChange", "import androidx.compose.ui.input.pointer.positionChange
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed", 1)
+              if "PointerEventPass" not in s: s = s.replace("import androidx.compose.ui.input.pointer.positionChange", "import androidx.compose.ui.input.pointer.positionChange\\nimport androidx.compose.ui.input.pointer.PointerEventPass\\nimport androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed", 1)
               s = s.replace("awaitPointerEvent()", "awaitPointerEvent(PointerEventPass.Initial)").replace("change.positionChange().y", "change.positionChangeIgnoreConsumed().y").replace("76.dp.toPx()", "48.dp.toPx()")
               p2.write_text(s)
-
-          Path(".vnera-revera-1.0.8-port").write_text("Ported via GitHub Actions
-")
           PY
 
       - name: Set up JDK 17
@@ -134,31 +120,19 @@ import androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed", 1)
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Prepare Signing Key
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.VNERA_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.VNERA_KEYSTORE_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "Warning: VNERA_KEYSTORE_BASE64 secret is not set. The APK will be built but might use a debug or default key."
-            echo "MYSPOTI_KEYSTORE=" >> "$GITHUB_ENV"
-          else
-            mkdir -p "$RUNNER_TEMP/vnera-signing"
-            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/vnera-signing/vnera-release.jks"
-            echo "MYSPOTI_KEYSTORE=$RUNNER_TEMP/vnera-signing/vnera-release.jks" >> "$GITHUB_ENV"
-            echo "MYSPOTI_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-            echo "MYSPOTI_KEY_ALIAS=vnera-release" >> "$GITHUB_ENV"
-            echo "MYSPOTI_KEY_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-          fi
-
       - name: Build Release APK
         run: |
-          ./gradlew :app:assembleRelease             -PappVersionName="$APP_VERSION_NAME"             -PappVersionCode="$APP_VERSION_CODE"             -Pabis=arm64-v8a             -PupdateRepo=vnsec2/VNEra             --no-daemon
+          ./gradlew :app:assembleRelease \
+            -PappVersionName="$APP_VERSION_NAME" \
+            -PappVersionCode="$APP_VERSION_CODE" \
+            -Pabis=arm64-v8a \
+            -PupdateRepo=vnsec2/VNEra \
+            --no-daemon
 
       - name: Commit version updates and port changes
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .
           if ! git diff --staged --quiet; then
             git commit -m "Bump to 2.1.3 and port Revera 1.0.8 features"
