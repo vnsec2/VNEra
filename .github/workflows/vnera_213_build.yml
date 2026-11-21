@@ -16,49 +16,34 @@ jobs:
           ref: work/source-review
           fetch-depth: 0
 
-      - name: Merge Revera 1.0.8 Base Update
+      - name: Switch Base to Pure Revera 1.0.8
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Αποθήκευση εικονιδίων VNEra πριν την επαναφορά στη βάση 1.0.8
+          mkdir -p /tmp/vnera_res
+          if [ -d "app/src/main/res" ]; then
+            cp -rn app/src/main/res/mipmap* /tmp/vnera_res/ 2>/dev/null || true
+            find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
+          fi
 
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
-          # Εντοπισμός του tag 1.0.8 ή του βασικού branch (main) του Revera
-          UPSTREAM_REF=""
-          for candidate in "v1.0.8" "1.0.8"; do
-            if git rev-parse "refs/tags/$candidate" >/dev/null 2>&1; then
-              UPSTREAM_REF="refs/tags/$candidate"
-              break
-            fi
-          done
+          echo "=== Revera v1.0.8 commits ==="
+          git log -n 5 --oneline refs/tags/v1.0.8 || true
+          echo "=== Revera upstream/main commits ==="
+          git log -n 5 --oneline upstream/main || true
 
-          if [ -z "$UPSTREAM_REF" ]; then
-            if git rev-parse "refs/remotes/upstream/main" >/dev/null 2>&1; then
-              UPSTREAM_REF="upstream/main"
-            else
-              UPSTREAM_REF="upstream/master"
-            fi
-          fi
+          # Καθαρή επαναφορά στον κώδικα του Revera 1.0.8
+          git reset --hard refs/tags/v1.0.8
 
-          echo "Merging Revera base update from: $UPSTREAM_REF"
-          if ! git merge "$UPSTREAM_REF" --no-edit --allow-unrelated-histories; then
-            echo "Resolving merge conflicts favoring Revera 1.0.8 base while keeping VNEra resources..."
-            CONFLICTED=$(git diff --name-only --diff-filter=U)
-            for f in $CONFLICTED; do
-              case "$f" in
-                app/src/main/res/*)
-                  git checkout --ours -- "$f"
-                  ;;
-                *)
-                  git checkout --theirs -- "$f"
-                  ;;
-              esac
-              git add -- "$f"
-            done
-            git commit -m "Merge Revera 1.0.8 base update"
+          # Επαναφορά εικονιδίων VNEra
+          if [ -d "/tmp/vnera_res" ]; then
+            cp -rf /tmp/vnera_res/mipmap* app/src/main/res/ 2>/dev/null || true
+            if [ -d "/tmp/vnera_res/app/src/main/res" ]; then
+              cp -rf /tmp/vnera_res/app/src/main/res/* app/src/main/res/ 2>/dev/null || true
+            fi
           fi
 
       - name: Set up JDK 21
@@ -116,7 +101,7 @@ jobs:
                   if t != t_new:
                       gradle_file.write_text(t_new)
 
-          # 3. Διατήρηση ονόματος VNEra στο strings.xml
+          # 3. Όνομα εφαρμογής VNEra στο strings.xml
           strings_xml = Path("app/src/main/res/values/strings.xml")
           if strings_xml.exists():
               s_xml = strings_xml.read_text()
@@ -133,11 +118,10 @@ jobs:
                   text += '\nandroid {\n    packaging {\n        resources {\n            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"\n            excludes += "META-INF/versions/9/module-info.class"\n        }\n    }\n}\n'
               gradle.write_text(text)
 
-          # 5. Fix CastMessage.kt expression-body return (μόνο αν υπάρχει ακόμα στον κώδικα)
+          # 5. Fix CastMessage.kt expression-body return (αν υπάρχει στη 1.0.8)
           cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
           if cast_msg.exists():
-              raw_cast = cast_msg.read_text()
-              lines = raw_cast.splitlines()
+              lines = cast_msg.read_text().splitlines()
               target_idx = min(36, len(lines) - 1)
               if "return" in lines[target_idx]:
                   fun_idx = None
@@ -199,43 +183,49 @@ jobs:
                           lines[end_line] = lines[end_line] + f"\n{indent}}}"
                           cast_msg.write_text("\n".join(lines) + "\n")
 
-          # 6. Classic Player Lyrics Swipe Gestures:
+          # 6. Έλεγχος & ρύθμιση Lyrics Swipe Gestures στη 1.0.8:
           #    - Σύρσιμο από κάτω προς τα πάνω (drag < 0) -> Άνοιγμα fullscreen (onExpand)
           #    - Σύρσιμο από πάνω προς τα κάτω (drag > 0) -> Κλείσιμο fullscreen (onClose)
-          path = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
-          if path.exists():
-              source = path.read_text()
-              detector_import = "import androidx.compose.foundation.gestures.detectVerticalDragGestures"
-              if detector_import not in source:
-                  anchor = "import androidx.compose.foundation.gestures.detectTapGestures"
-                  if anchor in source:
-                      source = source.replace(anchor, anchor + "\n" + detector_import, 1)
+          for kt_name in ["LyricsScreen.kt", "PlayerScreen.kt"]:
+              for kt_file in Path("app/src/main/java").rglob(kt_name):
+                  src = kt_file.read_text()
+                  print(f"=== Inspecting {kt_file} ===")
+                  for idx, ln in enumerate(src.splitlines(), 1):
+                      if any(k in ln for k in ["onExpand", "onClose", "detectVerticalDragGestures", "verticalDrag", "LyricsCard", "showLyrics"]):
+                          print(f"  L{idx}: {ln.strip()}")
 
-              header_old = "modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 4.dp).revealIn(reveal, 0.3f, 8f),"
-              header_new = """modifier = Modifier
-                      .fillMaxWidth().height(64.dp).padding(horizontal = 4.dp)
-                      .pointerInput(onClose) {
-                          var drag = 0f
-                          detectVerticalDragGestures(
-                              onVerticalDrag = { change, amount ->
-                                  drag += amount
-                                  change.consume()
-                              },
-                              onDragEnd = {
-                                  if (drag > 56.dp.toPx()) onClose()
-                                  drag = 0f
-                              },
-                              onDragCancel = { drag = 0f },
+                  # Αν υπάρχει ήδη έλεγχος drag με ανάποδο πρόσημο, το διορθώνουμε
+                  src_mod = re.sub(
+                      r'if\s*\(\s*drag\s*>\s*([^)]+)\)\s*onExpand\(\)',
+                      r'if (drag < -\1) onExpand()',
+                      src,
+                  )
+                  src_mod = re.sub(
+                      r'if\s*\(\s*drag\s*<\s*-\s*([^)]+)\)\s*onClose\(\)',
+                      r'if (drag > \1) onClose()',
+                      src_mod,
+                  )
+
+                  if kt_name == "LyricsScreen.kt":
+                      detector_import = "import androidx.compose.foundation.gestures.detectVerticalDragGestures"
+                      if detector_import not in src_mod and "import androidx.compose.foundation.gestures.detectTapGestures" in src_mod:
+                          src_mod = src_mod.replace(
+                              "import androidx.compose.foundation.gestures.detectTapGestures",
+                              "import androidx.compose.foundation.gestures.detectTapGestures\n" + detector_import,
+                              1,
                           )
-                      }
-                      .revealIn(reveal, 0.3f, 8f),"""
-              header_patched = False
-              if source.count(header_old) == 1:
-                  source = source.replace(header_old, header_new, 1)
-                  header_patched = True
+                      if "pointerInput" not in src_mod and "import androidx.compose.ui.input.pointer.pointerInput" not in src_mod:
+                          src_mod = src_mod.replace(
+                              detector_import,
+                              detector_import + "\nimport androidx.compose.ui.input.pointer.pointerInput",
+                              1,
+                          )
 
-              card_old = ".clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onExpand() }"
-              card_new = """.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { onExpand() }
+                      # Προσθήκη swipe-up για άνοιγμα στο clickable { onExpand() } αν δεν έχει ήδη vertical drag
+                      if "onExpand()" in src_mod and "pointerInput(onExpand)" not in src_mod:
+                          src_mod = re.sub(
+                              r'(\.clickable\([^)]*\)\s*\{\s*onExpand\(\)\s*\})',
+                              r'''\1
                           .pointerInput(onExpand) {
                               var drag = 0f
                               detectVerticalDragGestures(
@@ -244,25 +234,48 @@ jobs:
                                       change.consume()
                                   },
                                   onDragEnd = {
-                                      if (drag < -56.dp.toPx()) onExpand()
+                                      if (drag < -48.dp.toPx()) onExpand()
                                       drag = 0f
                                   },
                                   onDragCancel = { drag = 0f },
                               )
-                          }"""
-              card_patched = False
-              if source.count(card_old) == 1:
-                  source = source.replace(card_old, card_new, 1)
-                  card_patched = True
+                          }''',
+                              src_mod,
+                              count=1,
+                          )
 
-              print(f"LyricsScreen patched -> header(swipe-down-close)={header_patched}, card(swipe-up-open)={card_patched}")
-              path.write_text(source)
+                      # Προσθήκη swipe-down για κλείσιμο στο header του fullscreen (64.dp) αν δεν έχει ήδη vertical drag
+                      if "onClose" in src_mod and "pointerInput(onClose)" not in src_mod:
+                          src_mod = re.sub(
+                              r'(\.height\(64\.dp\)[^\n]*)',
+                              r'''\1
+                      .pointerInput(onClose) {
+                          var drag = 0f
+                          detectVerticalDragGestures(
+                              onVerticalDrag = { change, amount ->
+                                  drag += amount
+                                  change.consume()
+                              },
+                              onDragEnd = {
+                                  if (drag > 48.dp.toPx()) onClose()
+                                  drag = 0f
+                              },
+                              onDragCancel = { drag = 0f },
+                          )
+                      }''',
+                              src_mod,
+                              count=1,
+                          )
+
+                  if src_mod != src:
+                      kt_file.write_text(src_mod)
+                      print(f"Updated gestures in {kt_file}")
 
           # 7. Immersive Player fix
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               s = p2.read_text()
-              if "PointerEventPass" not in s:
+              if "PointerEventPass" not in s and "import androidx.compose.ui.input.pointer.positionChange" in s:
                   s = s.replace(
                       "import androidx.compose.ui.input.pointer.positionChange",
                       "import androidx.compose.ui.input.pointer.positionChange\nimport androidx.compose.ui.input.pointer.PointerEventPass\nimport androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed",
