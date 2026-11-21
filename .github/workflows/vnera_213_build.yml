@@ -73,7 +73,7 @@ jobs:
             find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
           fi
 
-          # 2. Λήψη Revera 1.0.8 και έλεγχος δομής φακέλων
+          # 2. Λήψη Revera 1.0.8 και εντοπισμός του Gradle root (base/)
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
@@ -81,15 +81,10 @@ jobs:
           mkdir -p /tmp/revera_108
           git archive refs/tags/v1.0.8 | tar -x -C /tmp/revera_108
 
-          echo "=== Contents of Revera v1.0.8 ==="
-          find /tmp/revera_108 -maxdepth 3
-
           GRADLE_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
           if [ -z "$GRADLE_SETTINGS" ] && git rev-parse "refs/remotes/upstream/main" >/dev/null 2>&1; then
             rm -rf /tmp/revera_108/*
             git archive refs/remotes/upstream/main | tar -x -C /tmp/revera_108
-            echo "=== Contents of Revera upstream/main ==="
-            find /tmp/revera_108 -maxdepth 3
             GRADLE_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
           fi
 
@@ -98,8 +93,6 @@ jobs:
             echo "Found Revera Gradle root at: $SRC_ROOT"
             find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" -exec rm -rf {} +
             cp -a "$SRC_ROOT"/. .
-          else
-            echo "Notice: No standalone Gradle root found inside Revera tag; keeping current workspace base."
           fi
 
           # 3. Επαναφορά Gradle wrapper αν λείπει
@@ -254,90 +247,86 @@ jobs:
                           lines[end_line] = lines[end_line] + f"\n{indent}}}"
                           cast_msg.write_text("\n".join(lines) + "\n")
 
-          # 6. Lyrics Swipe Gestures:
-          #    - Σύρσιμο από κάτω προς τα πάνω (drag αρνητικό) -> Άνοιγμα fullscreen (onExpand)
-          #    - Σύρσιμο από πάνω προς τα κάτω (drag θετικό) -> Κλείσιμο fullscreen (onClose)
-          for kt_name in ["LyricsScreen.kt", "PlayerScreen.kt", "ImmersiveLyricsPanel.kt"]:
-              for kt_file in Path("app/src/main/java").rglob(kt_name):
-                  src = kt_file.read_text()
-                  print(f"=== Inspecting {kt_file} ===")
-                  for idx, ln in enumerate(src.splitlines(), 1):
-                      if any(k in ln for k in ["onExpand", "onClose", "detectVerticalDragGestures", "verticalDrag", "LyricsCard", "showLyrics"]):
-                          print(f"  L{idx}: {ln.strip()}")
-
-                  src_mod = re.sub(
-                      r'if\s*\(\s*drag\s*>\s*([^)]+)\)\s*onExpand\(\)',
-                      r'if (drag < -\1) onExpand()',
-                      src,
+          # 6. Lyrics Swipe Gestures στη 1.0.8:
+          #    - Σύρσιμο από κάτω προς τα πάνω (drag < 0) -> Άνοιγμα fullscreen (onExpand)
+          #    - Σύρσιμο από πάνω προς τα κάτω (drag > 0) -> Κλείσιμο fullscreen (onClose)
+          lyrics_file = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
+          if lyrics_file.exists():
+              src = lyrics_file.read_text()
+              detector_import = "import androidx.compose.foundation.gestures.detectVerticalDragGestures"
+              if detector_import not in src and "import androidx.compose.foundation.gestures.detectTapGestures" in src:
+                  src = src.replace(
+                      "import androidx.compose.foundation.gestures.detectTapGestures",
+                      "import androidx.compose.foundation.gestures.detectTapGestures\n" + detector_import,
+                      1,
                   )
-                  src_mod = re.sub(
-                      r'if\s*\(\s*drag\s*<\s*-\s*([^)]+)\)\s*onClose\(\)',
-                      r'if (drag > \1) onClose()',
-                      src_mod,
+              if "pointerInput" not in src and "import androidx.compose.ui.input.pointer.pointerInput" not in src:
+                  src = src.replace(
+                      detector_import,
+                      detector_import + "\nimport androidx.compose.ui.input.pointer.pointerInput",
+                      1,
                   )
 
-                  if kt_name == "LyricsScreen.kt":
-                      detector_import = "import androidx.compose.foundation.gestures.detectVerticalDragGestures"
-                      if detector_import not in src_mod and "import androidx.compose.foundation.gestures.detectTapGestures" in src_mod:
-                          src_mod = src_mod.replace(
-                              "import androidx.compose.foundation.gestures.detectTapGestures",
-                              "import androidx.compose.foundation.gestures.detectTapGestures\n" + detector_import,
-                              1,
-                          )
-                      if "pointerInput" not in src_mod and "import androidx.compose.ui.input.pointer.pointerInput" not in src_mod:
-                          src_mod = src_mod.replace(
-                              detector_import,
-                              detector_import + "\nimport androidx.compose.ui.input.pointer.pointerInput",
-                              1,
-                          )
+              def add_expand_swipe(m):
+                  line = m.group(1)
+                  comma = "," if line.endswith(",") else ""
+                  base = line[:-1] if comma else line
+                  return (
+                      f"{base}\n"
+                      f"                .pointerInput(onExpand) {{\n"
+                      f"                    var drag = 0f\n"
+                      f"                    detectVerticalDragGestures(\n"
+                      f"                        onVerticalDrag = {{ change, amount ->\n"
+                      f"                            drag += amount\n"
+                      f"                            change.consume()\n"
+                      f"                        }},\n"
+                      f"                        onDragEnd = {{\n"
+                      f"                            if (drag < -48.dp.toPx()) onExpand()\n"
+                      f"                            drag = 0f\n"
+                      f"                        }},\n"
+                      f"                        onDragCancel = {{ drag = 0f }},\n"
+                      f"                    )\n"
+                      f"                }}{comma}"
+                  )
 
-                      if "onExpand()" in src_mod and "pointerInput(onExpand)" not in src_mod:
-                          src_mod = re.sub(
-                              r'(\.clickable\([^)]*\)\s*\{\s*onExpand\(\)\s*\})',
-                              r'''\1
-                          .pointerInput(onExpand) {
-                              var drag = 0f
-                              detectVerticalDragGestures(
-                                  onVerticalDrag = { change, amount ->
-                                      drag += amount
-                                      change.consume()
-                                  },
-                                  onDragEnd = {
-                                      if (drag < -48.dp.toPx()) onExpand()
-                                      drag = 0f
-                                  },
-                                  onDragCancel = { drag = 0f },
-                              )
-                          }''',
-                              src_mod,
-                              count=1,
-                          )
+              src, n_expand = re.subn(
+                  r'(\.clickable\([^\n]*\)\s*\{\s*onExpand\(\)\s*\},?)',
+                  add_expand_swipe,
+                  src,
+                  count=1,
+              )
 
-                      if "onClose" in src_mod and "pointerInput(onClose)" not in src_mod:
-                          src_mod = re.sub(
-                              r'(\.height\(64\.dp\)[^\n]*)',
-                              r'''\1
-                      .pointerInput(onClose) {
-                          var drag = 0f
-                          detectVerticalDragGestures(
-                              onVerticalDrag = { change, amount ->
-                                  drag += amount
-                                  change.consume()
-                              },
-                              onDragEnd = {
-                                  if (drag > 48.dp.toPx()) onClose()
-                                  drag = 0f
-                              },
-                              onDragCancel = { drag = 0f },
-                          )
-                      }''',
-                              src_mod,
-                              count=1,
-                          )
+              def add_close_swipe(m):
+                  line = m.group(1)
+                  comma = "," if line.endswith(",") else ""
+                  base = line[:-1] if comma else line
+                  return (
+                      f"{base}\n"
+                      f"            .pointerInput(onClose) {{\n"
+                      f"                var drag = 0f\n"
+                      f"                detectVerticalDragGestures(\n"
+                      f"                    onVerticalDrag = {{ change, amount ->\n"
+                      f"                        drag += amount\n"
+                      f"                        change.consume()\n"
+                      f"                    }},\n"
+                      f"                    onDragEnd = {{\n"
+                      f"                        if (drag > 48.dp.toPx()) onClose()\n"
+                      f"                        drag = 0f\n"
+                      f"                    }},\n"
+                      f"                    onDragCancel = {{ drag = 0f }},\n"
+                      f"                )\n"
+                      f"            }}{comma}"
+                  )
 
-                  if src_mod != src:
-                      kt_file.write_text(src_mod)
-                      print(f"Updated gestures in {kt_file}")
+              src, n_close = re.subn(
+                  r'(\.height\(64\.dp\)[^\n]*)',
+                  add_close_swipe,
+                  src,
+                  count=1,
+              )
+
+              print(f"LyricsScreen gestures patched -> expand(swipe-up)={n_expand}, close(swipe-down)={n_close}")
+              lyrics_file.write_text(src)
 
           # 7. Immersive Player fix
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
