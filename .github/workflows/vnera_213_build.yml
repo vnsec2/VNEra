@@ -226,10 +226,14 @@ jobs:
               const val KEY_LYRICS_COLOR = "lyrics_custom_color_argb"
               const val KEY_LYRICS_FONT_SCALE = "lyrics_font_scale"
 
+              @Volatile private var initialized = false
+              private var prefListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+
               var targetFps by mutableIntStateOf(0); private set
               var lyricsImmersiveEnabled by mutableStateOf(true); private set
               var lyricsBarsHidden by mutableStateOf(false)
               var lyricsFullscreenOpen by mutableStateOf(false)
+              var activeFullscreenButtonOwner by mutableStateOf<String?>(null)
               var onExternalOpenLyrics: (() -> Unit)? = null
               var onExternalCloseLyrics: (() -> Unit)? = null
 
@@ -260,18 +264,40 @@ jobs:
 
               private fun prefs(c: Context) = c.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-              fun init(c: Context) = prefs(c).run {
-                  targetFps = getInt(KEY_TARGET_FPS, 0)
-                  lyricsImmersiveEnabled = getBoolean(KEY_LYRICS_IMMERSIVE, true)
-                  customAccentColorArgb = getLong(KEY_CUSTOM_COLOR, 0L)
-                  elementAnimEnabled = getBoolean(KEY_ANIM_ENABLED, false)
-                  elementAnimMode = getInt(KEY_ANIM_MODE, 1).coerceIn(1, 3)
-                  elementAnimPauseOnPause = getBoolean(KEY_ANIM_PAUSE_ON_PAUSE, true)
-                  playbackAlertsEnabled = getBoolean(KEY_PLAYBACK_ALERTS, true)
-                  cachedExtensionsText = getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
-                  lyricsBeautifulEnabled = getBoolean(KEY_LYRICS_BEAUTIFUL, false)
-                  lyricsCustomColorArgb = getLong(KEY_LYRICS_COLOR, 0L)
-                  lyricsFontScale = getFloat(KEY_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.70f, 1.70f)
+              private fun loadFromPrefs(sp: SharedPreferences) {
+                  targetFps = sp.getInt(KEY_TARGET_FPS, 0)
+                  lyricsImmersiveEnabled = sp.getBoolean(KEY_LYRICS_IMMERSIVE, true)
+                  customAccentColorArgb = sp.getLong(KEY_CUSTOM_COLOR, 0L)
+                  elementAnimEnabled = sp.getBoolean(KEY_ANIM_ENABLED, false)
+                  elementAnimMode = sp.getInt(KEY_ANIM_MODE, 1).coerceIn(1, 3)
+                  elementAnimPauseOnPause = sp.getBoolean(KEY_ANIM_PAUSE_ON_PAUSE, true)
+                  playbackAlertsEnabled = sp.getBoolean(KEY_PLAYBACK_ALERTS, true)
+                  cachedExtensionsText = sp.getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
+                  lyricsBeautifulEnabled = sp.getBoolean(KEY_LYRICS_BEAUTIFUL, false)
+                  lyricsCustomColorArgb = sp.getLong(KEY_LYRICS_COLOR, 0L)
+                  lyricsFontScale = sp.getFloat(KEY_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.70f, 1.70f)
+              }
+
+              fun ensureInit(c: Context) {
+                  val sp = prefs(c)
+                  if (!initialized) {
+                      synchronized(this) {
+                          if (!initialized) {
+                              loadFromPrefs(sp)
+                              val listener = SharedPreferences.OnSharedPreferenceChangeListener { shared, _ ->
+                                  loadFromPrefs(shared)
+                              }
+                              prefListener = listener
+                              sp.registerOnSharedPreferenceChangeListener(listener)
+                              initialized = true
+                          }
+                      }
+                  }
+              }
+
+              fun init(c: Context) {
+                  ensureInit(c)
+                  loadFromPrefs(prefs(c))
               }
 
               fun reload(c: Context) { init(c); c.findActivity()?.let { applyWindowFrameRate(it, targetFps, true) } }
@@ -595,6 +621,8 @@ jobs:
 
           @Composable
           fun vnPlayerInlineLyricColor(original: Color): Color {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
               val enabled = VnFpsPref.lyricsBeautifulEnabled
               val customArgb = VnFpsPref.lyricsCustomColorArgb
               val accentArgb = VnFpsPref.customAccentColorArgb
@@ -605,21 +633,28 @@ jobs:
                   VnFpsPref.staticAppPrimaryArgb != 0L -> VnFpsPref.staticAppPrimaryArgb
                   else -> 0xFF7C4DFFL
               }
-              return Color(argb).copy(alpha = 0.95f)
+              return Color(argb).copy(alpha = 0.96f)
           }
 
           @Composable
           fun vnScaleLyricTextStyle(base: TextStyle): TextStyle {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
-              if (abs(scale - 1.0f) < 0.01f) return base
-              val baseSize = if (base.fontSize.isSpecified) base.fontSize else 15.sp
+              val styled = if (VnFpsPref.lyricsBeautifulEnabled) {
+                  base.copy(color = vnPlayerInlineLyricColor(base.color))
+              } else base
+              if (abs(scale - 1.0f) < 0.01f) return styled
+              val baseSize = if (styled.fontSize.isSpecified) styled.fontSize else 15.sp
               val scaledSize = (baseSize.value * scale).sp
-              val scaledLineHeight = if (base.lineHeight.isSpecified) (base.lineHeight.value * scale).sp else TextUnit.Unspecified
-              return base.copy(fontSize = scaledSize, lineHeight = scaledLineHeight)
+              val scaledLineHeight = if (styled.lineHeight.isSpecified) (styled.lineHeight.value * scale).sp else TextUnit.Unspecified
+              return styled.copy(fontSize = scaledSize, lineHeight = scaledLineHeight)
           }
 
           @Composable
           fun vnScaleLyricFontSize(base: TextUnit): TextUnit {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
               val resolved = if (base.isSpecified) base else 15.sp
               return (resolved.value * scale).sp
@@ -628,7 +663,7 @@ jobs:
           @Composable
           fun VnPlayerInlineLyricScope(content: @Composable () -> Unit) {
               val c = LocalContext.current
-              LaunchedEffect(c) { VnFpsPref.init(c) }
+              VnFpsPref.ensureInit(c)
               val baseDensity = LocalDensity.current
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
               val scaledDensity = remember(baseDensity, scale) {
@@ -646,11 +681,25 @@ jobs:
           @Composable
           fun VnLyricsFullscreenButton(
               isFullscreen: Boolean,
+              ownerId: String = "default",
               onClick: () -> Unit
           ) {
+              val isPrimaryOwner = ownerId == "lyrics_screen"
+              DisposableEffect(ownerId, isPrimaryOwner) {
+                  if (isPrimaryOwner || VnFpsPref.activeFullscreenButtonOwner == null) {
+                      VnFpsPref.activeFullscreenButtonOwner = ownerId
+                  }
+                  onDispose {
+                      if (VnFpsPref.activeFullscreenButtonOwner == ownerId) {
+                          VnFpsPref.activeFullscreenButtonOwner = null
+                      }
+                  }
+              }
+              if (VnFpsPref.activeFullscreenButtonOwner != ownerId) return
+
               Popup(
                   alignment = Alignment.TopEnd,
-                  offset = IntOffset(-36, 108),
+                  offset = IntOffset(-36, 96),
                   properties = PopupProperties(
                       focusable = false,
                       dismissOnBackPress = false,
@@ -662,7 +711,7 @@ jobs:
                       onClick = onClick,
                       modifier = Modifier.size(42.dp),
                       shape = CircleShape,
-                      color = Color.Black.copy(alpha = 0.68f),
+                      color = Color.Black.copy(alpha = 0.72f),
                       border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
                   ) {
                       Box(contentAlignment = Alignment.Center) {
@@ -799,6 +848,7 @@ jobs:
               }
 
               fun onTrackPlaybackObserved(c: Context, key: String, title: String, source: String, quality: String, kbps: Int = 0) {
+                  VnFpsPref.ensureInit(c)
                   val ck = key.trim(); if (ck.isEmpty() || ck == lastKey) return
                   val cs = source.trim(); val cq = quality.trim(); val score = qualityScore(cq, kbps)
                   if (cs.isEmpty() && score == 0) return
@@ -859,8 +909,9 @@ jobs:
 
           @Composable
           fun VnLyricsFullscreenEffect() {
-              val c = LocalContext.current; val act = remember(c) { c.findActivity() }; val imm = VnFpsPref.lyricsImmersiveEnabled
-              LaunchedEffect(c) { VnFpsPref.init(c) }
+              val c = LocalContext.current; val act = remember(c) { c.findActivity() }
+              VnFpsPref.ensureInit(c)
+              val imm = VnFpsPref.lyricsImmersiveEnabled
               DisposableEffect(act, imm) {
                   VnFpsPref.setSystemBarsHidden(act, imm)
                   onDispose {
@@ -870,6 +921,8 @@ jobs:
           }
 
           fun Modifier.vnAnimatedElement(phaseIndex: Int = 0): Modifier = composed {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
               if (!VnFpsPref.elementAnimEnabled) return@composed this
               val mode = VnFpsPref.elementAnimMode
               val shouldPause = VnFpsPref.elementAnimPauseOnPause && !VnFpsPref.isPlaybackPlaying
@@ -919,7 +972,9 @@ jobs:
 
           @Composable
           fun VnFrameRateGuard() {
-              val c = LocalContext.current; val act = remember(c) { c.findActivity() }; val fps = VnFpsPref.targetFps
+              val c = LocalContext.current; val act = remember(c) { c.findActivity() }
+              VnFpsPref.ensureInit(c)
+              val fps = VnFpsPref.targetFps
               val pArgb = MaterialTheme.colorScheme.primary.toArgb().toLong()
               LaunchedEffect(c) {
                   VnFpsPref.init(c)
@@ -1030,7 +1085,7 @@ jobs:
           @Composable
           fun VnLyricsSettingsCard(modifier: Modifier = Modifier) {
               val c = LocalContext.current
-              LaunchedEffect(c) { VnFpsPref.init(c) }
+              VnFpsPref.ensureInit(c)
               val scalePresets = listOf(0.70f, 0.85f, 1.00f, 1.20f, 1.40f, 1.70f)
 
               VnNativeSettingsCard(modifier) {
@@ -1133,7 +1188,7 @@ jobs:
           @Composable
           fun VnAppearanceSettingsCard(modifier: Modifier = Modifier) {
               val c = LocalContext.current
-              LaunchedEffect(c) { VnFpsPref.init(c) }
+              VnFpsPref.ensureInit(c)
               val rates = remember(c) { c.findActivity()?.let(::getSupportedRefreshRates).orEmpty() }
 
               VnNativeSettingsCard(modifier) {
@@ -1252,7 +1307,7 @@ jobs:
           @Composable
           fun VnPlaybackSettingsCard(modifier: Modifier = Modifier) {
               val c = LocalContext.current
-              LaunchedEffect(c) { VnFpsPref.init(c) }
+              VnFpsPref.ensureInit(c)
               VnNativeSettingsCard(modifier) {
                   VnNativeSwitchRow(
                       title = "Ειδοποίηση Ποιότητας & Σειράς Επεκτάσεων",
@@ -1279,7 +1334,7 @@ jobs:
 
           @Composable
           fun VnCopyBackupExtensionsButton(modifier: Modifier = Modifier) {
-              val c = LocalContext.current; LaunchedEffect(c) { VnFpsPref.init(c) }
+              val c = LocalContext.current; VnFpsPref.ensureInit(c)
               VnNativeSettingsCard(modifier) {
                   Row(
                       modifier = Modifier
@@ -1413,7 +1468,7 @@ jobs:
                   i += 1
               return "".join(out)
 
-          # 1. Connect ImmersivePlayer's lyrics-open boolean state to VnFpsPref so Fullscreen button opens & slides down black lyrics
+          # 1. Connect ImmersivePlayer's lyrics-open boolean state to VnFpsPref
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               ps = p2.read_text()
@@ -1433,7 +1488,7 @@ jobs:
                   ps = ps.replace(m_state.group(0), hook_code, 1)
               p2.write_text(ps)
 
-          # 2. LyricsScreen.kt (black full-screen lyrics): button closes with slide-down animation
+          # 2. LyricsScreen.kt (black full-screen lyrics): single button (ownerId = "lyrics_screen") + slide-down close
           lf = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lf.exists():
               s0 = lf.read_text()
@@ -1466,7 +1521,7 @@ jobs:
                                       "            }\n"
                                       "        }\n"
                                       "    }\n"
-                                      "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, onClick = vnTriggerClose)\n"
+                                      "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, ownerId = \"lyrics_screen\", onClick = vnTriggerClose)\n"
                                   )
                                   for k in range(se + 1, be + 1):
                                       if ".fillMaxSize()" in lines[k]:
@@ -1481,7 +1536,7 @@ jobs:
                                   break
               if s1 != s0: lf.write_text(s1)
 
-          # 3. ImmersiveLyricsPanel.kt: opens black fullscreen when closed, slides down & closes when open
+          # 3. ImmersiveLyricsPanel.kt: single button (ownerId = "immersive_panel", hidden if LyricsScreen is active)
           il = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
           if il.exists():
               t0 = il.read_text()
@@ -1523,7 +1578,7 @@ jobs:
                                   "            }\n"
                                   "        }\n"
                                   "    }\n"
-                                  "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, onClick = { if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() })\n"
+                                  "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, ownerId = \"immersive_panel\", onClick = { if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() })\n"
                               )
                               for k in range(se + 1, len(lines)):
                                   if ".fillMaxSize()" in lines[k]:
@@ -1538,7 +1593,7 @@ jobs:
                               break
               if t1 != t0: il.write_text(t1)
 
-          # 4. Inline Player Lyrics ("Στο δρόμο καθηγητής >"): preserve lyric text (no reset on exit), color & font size
+          # 4. Inline Player Lyrics: patch ALL Text(...) inside the player inline lyrics block so it NEVER resets to white
           def wrap_arg_call(call_src: str, param_name: str, wrapper_fn: str, default_expr: str | None = None) -> tuple[str, bool]:
               m = re.search(rf'\b{param_name}\s*=\s*', call_src)
               if not m:
@@ -1584,8 +1639,8 @@ jobs:
               changed = False
               for idx, line in enumerate(lines):
                   if re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›")', line):
-                      win_start = max(0, idx - 22)
-                      win_end = min(len(lines), idx + 15)
+                      win_start = max(0, idx - 26)
+                      win_end = min(len(lines), idx + 16)
                       win_txt = "".join(lines[win_start:win_end])
                       if re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', win_txt, re.IGNORECASE):
                           k = win_start
@@ -1624,7 +1679,8 @@ jobs:
                                   if c0 or c1 or c2:
                                       lines[k:t_end + 1] = [new_block]
                                       changed = True
-                                      break
+                                      k = t_end + 1
+                                      continue
                               k += 1
                           if changed:
                               break
@@ -1663,17 +1719,22 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # 5. Place each VNEra settings card into its exact matching category in Revera Settings!
+          # 5. Inject VNEra settings cards ONLY into real Settings screens (ImmersiveSettingsScreen.kt & SettingsScreen.kt)
+          settings_files = [
+              Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"),
+              Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"),
+          ]
+
           res_map: dict[str, set[str]] = {"lyrics": set(), "appearance": set(), "playback": set()}
           for xml_f in Path("app/src/main/res").rglob("*.xml"):
               xt = xml_f.read_text(errors="ignore")
               for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', xt):
                   k, val = m.group(1), m.group(2)
-                  if re.search(r'(?:Lyrics preview lines|Swipe to expand lyrics|Προεπισκόπηση στίχων|Λέξη προς λέξη)', val, re.I):
+                  if re.search(r'(?:Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Στοιχεία|Elements)', val, re.I):
                       res_map["lyrics"].add(k)
-                  if re.search(r'(?:Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Εμφάνιση|Appearance|Στοιχεία|Elements)', val, re.I):
+                  if re.search(r'(?:Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme)', val, re.I):
                       res_map["appearance"].add(k)
-                  if re.search(r'(?:Audio quality|Ποιότητα ήχου|Gapless|Normalization|Κανονικοποίηση|Αναπαραγωγή|Playback)', val, re.I):
+                  if re.search(r'(?:Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση)', val, re.I):
                       res_map["playback"].add(k)
 
           def build_cat_regex(literals: str, keys: set[str]) -> str:
@@ -1684,58 +1745,78 @@ jobs:
               (
                   "lyrics",
                   "VnLyricsSettingsCard",
-                  build_cat_regex(r'Lyrics preview lines|Swipe to expand lyrics|Προεπισκόπηση στίχων|Λέξη προς λέξη', res_map["lyrics"]),
+                  build_cat_regex(r'Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Στοιχεία|Elements', res_map["lyrics"]),
                   "com.music.spotui.ui.screens.VnLyricsSettingsCard()"
               ),
               (
                   "appearance",
                   "VnAppearanceSettingsCard",
-                  build_cat_regex(r'Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Εμφάνιση|Appearance|Στοιχεία|Elements', res_map["appearance"]),
+                  build_cat_regex(r'Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme', res_map["appearance"]),
                   "com.music.spotui.ui.screens.VnAppearanceSettingsCard()"
               ),
               (
                   "playback",
                   "VnPlaybackSettingsCard",
-                  build_cat_regex(r'Audio quality|Ποιότητα ήχου|Gapless|Normalization|Κανονικοποίηση|Αναπαραγωγή|Playback', res_map["playback"]),
+                  build_cat_regex(r'Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση', res_map["playback"]),
                   "com.music.spotui.ui.screens.VnPlaybackSettingsCard()"
               ),
           ]
 
-          injected_cats = {"lyrics": False, "appearance": False, "playback": False}
-
-          for cat_name, marker, anchor_rx, comp_call in cat_configs:
-              for sp_file in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
-                  if sp_file.name in ("VnFrameRateManager.kt", "VnSettingsBackup.kt"):
-                      continue
+          for sp_file in settings_files:
+              if not sp_file.exists():
+                  continue
+              injected_here = {"lyrics": False, "appearance": False, "playback": False}
+              for cat_name, marker, anchor_rx, comp_call in cat_configs:
                   st = sp_file.read_text()
                   if marker in st:
-                      injected_cats[cat_name] = True
-                      break
+                      injected_here[cat_name] = True
+                      continue
                   lines = st.splitlines(keepends=True)
                   for idx, line in enumerate(lines):
-                      if line.lstrip().startswith(("//", "/*", "*", "import ", "package ")):
+                      if line.lstrip().startswith(("//", "/*", "*", "import ", "package ", "fun ", "object ", "class ")):
                           continue
                       if re.search(anchor_rx, line, re.IGNORECASE):
-                          # Look forward to insert cleanly after the current item/card in that category
-                          for k in range(idx + 1, min(idx + 45, len(lines))):
+                          for k in range(idx + 1, min(idx + 35, len(lines))):
                               ind_m = re.match(r'^(\s*)', lines[k])
                               ind = ind_m.group(1) if ind_m else "    "
                               if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', lines[k]):
                                   lines.insert(k, f"{ind}item {{ {comp_call} }}\n")
                                   sp_file.write_text("".join(lines))
-                                  injected_cats[cat_name] = True
+                                  injected_here[cat_name] = True
                                   print(f"Injected {marker} into {cat_name} section of {sp_file}")
                                   break
                               if re.match(r'^\s*(?:Spacer|HorizontalDivider)\s*\(', lines[k]) and k + 1 < len(lines) and re.match(r'^\s*(?:Text|Settings|Immersive|Surface|Card|Column|Row)\b', lines[k + 1]):
                                   lines.insert(k + 1, f"{ind}{comp_call}\n")
                                   sp_file.write_text("".join(lines))
-                                  injected_cats[cat_name] = True
+                                  injected_here[cat_name] = True
                                   print(f"Injected {marker} into {cat_name} column of {sp_file}")
                                   break
-                          if injected_cats[cat_name]:
+                          if injected_here[cat_name]:
                               break
-                  if injected_cats[cat_name]:
-                      break
+
+              # Guarantee any category not matched in this Settings screen is placed right above VnSettingsBackup
+              inc_lyr = "false" if injected_here["lyrics"] else "true"
+              inc_app = "false" if injected_here["appearance"] else "true"
+              inc_ply = "false" if injected_here["playback"] else "true"
+              if any(v == "true" for v in (inc_lyr, inc_app, inc_ply)):
+                  st = sp_file.read_text()
+                  if "VnFpsSelectorCard" not in st:
+                      lines = st.splitlines(keepends=True)
+                      for i, l in enumerate(lines):
+                          s_line = l.lstrip()
+                          ind = l[:len(l) - len(s_line)]
+                          if s_line.startswith(("import ", "package ", "//", "/*", "*", "fun ", "object ", "class ")):
+                              continue
+                          if re.match(r'^item\b.*\{.*\bVn(?:Settings)?Backup\w*', s_line):
+                              lines.insert(i, f"{ind}item {{ com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyrics = {inc_lyr}, includeAppearance = {inc_app}, includePlayback = {inc_ply}) }}\n")
+                              sp_file.write_text("".join(lines))
+                              print(f"Injected fallback VnFpsSelectorCard into {sp_file}")
+                              break
+                          if re.match(r'^(?:com\.music\.spotui\.ui\.screens\.)?Vn(?:Settings)?Backup(?:\.[A-Za-z0-9_]+|\w*)\s*\(', s_line):
+                              lines.insert(i, f"{ind}com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyrics = {inc_lyr}, includeAppearance = {inc_app}, includePlayback = {inc_ply})\n")
+                              sp_file.write_text("".join(lines))
+                              print(f"Injected fallback VnFpsSelectorCard into {sp_file}")
+                              break
 
           for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
               if ap.exists() and "vnAnimatedElement" not in ap.read_text():
@@ -1781,23 +1862,6 @@ jobs:
                               lines.insert(i, re.match(r'^(\s*)', lines[i]).group(1) + "    com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
                               bt = "".join(lines); break
               bf.write_text(bt)
-
-          # Fallback only for any category that didn't match a dedicated settings section
-          inc_lyr = "false" if injected_cats["lyrics"] else "true"
-          inc_app = "false" if injected_cats["appearance"] else "true"
-          inc_ply = "false" if injected_cats["playback"] else "true"
-          if any(v == "true" for v in (inc_lyr, inc_app, inc_ply)):
-              for uf in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
-                  if uf.name in ("VnSettingsBackup.kt", "VnFrameRateManager.kt") or "VnFpsSelectorCard" in uf.read_text(): continue
-                  lines, ch = uf.read_text().splitlines(keepends=True), False
-                  for i, l in enumerate(lines):
-                      st = l.lstrip(); ind = l[:len(l)-len(st)]
-                      if st.startswith(("import ", "package ", "//", "/*", "*", "fun ", "object ", "class ")): continue
-                      if re.match(r'^item\b.*\{.*\bVn(?:Settings)?Backup\w*', st):
-                          lines.insert(i, f"{ind}item {{ com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyrics = {inc_lyr}, includeAppearance = {inc_app}, includePlayback = {inc_ply}) }}\n"); ch = True; break
-                      if re.match(r'^(?:com\.music\.spotui\.ui\.screens\.)?Vn(?:Settings)?Backup(?:\.[A-Za-z0-9_]+|\w*)\s*\(', st):
-                          lines.insert(i, f"{ind}com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyrics = {inc_lyr}, includeAppearance = {inc_app}, includePlayback = {inc_ply})\n"); ch = True; break
-                  if ch: uf.write_text("".join(lines))
 
           gh = False
           for ap in sorted(Path("app/src/main/java").rglob("*Activity.kt")):
