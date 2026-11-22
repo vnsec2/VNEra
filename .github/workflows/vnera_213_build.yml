@@ -2,10 +2,16 @@ name: Build VNEra Debug APK
 
 on:
   push:
-    branches: [ main, master, work/* ]
-  pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
+      - 'work/**'
+    paths-ignore:
+      - 'app/vnera-debug.keystore'
   workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
 
 jobs:
   build:
@@ -17,15 +23,17 @@ jobs:
         with:
           ref: main
           path: _keystore_repo
-        continue-on-error: true
+          fetch-depth: 1
 
       - name: Prepare Persistent Debug Keystore
         run: |
-          if [ -f "_keystore_repo/app/vnera-debug.keystore" ]; then
+          set -euo pipefail
+          if [ -f "_keystore_repo/app/vnera-debug.keystore" ] && keytool -list -keystore "_keystore_repo/app/vnera-debug.keystore" -storepass android >/dev/null 2>&1; then
             cp -f "_keystore_repo/app/vnera-debug.keystore" /tmp/vnera-debug.keystore
-          elif [ -f "app/vnera-debug.keystore" ]; then
+          elif [ -f "app/vnera-debug.keystore" ] && keytool -list -keystore "app/vnera-debug.keystore" -storepass android >/dev/null 2>&1; then
             cp -f "app/vnera-debug.keystore" /tmp/vnera-debug.keystore
           else
+            rm -f /tmp/vnera-debug.keystore
             keytool -genkeypair -v \
               -keystore /tmp/vnera-debug.keystore \
               -storepass android \
@@ -35,6 +43,19 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
+
+            mkdir -p _keystore_repo/app
+            cp -f /tmp/vnera-debug.keystore _keystore_repo/app/vnera-debug.keystore
+            (
+              cd _keystore_repo
+              git config user.name "VNEra Keystore Bot"
+              git config user.email "bot@vnera.local"
+              git add -f app/vnera-debug.keystore
+              if ! git diff --cached --quiet; then
+                git commit -m "Save persistent VNEra debug keystore [skip ci]"
+                git push origin main || true
+              fi
+            )
           fi
 
       - name: Checkout source-review
@@ -70,7 +91,7 @@ jobs:
             find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
           fi
 
-          tar --exclude='.git' --exclude='.github' --exclude='_keystore_repo' --exclude='*.zip' -cf - . | tar -xf - -C /tmp/vnera_custom
+          tar --exclude='.git' --exclude='.github' --exclude='_keystore_repo' --exclude='build' --exclude='.gradle' --exclude='*.zip' -cf - . | tar -xf - -C /tmp/vnera_custom
 
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
@@ -1494,6 +1515,8 @@ jobs:
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
               if "vnera-debug.keystore" not in t:
                   t += '\nandroid {\n    signingConfigs { getByName("debug") { storeFile = file("vnera-debug.keystore"); storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android" } }\n    buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("debug") } }\n}\n'
+              if 'abiFilters += "arm64-v8a"' not in t:
+                  t += '\nandroid {\n    defaultConfig {\n        ndk {\n            abiFilters.clear()\n            abiFilters += "arm64-v8a"\n        }\n    }\n}\n'
               if "META-INF/versions/9/OSGI-INF/MANIFEST.MF" not in t:
                   t += '\nandroid { packaging { resources { excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"; excludes += "META-INF/versions/9/module-info.class" } } }\n'
               gradle.write_text(t)
@@ -1939,11 +1962,20 @@ jobs:
               p2.write_text(re.sub(r'(?m)^([ \t]*fun\s+ImmersivePlayer\b[^{]*\{)\s*$', r'\1\n    com.music.spotui.ui.screens.VnFrameRateGuard()', p2.read_text(), count=1))
           PY
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Build Debug APK (arm64-v8a only)
+        run: |
+          set -euo pipefail
+          ./gradlew :app:assembleDebug -PreactNativeArchitectures=arm64-v8a --no-daemon --stacktrace
+
+          rm -rf /tmp/vnera_apk_out
+          mkdir -p /tmp/vnera_apk_out
+          APK_FILE=$(find app/build/outputs/apk/debug -maxdepth 2 -type f -name "*.apk" ! -name "*androidTest*" | head -n 1)
+          [ -n "$APK_FILE" ] || { echo "ERROR: Δεν βρέθηκε το τελικό APK"; exit 1; }
+          cp -f "$APK_FILE" /tmp/vnera_apk_out/VNEra-2.1.4-arm64-v8a.apk
+          ls -lh /tmp/vnera_apk_out/VNEra-2.1.4-arm64-v8a.apk
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: VNEra-2.1.4-arm64-v8a
+          path: /tmp/vnera_apk_out/VNEra-2.1.4-arm64-v8a.apk
