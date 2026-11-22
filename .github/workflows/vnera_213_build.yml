@@ -1,6 +1,10 @@
-name: Build VNEra Debug APK
+name: Build VNEra APK (Revera 1.0.8 Base)
 
 on:
+  push:
+    branches:
+      - work/source-review
+      - main
   workflow_dispatch:
 
 permissions:
@@ -52,7 +56,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Backup Gradle wrapper, εικονιδίων και του δικού σου κώδικα (work/source-review)
           rm -rf /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old /tmp/merge_repo
           mkdir -p /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old
 
@@ -67,10 +70,8 @@ jobs:
             find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
           fi
 
-          # Αντιγραφή του τρέχοντος VNEra tree (χωρίς μεγάλα archives)
           tar --exclude='.git' --exclude='.github' --exclude='_keystore_repo' --exclude='*.zip' -cf - . | tar -xf - -C /tmp/vnera_custom
 
-          # 2. Λήψη Revera 1.0.8 και ιστορικού upstream για ακριβή εντοπισμό του παλιού base
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
@@ -83,7 +84,6 @@ jobs:
           NEW_BASE_ROOT=$(dirname "$GRADLE_SETTINGS")
           echo "Revera 1.0.8 Gradle root: $NEW_BASE_ROOT"
 
-          # 3. Εντοπισμός του ακριβούς commit/tag της Revera από το οποίο ξεκίνησε το work/source-review
           python3 <<'PY'
           import shutil
           import subprocess
@@ -95,7 +95,6 @@ jobs:
               for p in Path("/tmp/vnera_custom").rglob("*")
               if p.is_file() and p.suffix in exts and ".git" not in p.parts and ".github" not in p.parts
           }
-          print(f"Comparing {len(vnera_files)} VNEra source files against upstream Revera revisions...")
 
           candidates = []
           tags = subprocess.check_output(["git", "tag", "-l", "v1.0.*"], text=True).splitlines()
@@ -108,7 +107,7 @@ jobs:
                   ["git", "rev-list", "--first-parent", "refs/tags/v1.0.6..refs/tags/v1.0.8^"],
                   text=True,
               ).splitlines()
-              for idx, c in enumerate(commits[:25]):
+              for c in commits[:25]:
                   candidates.append((f"commit-{c[:8]}", c))
 
           best_label = "v1.0.7"
@@ -127,7 +126,6 @@ jobs:
                   cand = base_dir / rel
                   if cand.exists() and cand.read_bytes() == data:
                       matches += 1
-              print(f"Candidate {label}: {matches}/{len(vnera_files)} matching files")
               if matches > best_score:
                   best_score = matches
                   best_label = label
@@ -142,7 +140,6 @@ jobs:
           OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
           OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
 
-          # 4. 3-Way Git Merge: Εφαρμογή ΜΟΝΟ των δικών σου αλλαγών πάνω στη Revera 1.0.8
           git init /tmp/merge_repo
           cd /tmp/merge_repo
           git config user.name "VNEra Merge Bot"
@@ -158,24 +155,39 @@ jobs:
           git add -A
           git commit -q -m "VNEra custom changes"
 
-          git checkout -q -b revera-108 HEAD~1
+          git checkout -q --orphan revera-108 master
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
           cp -a "$NEW_BASE_ROOT"/. .
           git add -A
-          git commit -q -m "Revera 1.0.8 base"
+          git commit -q -m "Revera 1.0.8"
 
-          echo "=== Applying VNEra changes onto Revera 1.0.8 ==="
-          git cherry-pick -X theirs vnera-custom
+          git checkout -q -b merged revera-108
+          git merge --no-commit --no-ff -X ours vnera-custom || true
 
-          echo "=== Summary of VNEra files merged onto 1.0.8 ==="
-          git diff --stat HEAD~1 HEAD
+          python3 <<'PY'
+          import subprocess
+          from pathlib import Path
 
-          # 5. Επαναφορά στο workspace
+          unmerged = subprocess.check_output(
+              ["git", "diff", "--name-only", "--diff-filter=U"],
+              text=True,
+          ).splitlines()
+
+          for rel in unmerged:
+              p = Path(rel)
+              if "Vn" in p.name or "vnera" in rel.lower():
+                  subprocess.run(["git", "checkout", "--theirs", "--", rel], check=True)
+              else:
+                  subprocess.run(["git", "checkout", "--ours", "--", rel], check=True)
+              subprocess.run(["git", "add", "--", rel], check=True)
+          PY
+
+          git commit -q -m "Merge VNEra custom features onto Revera 1.0.8"
+
           cd "$GITHUB_WORKSPACE"
           find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" ! -name "_keystore_repo" -exec rm -rf {} +
           tar --exclude='.git' -cf - -C /tmp/merge_repo . | tar -xf - -C .
 
-          # Αντιγραφή του μόνιμου keystore μέσα στο app/ από το /tmp
           mkdir -p app
           if [ -f "/tmp/vnera-debug.keystore" ]; then
             cp -f "/tmp/vnera-debug.keystore" "app/vnera-debug.keystore"
@@ -183,7 +195,6 @@ jobs:
             cp -f "$HOME/.android/debug.keystore" "app/vnera-debug.keystore"
           fi
 
-          # 6. Επαναφορά Gradle wrapper & εικονιδίων VNEra
           if [ ! -f "gradlew" ] && [ -f "/tmp/vnera_gradle/gradlew" ]; then
             cp -f /tmp/vnera_gradle/gradlew ./gradlew
             [ -f "/tmp/vnera_gradle/gradlew.bat" ] && cp -f /tmp/vnera_gradle/gradlew.bat ./gradlew.bat
@@ -197,50 +208,34 @@ jobs:
 
           if [ -d "/tmp/vnera_res" ] && [ -d "app/src/main/res" ]; then
             cp -rf /tmp/vnera_res/mipmap* app/src/main/res/ 2>/dev/null || true
-            if [ -d "/tmp/vnera_res/app/src/main/res" ]; then
-              cp -rf /tmp/vnera_res/app/src/main/res/* app/src/main/res/ 2>/dev/null || true
-            fi
           fi
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: 21
+          distribution: 'temurin'
+          java-version: '21'
 
       - name: Link SDK 37 & Fix Versions & Apply Patches
         run: |
-          set -euo pipefail
-          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-
-          SUDO=""
-          if command -v sudo >/dev/null 2>&1 && [ ! -w "$SDK_ROOT/platforms" ]; then
-            SUDO="sudo"
+          SDK_DIR="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          HAS_SDK_37=false
+          if [ -d "$SDK_DIR/platforms/android-37" ]; then
+            HAS_SDK_37=true
+          elif [ -d "$SDK_DIR/platforms/android-36" ]; then
+            ln -sfn "$SDK_DIR/platforms/android-36" "$SDK_DIR/platforms/android-37"
+            HAS_SDK_37=true
+          elif [ -d "$SDK_DIR/platforms/android-35" ]; then
+            ln -sfn "$SDK_DIR/platforms/android-35" "$SDK_DIR/platforms/android-37"
+            HAS_SDK_37=true
           fi
+          export HAS_SDK_37
 
-          if [ -d "$SDK_ROOT/platforms/android-37.0" ] && [ ! -e "$SDK_ROOT/platforms/android-37" ]; then
-            $SUDO ln -sfn "$SDK_ROOT/platforms/android-37.0" "$SDK_ROOT/platforms/android-37"
-          fi
+          BUILD_VERSION_CODE=$((214000 + GITHUB_RUN_NUMBER))
+          export BUILD_VERSION_CODE
 
-          export HAS_SDK_37="false"
-          if [ -d "$SDK_ROOT/platforms/android-37" ]; then
-            export HAS_SDK_37="true"
-          fi
-          echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
-
-          # Αυτόματα αυξανόμενο versionCode σε κάθε build ώστε να γίνεται update χωρίς απεγκατάσταση
-          RUN_NUM="${GITHUB_RUN_NUMBER:-1}"
-          export BUILD_VERSION_CODE=$((214000 + RUN_NUM))
-          echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
-
-          # Δημιουργία αυτόνομου VnFrameRateManager.kt:
-          # - FPS Guard & Selector
-          # - Fullscreen Lyrics Red-Edge Scrolling (2.2x) + Immersive Mode
-          # - Fullscreen Tap-Only Volume Rocker (+/-) στη δεξιά άκρη (Popup)
-          # - Εκτεταμένη Παλέτα Χρωμάτων & Element Animations (Mode 1, 2, 3 - ON/OFF)
-          # - Αναδυόμενο Παράθυρο Ειδοποίησης για Λάθος Σειρά Επεκτάσεων & Πτώση Ποιότητας Ήχου
-          # - Πλήρες Export/Restore & Αντιγραφή Extensions στο Clipboard
           mkdir -p app/src/main/java/com/music/spotui/ui/screens
+
           cat <<'EOF' > app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
           package com.music.spotui.ui.screens
 
@@ -332,6 +327,7 @@ jobs:
           import org.json.JSONArray
           import org.json.JSONObject
           import java.io.File
+          import java.util.Locale
           import kotlin.math.abs
           import kotlin.math.roundToInt
 
@@ -339,6 +335,8 @@ jobs:
               const val PREFS_NAME = "vnera_display_prefs"
               const val KEY_TARGET_FPS = "target_fps"
               const val KEY_LYRICS_IMMERSIVE = "lyrics_immersive_fullscreen"
+              const val KEY_VOLUME_BUTTONS_ENABLED = "fullscreen_volume_buttons_enabled"
+              const val KEY_VOLUME_BUTTONS_OFFSET_Y = "fullscreen_volume_buttons_offset_y"
               const val KEY_CUSTOM_COLOR = "custom_accent_color_argb"
               const val KEY_ANIM_ENABLED = "element_animation_enabled"
               const val KEY_ANIM_MODE = "element_animation_mode"
@@ -352,7 +350,16 @@ jobs:
               var lyricsImmersiveEnabled by mutableStateOf(true)
                   private set
 
+              var volumeButtonsEnabled by mutableStateOf(true)
+                  private set
+
+              var volumeButtonsOffsetY by mutableIntStateOf(-120)
+                  private set
+
               var lyricsBarsHidden by mutableStateOf(false)
+
+              // Μετρητής ενεργών fullscreen lyrics panels ώστε τα κουμπιά έντασης να εμφανίζονται ΜΟΝΟ 1 φορά
+              var activeFullscreenLyricsCount by mutableIntStateOf(0)
 
               // True όσο ο χρήστης σκρολάρει στις κόκκινες άκρες των στίχων
               var isLyricsEdgeDragging by mutableStateOf(false)
@@ -371,7 +378,7 @@ jobs:
               var elementAnimMode by mutableIntStateOf(1)
                   private set
 
-              // Αναδυόμενα παράθυρα για λάθος σειρά επεκτάσεων ή πτώση ποιότητας
+              // Αναδυόμενα παράθυρα για πτώση ποιότητας, επαλήθευση 16/24-bit & σειρά επεκτάσεων
               var playbackAlertsEnabled by mutableStateOf(true)
                   private set
 
@@ -403,6 +410,8 @@ jobs:
                   val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                   targetFps = prefs.getInt(KEY_TARGET_FPS, 0)
                   lyricsImmersiveEnabled = prefs.getBoolean(KEY_LYRICS_IMMERSIVE, true)
+                  volumeButtonsEnabled = prefs.getBoolean(KEY_VOLUME_BUTTONS_ENABLED, true)
+                  volumeButtonsOffsetY = prefs.getInt(KEY_VOLUME_BUTTONS_OFFSET_Y, -120)
                   customAccentColorArgb = prefs.getLong(KEY_CUSTOM_COLOR, 0L)
                   elementAnimEnabled = prefs.getBoolean(KEY_ANIM_ENABLED, false)
                   elementAnimMode = prefs.getInt(KEY_ANIM_MODE, 1).coerceIn(1, 3)
@@ -431,6 +440,17 @@ jobs:
                       .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                       .edit()
                       .putBoolean(KEY_LYRICS_IMMERSIVE, enabled)
+                      .apply()
+              }
+
+              fun updateVolumeButtons(context: Context, enabled: Boolean, offsetY: Int = volumeButtonsOffsetY) {
+                  volumeButtonsEnabled = enabled
+                  volumeButtonsOffsetY = offsetY
+                  context.applicationContext
+                      .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                      .edit()
+                      .putBoolean(KEY_VOLUME_BUTTONS_ENABLED, enabled)
+                      .putInt(KEY_VOLUME_BUTTONS_OFFSET_Y, offsetY)
                       .apply()
               }
 
@@ -742,13 +762,29 @@ jobs:
           }
 
           /**
-           * Έλεγχος σειράς επεκτάσεων vs πηγών ήχου ΚΑΙ πτώσης ποιότητας ήχου σε σχέση με το προηγούμενο τραγούδι.
+           * Έλεγχος:
+           * 1. Πτώσης ποιότητας σε σχέση με το προηγούμενο τραγούδι.
+           * 2. Αν δηλώνεται ποιότητα (16-bit / 24-bit / kHz-MHz / Lossless / Hi-Res / FLAC)
+           *    και αν η πηγή δίνει όντως πραγματικό 16/24-bit & τη δηλωμένη συχνότητα.
+           * 3. Σειράς επεκτάσεων vs πηγών ήχου.
            */
           object VnPlaybackMonitor {
               var activeAlertTitle by mutableStateOf<String?>(null)
               var activeAlertBody by mutableStateOf<String?>(null)
 
-              private var lastEvaluatedTrackKey: String = ""
+              private var currentTrackKey: String = ""
+              private var currentTrackTitle: String = ""
+              private var currentSourceName: String = ""
+              private var currentDeclaredQuality: String = ""
+              private var currentMimeType: String = ""
+              private var currentCodecs: String = ""
+              private var currentSampleRateHz: Int = 0
+              private var currentBitDepth: Int = 0
+              private var currentBitrateKbps: Int = 0
+
+              private var lastCommittedScoreKey: String = ""
+              private var lastWarnedSignature: String = ""
+
               private var previousTrackTitle: String = ""
               private var previousQualityScore: Int = -1
               private var previousQualityLabel: String = ""
@@ -758,17 +794,89 @@ jobs:
                   activeAlertBody = null
               }
 
-              fun qualityScore(label: String, bitrateKbps: Int = 0): Int {
-                  val l = label.lowercase()
+              private fun isLosslessStream(mime: String, codecs: String, bitDepth: Int, bitrateKbps: Int): Boolean {
+                  val m = mime.lowercase(Locale.US)
+                  val c = codecs.lowercase(Locale.US)
+                  if (m.contains("flac") || m.contains("alac") || m.contains("wav") || m.contains("pcm") || m.contains("raw")) return true
+                  if (c.contains("flac") || c.contains("alac") || c.contains("pcm")) return true
+                  if (bitDepth >= 16) return true
+                  if (bitrateKbps >= 700) return true
+                  return false
+              }
+
+              private fun formatSampleRate(hz: Int): String {
+                  if (hz <= 0) return ""
+                  val khz = hz / 1000.0
+                  return if (abs(khz - khz.roundToInt()) < 0.05) {
+                      "${khz.roundToInt()} kHz"
+                  } else {
+                      String.format(Locale.US, "%.1f kHz", khz)
+                  }
+              }
+
+              private fun buildRealSpecSummary(): String {
+                  val parts = mutableListOf<String>()
+                  if (currentBitDepth > 0) {
+                      parts.add("${currentBitDepth}-bit")
+                  } else if (isLosslessStream(currentMimeType, currentCodecs, currentBitDepth, currentBitrateKbps)) {
+                      parts.add("16-bit Lossless")
+                  }
+                  if (currentSampleRateHz > 0) {
+                      parts.add(formatSampleRate(currentSampleRateHz))
+                  }
+                  if (currentBitrateKbps > 0) {
+                      parts.add("${currentBitrateKbps} kbps")
+                  }
+                  val codecShort = when {
+                      currentMimeType.contains("flac", true) || currentCodecs.contains("flac", true) -> "FLAC"
+                      currentMimeType.contains("alac", true) || currentCodecs.contains("alac", true) -> "ALAC"
+                      currentMimeType.contains("opus", true) || currentCodecs.contains("opus", true) -> "Opus"
+                      currentMimeType.contains("mp4a", true) || currentCodecs.contains("mp4a", true) -> "AAC"
+                      currentMimeType.contains("mpeg", true) -> "MP3"
+                      currentMimeType.isNotBlank() -> currentMimeType.substringAfterLast('/').uppercase(Locale.US)
+                      else -> ""
+                  }
+                  if (codecShort.isNotEmpty()) parts.add(codecShort)
+                  if (parts.isNotEmpty()) return parts.joinToString(" · ")
+                  return currentDeclaredQuality.ifBlank { "Άγνωστη" }
+              }
+
+              fun computeEffectiveScore(): Int {
+                  val decl = currentDeclaredQuality.lowercase(Locale.US)
+                  val hasRealStream = currentSampleRateHz > 0 || currentBitDepth > 0 || currentBitrateKbps > 0 || currentMimeType.isNotBlank()
+                  if (hasRealStream) {
+                      val lossless = isLosslessStream(currentMimeType, currentCodecs, currentBitDepth, currentBitrateKbps)
+                      var score = when {
+                          lossless && (currentBitDepth >= 24 || currentSampleRateHz >= 88200) -> 600
+                          lossless -> 450
+                          currentBitrateKbps >= 256 -> 300
+                          currentBitrateKbps >= 160 -> 220
+                          currentBitrateKbps >= 96 -> 150
+                          currentBitrateKbps > 0 -> 100
+                          else -> 0
+                      }
+                      if (currentSampleRateHz > 0) {
+                          score += (currentSampleRateHz / 1000).coerceIn(0, 192) / 4
+                      }
+                      if (currentBitDepth > 0) {
+                          score += currentBitDepth
+                      }
+                      return score
+                  }
+                  return qualityScoreFromLabel(decl, currentBitrateKbps)
+              }
+
+              fun qualityScoreFromLabel(label: String, bitrateKbps: Int = 0): Int {
+                  val l = label.lowercase(Locale.US)
                   val tier = when {
                       l.contains("hi-res") || l.contains("hires") || l.contains("24-bit") || l.contains("24bit") ||
-                          l.contains("192") || l.contains("96khz") || l.contains("master") || l.contains("mqa") -> 500
+                          l.contains("192") || l.contains("96khz") || l.contains("96mhz") || l.contains("master") || l.contains("mqa") -> 600
                       l.contains("lossless") || l.contains("flac") || l.contains("alac") || l.contains("wav") ||
-                          l.contains("16-bit") || l.contains("16bit") || l.contains("44.1") || l.contains("48khz") -> 400
+                          l.contains("16-bit") || l.contains("16bit") || l.contains("44.1") || l.contains("48khz") || l.contains("48mhz") -> 450
                       l.contains("high") || l.contains("320") || l.contains("256") -> 300
                       l.contains("medium") || l.contains("normal") || l.contains("192") || l.contains("160") || l.contains("128") -> 200
                       l.contains("low") || l.contains("96") || l.contains("64") -> 100
-                      bitrateKbps >= 900 -> 450
+                      bitrateKbps >= 700 -> 450
                       bitrateKbps >= 256 -> 300
                       bitrateKbps >= 128 -> 200
                       bitrateKbps > 0 -> 100
@@ -808,7 +916,7 @@ jobs:
                           val spName = file.name.removeSuffix(".xml")
                           val sp = context.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE)
                           sp.all.forEach { (k, v) ->
-                              val kl = k.lowercase()
+                              val kl = k.lowercase(Locale.US)
                               if (audioSourcesOrder.isEmpty() &&
                                   (kl.contains("source") || kl.contains("provider")) &&
                                   (kl.contains("order") || kl.contains("priority") || kl.contains("list") || kl.contains("enabled"))
@@ -829,6 +937,63 @@ jobs:
                   return audioSourcesOrder to extensionsOrder
               }
 
+              private fun switchTrackIfNeeded(trackId: String, title: String) {
+                  val key = trackId.trim().ifBlank { title.trim() }
+                  if (key.isEmpty()) return
+                  if (key != currentTrackKey) {
+                      currentTrackKey = key
+                      currentTrackTitle = title.trim()
+                      currentSourceName = ""
+                      currentDeclaredQuality = ""
+                      currentMimeType = ""
+                      currentCodecs = ""
+                      currentSampleRateHz = 0
+                      currentBitDepth = 0
+                      currentBitrateKbps = 0
+                  } else if (title.isNotBlank()) {
+                      currentTrackTitle = title.trim()
+                  }
+              }
+
+              @JvmStatic
+              fun onServiceAudioObserved(
+                  context: Context,
+                  trackId: String,
+                  title: String,
+                  sourceName: String,
+                  declaredQuality: String,
+                  mimeType: String,
+                  codecs: String,
+                  sampleRateHz: Int,
+                  bitDepth: Int,
+                  bitrateKbps: Int,
+              ) {
+                  switchTrackIfNeeded(trackId, title)
+                  if (sourceName.isNotBlank()) currentSourceName = sourceName.trim()
+                  if (declaredQuality.isNotBlank()) currentDeclaredQuality = declaredQuality.trim()
+                  if (mimeType.isNotBlank()) currentMimeType = mimeType.trim()
+                  if (codecs.isNotBlank()) currentCodecs = codecs.trim()
+                  if (sampleRateHz > 0) currentSampleRateHz = sampleRateHz
+                  if (bitDepth > 0) currentBitDepth = bitDepth
+                  if (bitrateKbps > 0) currentBitrateKbps = bitrateKbps
+                  evaluateCurrentTrack(context)
+              }
+
+              @JvmStatic
+              fun onUiTrackObserved(
+                  context: Context,
+                  trackId: String,
+                  title: String,
+                  sourceName: String,
+                  declaredQuality: String,
+              ) {
+                  switchTrackIfNeeded(trackId, title)
+                  if (sourceName.isNotBlank()) currentSourceName = sourceName.trim()
+                  if (declaredQuality.isNotBlank()) currentDeclaredQuality = declaredQuality.trim()
+                  evaluateCurrentTrack(context)
+              }
+
+              @JvmStatic
               fun onTrackPlaybackObserved(
                   context: Context,
                   trackKey: String,
@@ -837,69 +1002,112 @@ jobs:
                   qualityLabel: String,
                   bitrateKbps: Int = 0,
               ) {
-                  val cleanKey = trackKey.trim()
-                  if (cleanKey.isEmpty() || cleanKey == lastEvaluatedTrackKey) return
-                  val cleanSource = sourceName.trim()
-                  val cleanQuality = qualityLabel.trim()
-                  val currScore = qualityScore(cleanQuality, bitrateKbps)
+                  switchTrackIfNeeded(trackKey, title)
+                  if (sourceName.isNotBlank()) currentSourceName = sourceName.trim()
+                  if (qualityLabel.isNotBlank()) currentDeclaredQuality = qualityLabel.trim()
+                  if (bitrateKbps > 0) currentBitrateKbps = bitrateKbps
+                  evaluateCurrentTrack(context)
+              }
 
-                  if (cleanSource.isEmpty() && currScore == 0) return
-                  lastEvaluatedTrackKey = cleanKey
+              private fun evaluateCurrentTrack(context: Context) {
+                  if (currentTrackKey.isEmpty()) return
+                  val currScore = computeEffectiveScore()
+                  val hasRealStream = currentSampleRateHz > 0 || currentBitDepth > 0 || currentBitrateKbps > 0 || currentMimeType.isNotBlank()
+                  if (currScore == 0 && !hasRealStream && currentDeclaredQuality.isBlank() && currentSourceName.isBlank()) return
 
                   val warnings = mutableListOf<String>()
-                  val (audioSourcesOrder, extensionsOrder) = readConfiguredOrders(context)
+                  val declLower = currentDeclaredQuality.lowercase(Locale.US)
 
+                  // 1. Επαλήθευση: Αν δηλώνεται 16-bit / 24-bit / kHz-MHz / Lossless / Hi-Res, έχει όντως η πηγή 16-24 bit ή τη συχνότητα;
+                  val claimsLosslessOrHiRes =
+                      declLower.contains("16-bit") || declLower.contains("16bit") ||
+                      declLower.contains("24-bit") || declLower.contains("24bit") ||
+                      declLower.contains("lossless") || declLower.contains("hi-res") ||
+                      declLower.contains("hires") || declLower.contains("flac") ||
+                      declLower.contains("alac") || declLower.contains("wav") ||
+                      declLower.contains("khz") || declLower.contains("mhz")
+
+                  if (claimsLosslessOrHiRes && hasRealStream) {
+                      val actuallyLossless = isLosslessStream(currentMimeType, currentCodecs, currentBitDepth, currentBitrateKbps)
+                      val claims24Bit = declLower.contains("24-bit") || declLower.contains("24bit") ||
+                          declLower.contains("hi-res") || declLower.contains("hires")
+                      val claimsHighSampleRate = declLower.contains("96") || declLower.contains("192") || declLower.contains("88.2") || declLower.contains("mhz")
+
+                      if (!actuallyLossless) {
+                          warnings.add(
+                              "• Ψευδής δήλωση ποιότητας πηγής: Δηλώνεται «$currentDeclaredQuality», αλλά η πηγή στέλνει συμπιεσμένο ήχο (${buildRealSpecSummary()}) και ΟΧΙ πραγματικό 16-bit / 24-bit!"
+                          )
+                      } else if (claims24Bit && currentBitDepth in 1..16) {
+                          warnings.add(
+                              "• Χαμηλότερο Bit-Depth από το δηλωμένο: Δηλώνεται «$currentDeclaredQuality» (24-bit), αλλά η πηγή δίνει πραγματικά ${buildRealSpecSummary()}."
+                          )
+                      } else if (claimsHighSampleRate && currentSampleRateHz in 1..48000) {
+                          warnings.add(
+                              "• Χαμηλότερη συχνότητα (kHz/MHz) από τη δηλωμένη: Δηλώνεται «$currentDeclaredQuality», αλλά η πηγή δίνει πραγματικά ${buildRealSpecSummary()}."
+                          )
+                      }
+                  }
+
+                  // 2. Σύγκριση ποιότητας σε σχέση με το προηγούμενο τραγούδι
+                  val currDisplay = buildRealSpecSummary()
+                  if (currScore > 0 && lastCommittedScoreKey != currentTrackKey) {
+                      if (previousQualityScore > 0 && currScore < previousQualityScore) {
+                          val prevDisplay = previousQualityLabel.ifBlank { "Υψηλότερη ποιότητα" }
+                          warnings.add(
+                              "• Μικρότερη ποιότητα από το προηγούμενο τραγούδι: Το «${currentTrackTitle.ifBlank { "Τρέχον" }}» παίζει σε «$currDisplay», χαμηλότερη από το προηγούμενο «${previousTrackTitle.ifBlank { "Προηγούμενο" }}» («$prevDisplay»)."
+                          )
+                      }
+                      previousQualityScore = currScore
+                      previousQualityLabel = currDisplay
+                      previousTrackTitle = currentTrackTitle
+                      lastCommittedScoreKey = currentTrackKey
+                  }
+
+                  // 3. Έλεγχος σειράς επεκτάσεων vs πηγών ήχου
+                  val (audioSourcesOrder, extensionsOrder) = readConfiguredOrders(context)
                   if (audioSourcesOrder.isNotEmpty()) {
                       if (extensionsOrder.isNotEmpty()) {
                           val commonInExt = extensionsOrder.filter { ext ->
-                              audioSourcesOrder.any { src -> src.equals(ext, ignoreCase = true) || src.contains(ext, ignoreCase = true) || ext.contains(src, ignoreCase = true) }
+                              audioSourcesOrder.any { src -> src.equals(ext, true) || src.contains(ext, true) || ext.contains(src, true) }
                           }
                           val expectedByAudioSources = audioSourcesOrder.filter { src ->
-                              commonInExt.any { ext -> src.equals(ext, ignoreCase = true) || src.contains(ext, ignoreCase = true) || ext.contains(src, ignoreCase = true) }
+                              commonInExt.any { ext -> src.equals(ext, true) || src.contains(ext, true) || ext.contains(src, true) }
                           }
                           if (commonInExt.size >= 2 && expectedByAudioSources.size == commonInExt.size) {
                               val mismatch = commonInExt.zip(expectedByAudioSources).any { (e, s) ->
-                                  !e.equals(s, ignoreCase = true) && !e.contains(s, ignoreCase = true) && !s.contains(e, ignoreCase = true)
+                                  !e.equals(s, true) && !e.contains(s, true) && !s.contains(e, true)
                               }
                               if (mismatch) {
                                   warnings.add(
-                                      "• Λάθος σειρά επεκτάσεων: Η σειρά των επεκτάσεων (${commonInExt.joinToString(" → ")}) δεν συμφωνεί με τη σειρά στις Πηγές Ήχου (${expectedByAudioSources.joinToString(" → ")})."
+                                      "• Λάθος σειρά επεκτάσεων: Οι επεκτάσεις (${commonInExt.joinToString(" → ")}) δεν συμφωνούν με τη σειρά στις Πηγές Ήχου (${expectedByAudioSources.joinToString(" → ")})."
                                   )
                               }
                           }
                       }
 
-                      if (cleanSource.isNotEmpty()) {
+                      if (currentSourceName.isNotEmpty()) {
                           val idxInSources = audioSourcesOrder.indexOfFirst {
-                              it.equals(cleanSource, ignoreCase = true) ||
-                                  it.contains(cleanSource, ignoreCase = true) ||
-                                  cleanSource.contains(it, ignoreCase = true)
+                              it.equals(currentSourceName, true) ||
+                                  it.contains(currentSourceName, true) ||
+                                  currentSourceName.contains(it, true)
                           }
                           if (idxInSources > 0) {
                               warnings.add(
-                                  "• Εκτός σειράς πηγής ήχου: Το τραγούδι «${title.ifBlank { "Τρέχον" }}» μπήκε από «$cleanSource» (θέση #${idxInSources + 1}), ενώ προηγείται το «${audioSourcesOrder.first()}» στις Πηγές Ήχου."
+                                  "• Εκτός σειράς πηγής ήχου: Μπήκε από «$currentSourceName» (θέση #${idxInSources + 1}), ενώ προηγείται το «${audioSourcesOrder.first()}»."
                               )
                           }
                       }
                   }
 
-                  if (previousQualityScore > 0 && currScore > 0 && currScore < previousQualityScore) {
-                      val currDisplay = cleanQuality.ifBlank { "${bitrateKbps}kbps" }
-                      val prevDisplay = previousQualityLabel.ifBlank { "Υψηλότερη" }
-                      warnings.add(
-                          "• Χαμηλότερη ποιότητα ήχου: Το «${title.ifBlank { "Τρέχον τραγούδι" }}» παίζει σε «$currDisplay», χαμηλότερη από το προηγούμενο «${previousTrackTitle.ifBlank { "Προηγούμενο" }}» («$prevDisplay»)."
-                      )
-                  }
-
-                  if (currScore > 0) {
-                      previousQualityScore = currScore
-                      previousQualityLabel = cleanQuality.ifBlank { "${bitrateKbps}kbps" }
-                      previousTrackTitle = title
-                  }
-
                   if (warnings.isNotEmpty() && VnFpsPref.playbackAlertsEnabled) {
-                      activeAlertTitle = "Ειδοποίηση Αναπαραγωγής VNEra"
-                      activeAlertBody = warnings.joinToString("\n\n")
+                      val sig = "$currentTrackKey|${warnings.joinToString("|")}"
+                      if (sig != lastWarnedSignature) {
+                          lastWarnedSignature = sig
+                          Handler(Looper.getMainLooper()).post {
+                              activeAlertTitle = "Ειδοποίηση Ποιότητας & Πηγής VNEra"
+                              activeAlertBody = warnings.joinToString("\n\n")
+                          }
+                      }
                   }
               }
           }
@@ -1006,10 +1214,20 @@ jobs:
                   VnFpsPref.init(context)
               }
 
+              DisposableEffect(Unit) {
+                  VnFpsPref.activeFullscreenLyricsCount++
+                  onDispose {
+                      VnFpsPref.activeFullscreenLyricsCount =
+                          (VnFpsPref.activeFullscreenLyricsCount - 1).coerceAtLeast(0)
+                  }
+              }
+
               DisposableEffect(activity, immersiveEnabled) {
                   VnFpsPref.setSystemBarsHidden(activity, immersiveEnabled)
                   onDispose {
-                      VnFpsPref.setSystemBarsHidden(activity, false)
+                      if (VnFpsPref.activeFullscreenLyricsCount <= 0) {
+                          VnFpsPref.setSystemBarsHidden(activity, false)
+                      }
                       VnFpsPref.isLyricsEdgeDragging = false
                   }
               }
@@ -1017,10 +1235,9 @@ jobs:
 
           /**
            * Gestures για τα Fullscreen Lyrics:
-           * - Κόκκινες ζώνες (22% αριστερά & 22% δεξιά): επιτρέπει σκρολ των στίχων από πάνω προς τα κάτω
-           *   και το ανάποδο με ενισχυμένη κίνηση (2.2x), χωρίς να κλείνει το fullscreen ή το player sheet.
+           * - Κόκκινες ζώνες (22% αριστερά & 22% δεξιά): scroll των στίχων χωρίς κλείσιμο.
            * - Μέση οθόνης (56%): tap για είσοδο/έξοδο από immersive fullscreen mode,
-           *   και κλείσιμο μόνο με μεγάλη κίνηση από πάνω προς τα κάτω (>180dp).
+           *   και έξοδος από fullscreen ΜΟΝΟ με πολύ μεγάλο σύρσιμο (> 300dp).
            */
           fun Modifier.vnLyricsCenterGestures(
               activity: Activity?,
@@ -1059,7 +1276,7 @@ jobs:
                                   }
                               }
                           }
-                          if (startedInCenter && onClose != null && dragY > 180.dp.toPx()) {
+                          if (startedInCenter && onClose != null && abs(dragY) > 300.dp.toPx()) {
                               onClose()
                           }
                       } finally {
@@ -1069,12 +1286,13 @@ jobs:
               }
 
           /**
-           * Κουμπί έντασης ήχου (+ επάνω / - κάτω) στο Fullscreen, τοποθετημένο στη δεξιά άκρη
-           * στο ύψος των φυσικών κουμπιών έντασης του κινητού (tap-only, μέσω Popup ώστε να μπαίνει παντού).
+           * Ενιαίο κουμπί έντασης ήχου (+ επάνω / - κάτω) στο Fullscreen.
+           * Εμφανίζεται ΜΟΝΟ 1 φορά μέσω του VnFrameRateGuard όταν activeFullscreenLyricsCount > 0.
            */
           @Composable
           fun VnFullscreenVolumePill() {
               val context = LocalContext.current
+              val offsetY = VnFpsPref.volumeButtonsOffsetY
               val audioManager = remember(context) {
                   context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
               }
@@ -1106,7 +1324,7 @@ jobs:
 
               Popup(
                   alignment = Alignment.CenterEnd,
-                  offset = IntOffset(-16, -150),
+                  offset = IntOffset(-16, offsetY),
                   properties = PopupProperties(
                       focusable = false,
                       dismissOnBackPress = false,
@@ -1122,7 +1340,6 @@ jobs:
                           .border(1.dp, Color.White.copy(alpha = 0.24f), RoundedCornerShape(21.dp)),
                       horizontalAlignment = Alignment.CenterHorizontally,
                   ) {
-                      // + (Αύξηση έντασης με tap μόνο)
                       Column(
                           modifier = Modifier
                               .fillMaxWidth()
@@ -1159,7 +1376,6 @@ jobs:
                           )
                       }
 
-                      // - (Μείωση έντασης με tap μόνο)
                       Column(
                           modifier = Modifier
                               .fillMaxWidth()
@@ -1184,9 +1400,6 @@ jobs:
               }
           }
 
-          /**
-           * Κίνηση στοιχείων UI με Animation (Mode 1, 2, 3 - Toggleable ON/OFF)
-           */
           fun Modifier.vnAnimatedElement(phaseIndex: Int = 0): Modifier = composed {
               if (!VnFpsPref.elementAnimEnabled) return@composed this
               val mode = VnFpsPref.elementAnimMode
@@ -1332,7 +1545,12 @@ jobs:
                   }
               }
 
-              // Αναδυόμενο παράθυρο ειδοποιήσεων σειράς επεκτάσεων & ποιότητας ήχου
+              // Μοναδικό popup κουμπιών έντασης ήχου (δεν διπλοεμφανίζεται ποτέ στο 2ο fullscreen)
+              if (VnFpsPref.volumeButtonsEnabled && VnFpsPref.activeFullscreenLyricsCount > 0) {
+                  VnFullscreenVolumePill()
+              }
+
+              // Αναδυόμενο παράθυρο ειδοποιήσεων ποιότητας (16/24-bit, kHz/MHz) & σειράς επεκτάσεων
               VnPlaybackMonitorDialog()
           }
 
@@ -1347,6 +1565,8 @@ jobs:
               }
               val currentFps = VnFpsPref.targetFps
               val lyricsImmersive = VnFpsPref.lyricsImmersiveEnabled
+              val volumeButtons = VnFpsPref.volumeButtonsEnabled
+              val volumeOffsetY = VnFpsPref.volumeButtonsOffsetY
               val selectedColor = VnFpsPref.customAccentColorArgb
               val animEnabled = VnFpsPref.elementAnimEnabled
               val animMode = VnFpsPref.elementAnimMode
@@ -1418,6 +1638,52 @@ jobs:
                               checked = lyricsImmersive,
                               onCheckedChange = { VnFpsPref.updateLyricsImmersive(context, it) },
                           )
+                      }
+
+                      Spacer(modifier = Modifier.height(14.dp))
+
+                      // Ρύθμιση κουμπιών έντασης (+ / -) στο Fullscreen
+                      Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          verticalAlignment = Alignment.CenterVertically,
+                          horizontalArrangement = Arrangement.spacedBy(12.dp),
+                      ) {
+                          Column(modifier = Modifier.weight(1f)) {
+                              Text(
+                                  text = "Κουμπιά Έντασης (+ / −) στο Fullscreen",
+                                  style = MaterialTheme.typography.titleSmall,
+                                  fontWeight = FontWeight.SemiBold,
+                              )
+                              Spacer(modifier = Modifier.height(2.dp))
+                              Text(
+                                  text = "Εμφάνιση πλήκτρων έντασης ήχου στη δεξιά πλευρά και επιλογή θέσης ύψους",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              )
+                          }
+                          Switch(
+                              checked = volumeButtons,
+                              onCheckedChange = { VnFpsPref.updateVolumeButtons(context, it, volumeOffsetY) },
+                          )
+                      }
+                      if (volumeButtons) {
+                          Spacer(modifier = Modifier.height(8.dp))
+                          Row(
+                              modifier = Modifier.fillMaxWidth(),
+                              horizontalArrangement = Arrangement.spacedBy(8.dp),
+                          ) {
+                              listOf(
+                                  -220 to "Ψηλά",
+                                  -120 to "Μεσαία",
+                                  20 to "Κάτω",
+                              ).forEach { (offY, label) ->
+                                  FilterChip(
+                                      selected = volumeOffsetY == offY,
+                                      onClick = { VnFpsPref.updateVolumeButtons(context, true, offY) },
+                                      label = { Text(label) },
+                                  )
+                              }
+                          }
                       }
 
                       Spacer(modifier = Modifier.height(14.dp))
@@ -1510,7 +1776,7 @@ jobs:
 
                       Spacer(modifier = Modifier.height(14.dp))
 
-                      // Toggle ειδοποιήσεων σειράς επεκτάσεων & ποιότητας
+                      // Toggle ειδοποιήσεων ποιότητας & επαλήθευσης 16/24-bit
                       Row(
                           modifier = Modifier.fillMaxWidth(),
                           verticalAlignment = Alignment.CenterVertically,
@@ -1518,13 +1784,13 @@ jobs:
                       ) {
                           Column(modifier = Modifier.weight(1f)) {
                               Text(
-                                  text = "Ειδοποίηση Ποιότητας & Σειράς Επεκτάσεων",
+                                  text = "Ειδοποίηση Ποιότητας (16/24-bit & kHz)",
                                   style = MaterialTheme.typography.titleSmall,
                                   fontWeight = FontWeight.SemiBold,
                               )
                               Spacer(modifier = Modifier.height(2.dp))
                               Text(
-                                  text = "Αναδυόμενο παράθυρο αν παίξει λάθος σειρά επέκτασης ή χαμηλότερη ποιότητα ήχου",
+                                  text = "Αναδυόμενο παράθυρο σε πτώση ποιότητας, ψευδή δήλωση 16/24-bit ή λάθος σειρά πηγής",
                                   style = MaterialTheme.typography.bodySmall,
                                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                               )
@@ -1735,16 +2001,22 @@ jobs:
                   i += 1
               return "".join(out)
 
-          # 7. Fullscreen Lyrics Gestures + Red-Edge Scrolling + Popup Volume Rocker Button (LyricsScreen.kt)
+          def boost_fullscreen_dismiss_thresholds(code_block: str) -> str:
+              # Αύξηση ΟΛΩΝ των κατωφλίων vertical swipe/fling (dp.toPx & fraction) στα 300.dp ώστε να μη φεύγει με λίγο σύρσιμο
+              def _raise_dp(m):
+                  val = int(m.group(1))
+                  if 20 <= val <= 240:
+                      return "300.dp.toPx()"
+                  return m.group(0)
+              code_block = re.sub(r'\b(\d{2,3})\.dp\.toPx\(\)', _raise_dp, code_block)
+              code_block = re.sub(r'\b0\.[1-3]\d*f\b', '0.48f', code_block)
+              return code_block
+
+          # 7. Fullscreen Lyrics Gestures (πολύ μεγαλύτερο σύρσιμο εξόδου) + Red-Edge Scrolling (LyricsScreen.kt)
           lyrics_file = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lyrics_file.exists():
               src = lyrics_file.read_text()
-              src_mod = src
-
-              src_mod = re.sub(r'if\s*\(\s*drag\s*>\s*([^)]+)\)\s*onExpand\(\)', r'if (drag < -\1) onExpand()', src_mod)
-              src_mod = re.sub(r'if\s*\(\s*drag\s*<\s*-\s*([^)]+)\)\s*onClose\(\)', r'if (drag > \1) onClose()', src_mod)
-              src_mod = re.sub(r'\b(?:48|56|64|72|76|80)\.dp\.toPx\(\)', '180.dp.toPx()', src_mod)
-              src_mod = hook_lazy_column_states(src_mod)
+              src_mod = hook_lazy_column_states(src)
 
               if "vnLyricsCenterGestures" not in src_mod:
                   lines = src_mod.splitlines(keepends=True)
@@ -1770,11 +2042,16 @@ jobs:
                                           break
                                   if body_end is not None:
                                       body_text = "".join(lines[sig_end:body_end + 1])
-                                      if ".fillMaxSize()" in body_text:
+                                      # Ενίσχυση κατωφλίων εξόδου σε ΚΑΘΕ composable του LyricsScreen που δέχεται onClose
+                                      boosted_body = boost_fullscreen_dismiss_thresholds(body_text)
+                                      boosted_lines = boosted_body.splitlines(keepends=True)
+                                      lines[sig_end:body_end + 1] = boosted_lines
+                                      body_end = sig_end + len(boosted_lines) - 1
+
+                                      if ".fillMaxSize()" in boosted_body and "vnLyricsCenterGestures" not in boosted_body:
                                           lines[sig_end] = (
                                               lines[sig_end]
                                               + "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
-                                              + "    com.music.spotui.ui.screens.VnFullscreenVolumePill()\n"
                                               + "    val vnLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
                                           )
                                           hooked = False
@@ -1791,23 +2068,25 @@ jobs:
                                                       "onClick = onClose",
                                                       "onClick = { com.music.spotui.ui.screens.VnFpsPref.toggleSystemBars(vnLyricsActivity) }",
                                                   )
-                                          src_mod = "".join(lines)
-                                          print("Hooked Red-Edge Scroll + VolumePill into LyricsScreen.kt")
-                                          break
+                                          print("Hooked Red-Edge Scroll + 300dp Fullscreen Exit Threshold into LyricsScreen.kt")
+                                      i = body_end + 1
+                                      continue
                       i += 1
+                  src_mod = "".join(lines)
 
               if src_mod != src:
                   lyrics_file.write_text(src_mod)
 
-          # Υποστήριξη Red-Edge Scrolling & Popup Volume Rocker και στο ImmersiveLyricsPanel.kt (imports ΜΕΤΑ το package!)
+          # Υποστήριξη Red-Edge Scrolling & 300dp threshold και στο ImmersiveLyricsPanel.kt (ΧΩΡΙΣ 2ο VolumePill!)
           imm_lyrics = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
           if imm_lyrics.exists():
               ilt = imm_lyrics.read_text()
               ilt_mod = hook_lazy_column_states(ilt)
+              ilt_mod = boost_fullscreen_dismiss_thresholds(ilt_mod)
               if "vnLyricsCenterGestures" not in ilt_mod and ".fillMaxSize()" in ilt_mod:
                   ilt_new, n_imm = re.subn(
                       r'(@Composable\s+(?:internal\s+|private\s+|public\s+)?fun\s+ImmersiveLyricsPanel\b[^{]*\{)',
-                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n    com.music.spotui.ui.screens.VnFullscreenVolumePill()\n    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()',
+                      r'\1\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()',
                       ilt_mod,
                       count=1,
                   )
@@ -1824,7 +2103,7 @@ jobs:
                           1,
                       )
                       ilt_mod = ilt_new
-                      print("Hooked Red-Edge Scroll + VolumePill into ImmersiveLyricsPanel.kt")
+                      print("Hooked Red-Edge Scroll + Single Fullscreen Counter into ImmersiveLyricsPanel.kt")
               if ilt_mod != ilt:
                   imm_lyrics.write_text(ilt_mod)
 
@@ -1851,7 +2130,7 @@ jobs:
                   )
               p2.write_text(s)
 
-          # 9. Επέκταση χρωμάτων σε όσες ρυθμίσεις/αρχεία έχουν λίστες χρωμάτων + εφαρμογή custom accent color στο Theme
+          # 9. Επέκταση χρωμάτων & custom accent color στο Theme
           extra_colors_str = ", ".join([
               "Color(0xFFE53935)", "Color(0xFFFF5722)", "Color(0xFFFF9800)",
               "Color(0xFFFFC107)", "Color(0xFF00BFA5)", "Color(0xFF00BCD4)",
@@ -1913,36 +2192,118 @@ jobs:
                           anim_target.write_text(at_new)
                           print(f"Hooked vnAnimatedElement into {anim_target}")
 
-          # 11. Σύνδεση VnPlaybackMonitor με την αναπαραγωγή (έλεγχος σειράς επεκτάσεων & ποιότητας)
+          # 11. Σύνδεση VnPlaybackMonitor με τον πραγματικό ExoPlayer (PlaybackService.kt) + UI ποιότητας
+          pb_service = Path("host-android/src/main/kotlin/app/myspoti/host/android/PlaybackService.kt")
+          if pb_service.exists():
+              pbt = pb_service.read_text()
+              if "vnReportAudioFormat" not in pbt:
+                  helper_code = '''
+          private fun vnReportAudioFormat(p: androidx.media3.common.Player?) {
+              if (p == null) return
+              try {
+                  val item = p.currentMediaItem ?: return
+                  val trackId = item.mediaId.ifBlank { item.localConfiguration?.uri?.toString().orEmpty() }
+                  val meta = item.mediaMetadata
+                  val title = meta.title?.toString().orEmpty()
+                  val extras = meta.extras
+                  var srcName = ""
+                  var declQuality = ""
+                  if (extras != null) {
+                      for (k in extras.keySet()) {
+                          val kl = k.lowercase()
+                          val v = extras.get(k)?.toString().orEmpty()
+                          if (v.isBlank()) continue
+                          if (srcName.isEmpty() && (kl.contains("source") || kl.contains("provider") || kl.contains("ext"))) {
+                              srcName = v
+                          }
+                          if (declQuality.isEmpty() && (kl.contains("quality") || kl.contains("format") || kl.contains("badge"))) {
+                              declQuality = v
+                          }
+                      }
+                  }
+                  val fmt = p.audioFormat
+                  val sampleRate = fmt?.sampleRate ?: 0
+                  val bitrateKbps = if ((fmt?.bitrate ?: 0) > 0) (fmt!!.bitrate / 1000) else 0
+                  val mime = fmt?.sampleMimeType.orEmpty()
+                  val codecs = fmt?.codecs.orEmpty()
+                  val bitDepth = when (fmt?.pcmEncoding) {
+                      androidx.media3.common.C.ENCODING_PCM_24BIT,
+                      androidx.media3.common.C.ENCODING_PCM_24BIT_PACKED -> 24
+                      androidx.media3.common.C.ENCODING_PCM_32BIT,
+                      androidx.media3.common.C.ENCODING_PCM_FLOAT -> 32
+                      androidx.media3.common.C.ENCODING_PCM_16BIT -> 16
+                      else -> 0
+                  }
+                  val cls = Class.forName("com.music.spotui.ui.screens.VnPlaybackMonitor")
+                  val inst = cls.getField("INSTANCE").get(null)
+                  val m = cls.getMethod(
+                      "onServiceAudioObserved",
+                      android.content.Context::class.java,
+                      String::class.java,
+                      String::class.java,
+                      String::class.java,
+                      String::class.java,
+                      String::class.java,
+                      String::class.java,
+                      Int::class.javaPrimitiveType,
+                      Int::class.javaPrimitiveType,
+                      Int::class.javaPrimitiveType,
+                  )
+                  m.invoke(inst, applicationContext, trackId, title, srcName, declQuality, mime, codecs, sampleRate, bitDepth, bitrateKbps)
+              } catch (_: Throwable) {
+              }
+          }
+          '''
+                  # Εύρεση του player instance στο PlaybackService.kt και σύνδεση listener
+                  m_player = re.search(r'\b(private\s+|internal\s+)?(?:lateinit\s+)?var\s+([A-Za-z0-9_]+)\s*:\s*(?:ExoPlayer|Player)\??', pbt)
+                  if not m_player:
+                      m_player = re.search(r'\b(private\s+|internal\s+)?val\s+([A-Za-z0-9_]+)\s*(?::\s*(?:ExoPlayer|Player)\??)?\s*=\s*(?:ExoPlayer\.Builder|buildPlayer)', pbt)
+                  if m_player:
+                      p_var = m_player.group(2)
+                      # Προσθήκη listener αμέσως μετά το πρώτο .addListener( ή build()
+                      pbt_new, n_pb = re.subn(
+                          rf'(\b{re.escape(p_var)}\s*\.addListener\s*\([^)]+\))',
+                          rf'\1\n        {p_var}.addListener(object : androidx.media3.common.Player.Listener {{\n            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {{ vnReportAudioFormat({p_var}) }}\n            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {{ vnReportAudioFormat({p_var}) }}\n            override fun onIsPlayingChanged(isPlaying: Boolean) {{ if (isPlaying) vnReportAudioFormat({p_var}) }}\n        }})',
+                          pbt,
+                          count=1,
+                      )
+                      if n_pb > 0:
+                          last_brace = pbt_new.rfind("}")
+                          if last_brace != -1:
+                              pbt_new = pbt_new[:last_brace] + helper_code + "\n}\n"
+                              pb_service.write_text(pbt_new)
+                              print(f"Hooked real AudioFormat monitor (16/24-bit & kHz) into PlaybackService.kt ({p_var})")
+
+          # Σύνδεση και στο UI όπου εμφανίζεται η δηλωμένη ποιότητα (16-bit / 24-bit / kHz / Lossless / Hi-Res / FLAC)
           for scan_file in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
               if scan_file.name == "VnFrameRateManager.kt":
                   continue
               ft = scan_file.read_text()
-              if "onTrackPlaybackObserved" in ft:
+              if "onUiTrackObserved" in ft:
                   continue
-              if '"Lossless"' in ft and "LocalContext.current" in ft and "@Composable" in ft:
+              if any(tok in ft for tok in ['"Lossless"', '"Hi-Res"', '"24-bit"', '"16-bit"', '"FLAC"', 'kHz']) and "LocalContext.current" in ft and "@Composable" in ft:
                   lines = ft.splitlines(keepends=True)
                   for idx, l in enumerate(lines):
-                      if '"Lossless"' in l:
-                          window_txt = "".join(lines[max(0, idx - 25):min(len(lines), idx + 15)])
+                      if any(tok in l for tok in ['"Lossless"', '"Hi-Res"', '"24-bit"', '"16-bit"', '"FLAC"', 'kHz']):
+                          window_txt = "".join(lines[max(0, idx - 30):min(len(lines), idx + 15)])
                           m_ctx = re.search(r'\bval\s+([A-Za-z0-9_]+)\s*=\s*LocalContext\.current\b', window_txt)
-                          m_q = re.search(r'\bval\s+([A-Za-z0-9_]*(?:quality|Quality|format|Format|badge|Badge)[A-Za-z0-9_]*)\b', window_txt)
+                          m_q = re.search(r'\bval\s+([A-Za-z0-9_]*(?:quality|Quality|format|Format|badge|Badge|audioInfo|streamInfo)[A-Za-z0-9_]*)\b', window_txt)
                           m_t = re.search(r'\b([A-Za-z0-9_]+)\.(?:title|name)\b', window_txt)
                           m_s = re.search(r'\b([A-Za-z0-9_]+)\.(?:source|provider|extension|sourceName|providerName)\b', window_txt)
                           if m_ctx and m_q and m_t:
                               ctx_n = m_ctx.group(1)
                               q_n = m_q.group(1)
                               t_obj = m_t.group(1)
-                              s_expr = f"{m_s.group(1)}.source.orEmpty()" if m_s else '""'
-                              for k in range(max(0, idx - 25), idx + 1):
+                              s_expr = f"{m_s.group(1)}.source?.toString().orEmpty()" if m_s else '""'
+                              for k in range(max(0, idx - 30), idx + 1):
                                   if re.search(rf'\bval\s+{re.escape(q_n)}\b', lines[k]) and "=" in lines[k]:
                                       indent = re.match(r'^(\s*)', lines[k]).group(1)
                                       lines.insert(
                                           k + 1,
-                                          f'{indent}androidx.compose.runtime.LaunchedEffect({t_obj}.id, {q_n}) {{ com.music.spotui.ui.screens.VnPlaybackMonitor.onTrackPlaybackObserved({ctx_n}, {t_obj}.id.toString(), {t_obj}.title.toString(), {s_expr}, {q_n}.toString()) }}\n',
+                                          f'{indent}androidx.compose.runtime.LaunchedEffect({t_obj}?.id, {q_n}) {{ com.music.spotui.ui.screens.VnPlaybackMonitor.onUiTrackObserved({ctx_n}, {t_obj}?.id?.toString().orEmpty(), {t_obj}?.title?.toString().orEmpty(), {s_expr}, {q_n}?.toString().orEmpty()) }}\n',
                                       )
                                       scan_file.write_text("".join(lines))
-                                      print(f"Hooked VnPlaybackMonitor into {scan_file}")
+                                      print(f"Hooked UI declared-quality bridge into {scan_file}")
                                       break
                           break
 
@@ -2059,18 +2420,10 @@ jobs:
           PY
 
       - name: Build Debug APK
-        run: |
-          chmod +x gradlew
-          EXTRA_FLAGS=""
-          if [ "$HAS_SDK_37" != "true" ]; then
-            EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          fi
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.4" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.1.4-Debug
-          path: "**/build/outputs/apk/debug/*.apk"
-          if-no-files-found: error
-          retention-days: 14
+          name: VNEra-2.1.4-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
