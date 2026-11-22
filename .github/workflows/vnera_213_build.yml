@@ -25,15 +25,52 @@ jobs:
           path: _keystore_repo
           fetch-depth: 1
 
+      - name: Restore Keystore Cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/vnera-keystore-cache
+          key: vnera-debug-keystore-${{ github.run_id }}
+          restore-keys: |
+            vnera-debug-keystore-
+
       - name: Prepare Persistent Debug Keystore
         run: |
           set -euo pipefail
-          if [ -f "_keystore_repo/app/vnera-debug.keystore" ] && keytool -list -keystore "_keystore_repo/app/vnera-debug.keystore" -storepass android >/dev/null 2>&1; then
+          mkdir -p /tmp/vnera-keystore-cache
+          rm -f /tmp/vnera-debug.keystore
+
+          check_ks() {
+            [ -f "$1" ] && keytool -list -keystore "$1" -storepass android >/dev/null 2>&1
+          }
+
+          FOUND_EXISTING="false"
+
+          if check_ks "_keystore_repo/app/vnera-debug.keystore"; then
             cp -f "_keystore_repo/app/vnera-debug.keystore" /tmp/vnera-debug.keystore
-          elif [ -f "app/vnera-debug.keystore" ] && keytool -list -keystore "app/vnera-debug.keystore" -storepass android >/dev/null 2>&1; then
-            cp -f "app/vnera-debug.keystore" /tmp/vnera-debug.keystore
+            FOUND_EXISTING="true"
+          elif check_ks "/tmp/vnera-keystore-cache/vnera-debug.keystore"; then
+            cp -f "/tmp/vnera-keystore-cache/vnera-debug.keystore" /tmp/vnera-debug.keystore
+            FOUND_EXISTING="true"
           else
-            rm -f /tmp/vnera-debug.keystore
+            (
+              cd _keystore_repo
+              git fetch origin vnera-keystore work/source-review work/vnera-2.2.0 --depth=1 >/dev/null 2>&1 || true
+              for ref in origin/vnera-keystore origin/work/source-review origin/work/vnera-2.2.0; do
+                if git show "${ref}:app/vnera-debug.keystore" > /tmp/vnera-cand.keystore 2>/dev/null; then
+                  if keytool -list -keystore /tmp/vnera-cand.keystore -storepass android >/dev/null 2>&1; then
+                    cp -f /tmp/vnera-cand.keystore /tmp/vnera-debug.keystore
+                    break
+                  fi
+                fi
+              done
+              rm -f /tmp/vnera-cand.keystore
+            )
+            if check_ks "/tmp/vnera-debug.keystore"; then
+              FOUND_EXISTING="true"
+            fi
+          fi
+
+          if [ "$FOUND_EXISTING" != "true" ]; then
             keytool -genkeypair -v \
               -keystore /tmp/vnera-debug.keystore \
               -storepass android \
@@ -43,20 +80,24 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
-
-            mkdir -p _keystore_repo/app
-            cp -f /tmp/vnera-debug.keystore _keystore_repo/app/vnera-debug.keystore
-            (
-              cd _keystore_repo
-              git config user.name "VNEra Keystore Bot"
-              git config user.email "bot@vnera.local"
-              git add -f app/vnera-debug.keystore
-              if ! git diff --cached --quiet; then
-                git commit -m "Save persistent VNEra debug keystore [skip ci]"
-                git push origin main || true
-              fi
-            )
           fi
+
+          cp -f /tmp/vnera-debug.keystore /tmp/vnera-keystore-cache/vnera-debug.keystore
+
+          (
+            cd _keystore_repo
+            git config user.name "VNEra Keystore Bot"
+            git config user.email "bot@vnera.local"
+
+            mkdir -p app
+            cp -f /tmp/vnera-debug.keystore app/vnera-debug.keystore
+            git add -f app/vnera-debug.keystore
+            if ! git diff --cached --quiet; then
+              git commit -m "Save persistent VNEra debug keystore [skip ci]"
+            fi
+            git push origin HEAD:vnera-keystore --force || true
+            git push origin HEAD:main || true
+          )
 
       - name: Checkout source-review
         uses: actions/checkout@v4
@@ -195,7 +236,7 @@ jobs:
 
           export HAS_SDK_37="false"
           [ -d "$SDK_ROOT/platforms/android-37" ] && export HAS_SDK_37="true"
-          export BUILD_VERSION_CODE=$((214000 + ${GITHUB_RUN_NUMBER:-1}))
+          export BUILD_VERSION_CODE=$((225000 + ${GITHUB_RUN_NUMBER:-1}))
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
           echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
 
@@ -1479,7 +1520,7 @@ jobs:
           from pathlib import Path
 
           has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
-          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "214001"))
+          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "225001"))
           target_agp = "9.1.0" if has_sdk_37 else "8.7.2"
 
           for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
@@ -1511,14 +1552,43 @@ jobs:
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
               t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.4"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
+              t = re.sub(r'applicationIdSuffix\s*=\s*"\.debug"', 'applicationIdSuffix = null', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
-              if "vnera-debug.keystore" not in t:
-                  t += '\nandroid {\n    signingConfigs { getByName("debug") { storeFile = file("vnera-debug.keystore"); storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android" } }\n    buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("debug") } }\n}\n'
-              if 'abiFilters += "arm64-v8a"' not in t:
-                  t += '\nandroid {\n    defaultConfig {\n        ndk {\n            abiFilters.clear()\n            abiFilters += "arm64-v8a"\n        }\n    }\n}\n'
-              if "META-INF/versions/9/OSGI-INF/MANIFEST.MF" not in t:
-                  t += '\nandroid { packaging { resources { excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"; excludes += "META-INF/versions/9/module-info.class" } } }\n'
+
+              t += f'''
+          android {{
+              defaultConfig {{
+                  applicationId = "app.vnera.music"
+                  versionCode = {build_vcode}
+                  versionName = "2.1.4"
+                  ndk {{
+                      abiFilters.clear()
+                      abiFilters += "arm64-v8a"
+                  }}
+              }}
+              signingConfigs {{
+                  getByName("debug") {{
+                      storeFile = file("vnera-debug.keystore")
+                      storePassword = "android"
+                      keyAlias = "androiddebugkey"
+                      keyPassword = "android"
+                  }}
+              }}
+              buildTypes {{
+                  getByName("debug") {{
+                      applicationIdSuffix = null
+                      signingConfig = signingConfigs.getByName("debug")
+                  }}
+              }}
+              packaging {{
+                  resources {{
+                      excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+                      excludes += "META-INF/versions/9/module-info.class"
+                  }}
+              }}
+          }}
+          '''
               gradle.write_text(t)
 
           upd = Path("app/src/main/java/com/music/spotui/data/api/UpdateChecker.kt")
@@ -1972,6 +2042,10 @@ jobs:
           APK_FILE=$(find app/build/outputs/apk/debug -maxdepth 2 -type f -name "*.apk" ! -name "*androidTest*" | head -n 1)
           [ -n "$APK_FILE" ] || { echo "ERROR: Δεν βρέθηκε το τελικό APK"; exit 1; }
           cp -f "$APK_FILE" /tmp/vnera_apk_out/VNEra-2.1.4-arm64-v8a.apk
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$SDK_ROOT/build-tools" -name "apksigner" 2>/dev/null | sort -V | tail -n 1 || true)
+          [ -n "$APKSIGNER" ] && "$APKSIGNER" verify --print-certs /tmp/vnera_apk_out/VNEra-2.1.4-arm64-v8a.apk || true
           ls -lh /tmp/vnera_apk_out/VNEra-2.1.4-arm64-v8a.apk
 
       - name: Upload Debug APK
