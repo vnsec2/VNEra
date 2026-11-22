@@ -2,7 +2,7 @@ name: Build VNEra Debug APK
 
 on:
   push:
-    branches: [ main, master, source-review ]
+    branches: [ main, master, work/* ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
@@ -45,6 +45,14 @@ jobs:
       - name: Merge VNEra Custom Changes onto Revera 1.0.8 Base
         run: |
           set -euo pipefail
+          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
+            if git rev-parse --verify origin/work/source-review >/dev/null 2>&1; then
+              git checkout -f origin/work/source-review
+            elif git rev-parse --verify origin/work/vnera-2.2.0 >/dev/null 2>&1; then
+              git checkout -f origin/work/vnera-2.2.0
+            fi
+          fi
+
           rm -rf /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old /tmp/merge_repo
           mkdir -p /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old
 
@@ -1542,7 +1550,7 @@ jobs:
                   ps = ps.replace(m_state.group(0), hook_code, 1)
               p2.write_text(ps)
 
-          # 2. LyricsScreen.kt fullscreen & slide-down (single fullscreen button via ownership lock)
+          # 2. LyricsScreen.kt fullscreen & slide-down
           lf = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lf.exists():
               s0 = lf.read_text()
