@@ -195,6 +195,7 @@ jobs:
           import androidx.compose.foundation.lazy.rememberLazyListState
           import androidx.compose.foundation.shape.*
           import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.rounded.Check
           import androidx.compose.material.icons.rounded.Fullscreen
           import androidx.compose.material.icons.rounded.FullscreenExit
           import androidx.compose.material3.*
@@ -275,7 +276,7 @@ jobs:
               var staticAppPrimaryArgb by mutableLongStateOf(0L)
 
               val extraColorPalette = listOf(
-                  "Αυτόματη" to 0L, "Crimson" to 0xFFE53935L, "Coral" to 0xFFFF5722L, "Amber" to 0xFFFF9800L,
+                  "Αυτόματο" to 0L, "Crimson" to 0xFFE53935L, "Coral" to 0xFFFF5722L, "Amber" to 0xFFFF9800L,
                   "Gold" to 0xFFFFC107L, "Lime" to 0xFFAEEA00L, "Emerald" to 0xFF00C853L, "Mint" to 0xFF00BFA5L,
                   "Cyan" to 0xFF00BCD4L, "Sky" to 0xFF29B6F6L, "Royal" to 0xFF2979FFL, "Indigo" to 0xFF3F51B5L,
                   "Violet" to 0xFF7C4DFFL, "Lavender" to 0xFFB388FFL, "Magenta" to 0xFFE040FBL, "Rose" to 0xFFFF4081L,
@@ -351,7 +352,7 @@ jobs:
                   val t = rawText.trim()
                   val generic = setOf(
                       "", "στίχοι", "lyrics", "no lyrics", "δεν υπάρχουν στίχοι", "...",
-                      "εμφάνιση", "αναπαραγωγή", "εφαρμογή", "αυτόματη"
+                      "εμφάνιση", "αναπαραγωγή", "εφαρμογή", "αυτόματο", "αυτόματη"
                   )
                   if (t.lowercase() !in generic && t.length >= 2) {
                       savedPlayerLyricText = rawText
@@ -1526,28 +1527,47 @@ jobs:
           }
 
           @Composable
-          private fun VnNativeSettingsCard(
+          private fun VnSectionBlock(
+              sectionTitle: String,
               modifier: Modifier = Modifier,
               content: @Composable ColumnScope.() -> Unit
           ) {
-              Surface(
+              Column(
                   modifier = modifier
                       .fillMaxWidth()
-                      .padding(vertical = 6.dp),
-                  shape = RoundedCornerShape(22.dp),
-                  color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f)
+                      .padding(vertical = 8.dp)
               ) {
-                  Column(
-                      modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
-                      content = content
+                  Text(
+                      text = sectionTitle,
+                      style = MaterialTheme.typography.labelMedium,
+                      fontWeight = FontWeight.SemiBold,
+                      letterSpacing = 0.8.sp,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                      modifier = Modifier.padding(start = 6.dp, bottom = 8.dp)
                   )
+                  Surface(
+                      modifier = Modifier.fillMaxWidth(),
+                      shape = RoundedCornerShape(22.dp),
+                      color = MaterialTheme.colorScheme.surfaceContainer,
+                      border = BorderStroke(
+                          width = 0.5.dp,
+                          color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)
+                      )
+                  ) {
+                      Column(
+                          modifier = Modifier.fillMaxWidth(),
+                          content = content
+                      )
+                  }
               }
           }
 
           @Composable
           private fun VnCardDivider() {
               HorizontalDivider(
-                  color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)
+                  thickness = 0.5.dp,
+                  color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f),
+                  modifier = Modifier.padding(horizontal = 16.dp)
               )
           }
 
@@ -1562,21 +1582,22 @@ jobs:
                   modifier = Modifier
                       .fillMaxWidth()
                       .clickable { onCheckedChange(!checked) }
-                      .padding(vertical = 12.dp),
+                      .padding(horizontal = 16.dp, vertical = 14.dp),
                   verticalAlignment = Alignment.CenterVertically,
                   horizontalArrangement = Arrangement.spacedBy(14.dp)
               ) {
                   Column(Modifier.weight(1f)) {
                       Text(
                           text = title,
-                          style = MaterialTheme.typography.titleMedium,
-                          fontWeight = FontWeight.SemiBold,
+                          style = MaterialTheme.typography.bodyLarge,
+                          fontWeight = FontWeight.Medium,
                           color = MaterialTheme.colorScheme.onSurface
                       )
-                      Spacer(Modifier.height(2.dp))
+                      Spacer(Modifier.height(3.dp))
                       Text(
                           text = subtitle,
                           style = MaterialTheme.typography.bodySmall,
+                          lineHeight = 16.sp,
                           color = MaterialTheme.colorScheme.onSurfaceVariant
                       )
                   }
@@ -1588,102 +1609,73 @@ jobs:
           }
 
           @Composable
-          fun VnLyricsSettingsCard(modifier: Modifier = Modifier) {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
-              val scalePresets = listOf(0.70f, 0.85f, 1.00f, 1.20f, 1.40f, 1.70f)
-
-              VnNativeSettingsCard(modifier) {
-                  VnNativeSwitchRow(
-                      title = "Lyrics Fullscreen (Immersive Mode)",
-                      subtitle = "Απόκρυψη μπαρών συστήματος στη μαύρη πλήρη οθόνη στίχων",
-                      checked = VnFpsPref.lyricsImmersiveEnabled,
-                      onCheckedChange = { VnFpsPref.updateLyricsImmersive(c, it) }
+          private fun VnOptionPill(
+              label: String,
+              selected: Boolean,
+              onClick: () -> Unit
+          ) {
+              val primary = MaterialTheme.colorScheme.primary
+              Surface(
+                  onClick = onClick,
+                  shape = RoundedCornerShape(12.dp),
+                  color = if (selected) primary.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.55f),
+                  border = BorderStroke(
+                      width = if (selected) 1.dp else 0.5.dp,
+                      color = if (selected) primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)
                   )
-
-                  VnCardDivider()
-
-                  VnNativeSwitchRow(
-                      title = "Κάνε όμορφους τους στίχους",
-                      subtitle = "Οι στίχοι & το καραόκε του Player διατηρούν σταθερά το χρώμα που επέλεξες",
-                      checked = VnFpsPref.lyricsBeautifulEnabled,
-                      onCheckedChange = { VnFpsPref.updateLyricsBeautiful(c, it) }
+              ) {
+                  Text(
+                      text = label,
+                      style = MaterialTheme.typography.labelLarge,
+                      fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                      color = if (selected) primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                      modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp)
                   )
+              }
+          }
 
-                  if (VnFpsPref.lyricsBeautifulEnabled) {
-                      Column(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                          Text(
-                              text = "Χρώμα στίχων Player",
-                              style = MaterialTheme.typography.labelLarge,
-                              color = MaterialTheme.colorScheme.onSurfaceVariant
+          @Composable
+          private fun VnColorSwatchRow(
+              selectedArgb: Long,
+              onSelect: (Long) -> Unit
+          ) {
+              Row(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .horizontalScroll(rememberScrollState()),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp)
+              ) {
+                  VnFpsPref.extraColorPalette.forEach { (_, argb) ->
+                      val sel = selectedArgb == argb
+                      if (argb == 0L) {
+                          VnOptionPill(
+                              label = "Αυτόματο",
+                              selected = sel,
+                              onClick = { onSelect(0L) }
                           )
-                          Spacer(Modifier.height(10.dp))
-                          Row(
-                              modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                              verticalAlignment = Alignment.CenterVertically,
-                              horizontalArrangement = Arrangement.spacedBy(12.dp)
+                      } else {
+                          Box(
+                              modifier = Modifier
+                                  .size(34.dp)
+                                  .clip(CircleShape)
+                                  .background(Color(argb))
+                                  .border(
+                                      width = if (sel) 2.5.dp else 0.5.dp,
+                                      color = if (sel) Color.White else Color.White.copy(alpha = 0.22f),
+                                      shape = CircleShape
+                                  )
+                                  .clickable { onSelect(argb) },
+                              contentAlignment = Alignment.Center
                           ) {
-                              VnFpsPref.extraColorPalette.forEach { (_, argb) ->
-                                  val sel = VnFpsPref.lyricsCustomColorArgb == argb
-                                  val previewColor = if (argb == 0L) {
-                                      if (VnFpsPref.customAccentColorArgb != 0L) Color(VnFpsPref.customAccentColorArgb)
-                                      else MaterialTheme.colorScheme.primary
-                                  } else Color(argb)
-                                  if (argb == 0L) {
-                                      Text(
-                                          text = "Αυτόματη",
-                                          style = MaterialTheme.typography.bodyMedium,
-                                          fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                                          color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                          modifier = Modifier
-                                              .clickable { VnFpsPref.updateLyricsCustomColor(c, 0L) }
-                                              .padding(vertical = 8.dp, horizontal = 4.dp)
-                                      )
-                                  } else {
-                                      Box(
-                                          modifier = Modifier
-                                              .size(38.dp)
-                                              .clip(CircleShape)
-                                              .background(previewColor)
-                                              .border(
-                                                  width = if (sel) 2.5.dp else 0.dp,
-                                                  color = if (sel) MaterialTheme.colorScheme.onSurface else Color.Transparent,
-                                                  shape = CircleShape
-                                              )
-                                              .clickable { VnFpsPref.updateLyricsCustomColor(c, argb) }
-                                      )
-                                  }
+                              if (sel) {
+                                  Icon(
+                                      imageVector = Icons.Rounded.Check,
+                                      contentDescription = null,
+                                      tint = Color.White,
+                                      modifier = Modifier.size(16.dp)
+                                  )
                               }
-                          }
-                      }
-                  }
-
-                  VnCardDivider()
-
-                  Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
-                      Text(
-                          text = "Μέγεθος στίχων Player",
-                          style = MaterialTheme.typography.titleMedium,
-                          fontWeight = FontWeight.SemiBold,
-                          color = MaterialTheme.colorScheme.onSurface
-                      )
-                      Spacer(Modifier.height(10.dp))
-                      Row(
-                          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                          horizontalArrangement = Arrangement.spacedBy(18.dp),
-                          verticalAlignment = Alignment.CenterVertically
-                      ) {
-                          scalePresets.forEach { preset ->
-                              val isSelected = abs(VnFpsPref.lyricsFontScale - preset) < 0.03f
-                              Text(
-                                  text = "${(preset * 100).roundToInt()}%",
-                                  style = MaterialTheme.typography.bodyLarge,
-                                  fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                  color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                  modifier = Modifier
-                                      .clickable { VnFpsPref.updateLyricsFontScale(c, preset) }
-                                      .padding(vertical = 4.dp)
-                              )
                           }
                       }
                   }
@@ -1696,76 +1688,52 @@ jobs:
               VnFpsPref.ensureInit(c)
               val rates = remember(c) { c.findActivity()?.let(::getSupportedRefreshRates).orEmpty() }
 
-              VnNativeSettingsCard(modifier) {
-                  Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+              VnSectionBlock(sectionTitle = "VNERA · ΕΜΦΑΝΙΣΗ", modifier = modifier) {
+                  Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
                       Text(
-                          text = "Χρώματα Εμφάνισης VNEra",
-                          style = MaterialTheme.typography.titleMedium,
-                          fontWeight = FontWeight.SemiBold,
+                          text = "Χρώμα Εμφάνισης",
+                          style = MaterialTheme.typography.bodyLarge,
+                          fontWeight = FontWeight.Medium,
                           color = MaterialTheme.colorScheme.onSurface
                       )
+                      Spacer(Modifier.height(3.dp))
+                      Text(
+                          text = "Επιλογή βασικού χρώματος έμφασης της εφαρμογής",
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
                       Spacer(Modifier.height(10.dp))
-                      Row(
-                          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                          verticalAlignment = Alignment.CenterVertically,
-                          horizontalArrangement = Arrangement.spacedBy(12.dp)
-                      ) {
-                          VnFpsPref.extraColorPalette.forEach { (_, argb) ->
-                              val sel = VnFpsPref.customAccentColorArgb == argb
-                              if (argb == 0L) {
-                                  Text(
-                                      text = "Αυτόματη",
-                                      style = MaterialTheme.typography.bodyMedium,
-                                      fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                                      color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                      modifier = Modifier.clickable { VnFpsPref.updateCustomColor(c, 0L) }.padding(vertical = 8.dp, horizontal = 4.dp)
-                                  )
-                              } else {
-                                  Box(
-                                      modifier = Modifier
-                                          .size(38.dp)
-                                          .clip(CircleShape)
-                                          .background(Color(argb))
-                                          .border(
-                                              width = if (sel) 2.5.dp else 0.dp,
-                                              color = if (sel) MaterialTheme.colorScheme.onSurface else Color.Transparent,
-                                              shape = CircleShape
-                                          )
-                                          .clickable { VnFpsPref.updateCustomColor(c, argb) }
-                                  )
-                              }
-                          }
-                      }
+                      VnColorSwatchRow(
+                          selectedArgb = VnFpsPref.customAccentColorArgb,
+                          onSelect = { VnFpsPref.updateCustomColor(c, it) }
+                      )
                   }
 
                   VnCardDivider()
 
-                  Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                  Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
                       Text(
-                          text = "Ρυθμός Ανανέωσης (FPS)",
-                          style = MaterialTheme.typography.titleMedium,
-                          fontWeight = FontWeight.SemiBold,
+                          text = "Ρυθμός Ανανέωσης Οθόνης",
+                          style = MaterialTheme.typography.bodyLarge,
+                          fontWeight = FontWeight.Medium,
                           color = MaterialTheme.colorScheme.onSurface
                       )
-                      Spacer(Modifier.height(2.dp))
+                      Spacer(Modifier.height(3.dp))
                       Text(
-                          text = if (rates.isNotEmpty()) "Υποστηριζόμενα οθόνης: ${rates.joinToString(" / ")} Hz" else "Προεπιλογή μέγιστου ρυθμού ανανέωσης",
+                          text = if (rates.isNotEmpty()) "Υποστηριζόμενα: ${rates.joinToString(" / ")} Hz" else "Προεπιλογή μέγιστου ρυθμού ανανέωσης",
                           style = MaterialTheme.typography.bodySmall,
                           color = MaterialTheme.colorScheme.onSurfaceVariant
                       )
                       Spacer(Modifier.height(10.dp))
                       Row(
                           modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                          horizontalArrangement = Arrangement.spacedBy(18.dp)
+                          horizontalArrangement = Arrangement.spacedBy(8.dp)
                       ) {
                           listOf(0, 30, 60, 90, 120).forEach { f ->
-                              val sel = VnFpsPref.targetFps == f
-                              Text(
-                                  text = if (f == 0) "Auto" else "$f FPS",
-                                  style = MaterialTheme.typography.bodyLarge,
-                                  fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                                  color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                  modifier = Modifier.clickable { VnFpsPref.update(c, f) }.padding(vertical = 4.dp)
+                              VnOptionPill(
+                                  label = if (f == 0) "Auto" else "$f FPS",
+                                  selected = VnFpsPref.targetFps == f,
+                                  onClick = { VnFpsPref.update(c, f) }
                               )
                           }
                       }
@@ -1774,25 +1742,25 @@ jobs:
                   VnCardDivider()
 
                   VnNativeSwitchRow(
-                      title = "Κίνηση Στοιχείων (Animation)",
-                      subtitle = "Mode 1: Απαλή αιώρηση · Mode 2: Ρυθμικό κύμα · Mode 3: 3D κλίση",
+                      title = "Κίνηση Στοιχείων",
+                      subtitle = "Απαλή δυναμική κίνηση στα στοιχεία του Player και της διεπαφής",
                       checked = VnFpsPref.elementAnimEnabled,
                       onCheckedChange = { VnFpsPref.updateElementAnim(c, it) }
                   )
 
                   if (VnFpsPref.elementAnimEnabled) {
                       Row(
-                          modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                          horizontalArrangement = Arrangement.spacedBy(20.dp)
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .horizontalScroll(rememberScrollState())
+                              .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+                          horizontalArrangement = Arrangement.spacedBy(8.dp)
                       ) {
-                          listOf(1 to "Mode 1", 2 to "Mode 2", 3 to "Mode 3").forEach { (m, lbl) ->
-                              val sel = VnFpsPref.elementAnimMode == m
-                              Text(
-                                  text = lbl,
-                                  style = MaterialTheme.typography.bodyLarge,
-                                  fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
-                                  color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                  modifier = Modifier.clickable { VnFpsPref.updateElementAnim(c, true, m) }.padding(vertical = 4.dp)
+                          listOf(1 to "Αιώρηση", 2 to "Κύμα", 3 to "3D Κλίση").forEach { (m, lbl) ->
+                              VnOptionPill(
+                                  label = lbl,
+                                  selected = VnFpsPref.elementAnimMode == m,
+                                  onClick = { VnFpsPref.updateElementAnim(c, true, m) }
                               )
                           }
                       }
@@ -1813,10 +1781,10 @@ jobs:
           fun VnPlaybackSettingsCard(modifier: Modifier = Modifier) {
               val c = LocalContext.current
               VnFpsPref.ensureInit(c)
-              VnNativeSettingsCard(modifier) {
+              VnSectionBlock(sectionTitle = "VNERA · ΑΝΑΠΑΡΑΓΩΓΗ", modifier = modifier) {
                   VnNativeSwitchRow(
-                      title = "Διατήρηση Τυχαίας Σειράς (Auto-Shuffle)",
-                      subtitle = "Επαναφέρει αυτόματα την τυχαία σειρά αν απενεργοποιηθεί (π.χ. από Spotify) χωρίς να χαλάει η ουρά σου",
+                      title = "Διατήρηση Τυχαίας Σειράς",
+                      subtitle = "Επαναφέρει αυτόματα το Shuffle αν απενεργοποιηθεί χωρίς να χαλάει η ουρά σου",
                       checked = VnFpsPref.keepShuffleEnabled,
                       onCheckedChange = { VnFpsPref.updateKeepShuffle(c, it) }
                   )
@@ -1824,11 +1792,77 @@ jobs:
                   VnCardDivider()
 
                   VnNativeSwitchRow(
-                      title = "Ειδοποίηση Ποιότητας & Σειράς Επεκτάσεων",
-                      subtitle = "Αναδυόμενο παράθυρο αν παίξει λάθος σειρά επέκτασης ή χαμηλότερη ποιότητα ήχου",
+                      title = "Ειδοποίηση Ποιότητας & Σειράς",
+                      subtitle = "Ειδοποιεί αν παίξει λάθος σειρά επέκτασης ή χαμηλότερη ποιότητα ήχου",
                       checked = VnFpsPref.playbackAlertsEnabled,
                       onCheckedChange = { VnFpsPref.updatePlaybackAlerts(c, it) }
                   )
+              }
+          }
+
+          @Composable
+          fun VnLyricsSettingsCard(modifier: Modifier = Modifier) {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
+              val scalePresets = listOf(0.70f, 0.85f, 1.00f, 1.20f, 1.40f, 1.70f)
+
+              VnSectionBlock(sectionTitle = "VNERA · ΣΤΙΧΟΙ", modifier = modifier) {
+                  VnNativeSwitchRow(
+                      title = "Πλήρης Οθόνη Στίχων",
+                      subtitle = "Απόκρυψη μπαρών συστήματος στη μαύρη πλήρη οθόνη στίχων",
+                      checked = VnFpsPref.lyricsImmersiveEnabled,
+                      onCheckedChange = { VnFpsPref.updateLyricsImmersive(c, it) }
+                  )
+
+                  VnCardDivider()
+
+                  VnNativeSwitchRow(
+                      title = "Προσαρμοσμένο Χρώμα Στίχων",
+                      subtitle = "Οι στίχοι και το καραόκε του Player διατηρούν σταθερά το χρώμα που επέλεξες",
+                      checked = VnFpsPref.lyricsBeautifulEnabled,
+                      onCheckedChange = { VnFpsPref.updateLyricsBeautiful(c, it) }
+                  )
+
+                  if (VnFpsPref.lyricsBeautifulEnabled) {
+                      Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) {
+                          VnColorSwatchRow(
+                              selectedArgb = VnFpsPref.lyricsCustomColorArgb,
+                              onSelect = { VnFpsPref.updateLyricsCustomColor(c, it) }
+                          )
+                      }
+                  }
+
+                  VnCardDivider()
+
+                  Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+                      Text(
+                          text = "Μέγεθος Στίχων Player",
+                          style = MaterialTheme.typography.bodyLarge,
+                          fontWeight = FontWeight.Medium,
+                          color = MaterialTheme.colorScheme.onSurface
+                      )
+                      Spacer(Modifier.height(3.dp))
+                      Text(
+                          text = "Κλίμακα γραμματοσειράς για τους στίχους και το καραόκε",
+                          style = MaterialTheme.typography.bodySmall,
+                          color = MaterialTheme.colorScheme.onSurfaceVariant
+                      )
+                      Spacer(Modifier.height(10.dp))
+                      Row(
+                          modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                          horizontalArrangement = Arrangement.spacedBy(8.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                      ) {
+                          scalePresets.forEach { preset ->
+                              val isSelected = abs(VnFpsPref.lyricsFontScale - preset) < 0.03f
+                              VnOptionPill(
+                                  label = "${(preset * 100).roundToInt()}%",
+                                  selected = isSelected,
+                                  onClick = { VnFpsPref.updateLyricsFontScale(c, preset) }
+                              )
+                          }
+                      }
+                  }
               }
           }
 
@@ -1840,9 +1874,9 @@ jobs:
               includePlayback: Boolean = true
           ) {
               Column(modifier = modifier.fillMaxWidth()) {
-                  if (includeLyrics) VnLyricsSettingsCard()
                   if (includeAppearance) VnAppearanceSettingsCard()
                   if (includePlayback) VnPlaybackSettingsCard()
+                  if (includeLyrics) VnLyricsSettingsCard()
               }
           }
 
@@ -1853,55 +1887,67 @@ jobs:
               var showRestoreDialog by remember { mutableStateOf(false) }
               var restoreText by remember { mutableStateOf("") }
 
-              VnNativeSettingsCard(modifier) {
-                  Row(
-                      modifier = Modifier
-                          .fillMaxWidth()
-                          .clickable { VnFpsPref.copyExtensionsToClipboard(c) }
-                          .padding(vertical = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically
-                  ) {
-                      Column(Modifier.weight(1f)) {
-                          Text(
-                              text = "Αντιγραφή Extensions",
-                              style = MaterialTheme.typography.titleMedium,
-                              fontWeight = FontWeight.SemiBold,
-                              color = MaterialTheme.colorScheme.onSurface
-                          )
-                          Spacer(Modifier.height(2.dp))
-                          Text(
-                              text = "Αντιγράφει μόνο τα ονόματα και τα links των extensions (χωρίς ρυθμίσεις)",
-                              style = MaterialTheme.typography.bodySmall,
-                              color = MaterialTheme.colorScheme.onSurfaceVariant
-                          )
-                      }
-                  }
-
-                  VnCardDivider()
-
-                  Row(
-                      modifier = Modifier
-                          .fillMaxWidth()
-                          .clickable {
-                              restoreText = VnFpsPref.getClipboardText(c)
-                              showRestoreDialog = true
+              Surface(
+                  modifier = modifier
+                      .fillMaxWidth()
+                      .padding(vertical = 8.dp),
+                  shape = RoundedCornerShape(22.dp),
+                  color = MaterialTheme.colorScheme.surfaceContainer,
+                  border = BorderStroke(
+                      width = 0.5.dp,
+                      color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)
+                  )
+              ) {
+                  Column(Modifier.fillMaxWidth()) {
+                      Row(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .clickable { VnFpsPref.copyExtensionsToClipboard(c) }
+                              .padding(horizontal = 16.dp, vertical = 14.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                      ) {
+                          Column(Modifier.weight(1f)) {
+                              Text(
+                                  text = "Αντιγραφή Extensions",
+                                  style = MaterialTheme.typography.bodyLarge,
+                                  fontWeight = FontWeight.Medium,
+                                  color = MaterialTheme.colorScheme.onSurface
+                              )
+                              Spacer(Modifier.height(3.dp))
+                              Text(
+                                  text = "Αντιγράφει μόνο τα ονόματα και τα links των extensions",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
                           }
-                          .padding(vertical = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically
-                  ) {
-                      Column(Modifier.weight(1f)) {
-                          Text(
-                              text = "Επαναφορά Extensions",
-                              style = MaterialTheme.typography.titleMedium,
-                              fontWeight = FontWeight.SemiBold,
-                              color = MaterialTheme.colorScheme.primary
-                          )
-                          Spacer(Modifier.height(2.dp))
-                          Text(
-                              text = "Επαναφέρει μόνο τις επεκτάσεις από το πρόχειρο/κείμενο χωρίς να αλλάζει τις ρυθμίσεις",
-                              style = MaterialTheme.typography.bodySmall,
-                              color = MaterialTheme.colorScheme.onSurfaceVariant
-                          )
+                      }
+
+                      VnCardDivider()
+
+                      Row(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .clickable {
+                                  restoreText = VnFpsPref.getClipboardText(c)
+                                  showRestoreDialog = true
+                              }
+                              .padding(horizontal = 16.dp, vertical = 14.dp),
+                          verticalAlignment = Alignment.CenterVertically
+                      ) {
+                          Column(Modifier.weight(1f)) {
+                              Text(
+                                  text = "Επαναφορά Extensions",
+                                  style = MaterialTheme.typography.bodyLarge,
+                                  fontWeight = FontWeight.Medium,
+                                  color = MaterialTheme.colorScheme.primary
+                              )
+                              Spacer(Modifier.height(3.dp))
+                              Text(
+                                  text = "Επαναφέρει μόνο τις επεκτάσεις από το πρόχειρο χωρίς να αλλάζει τις ρυθμίσεις",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
                       }
                   }
               }
@@ -2484,36 +2530,31 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # 5. Inject VNEra settings cards PER-FILE using STRICT @Composable container whitelisting
+          # 5. Inject VNEra settings cards ONLY into scrollable containers (LazyColumn items or verticalScroll Column)
+          #    NEVER into Box, Surface, Scaffold, or floating overlays!
           all_settings_files = [
               p for p in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt"))
               if "Settings" in p.name and p.name not in ("VnSettingsBackup.kt", "VnFrameRateManager.kt")
           ]
 
-          res_map: dict[str, set[str]] = {"lyrics": set(), "appearance": set(), "playback": set()}
+          res_map: dict[str, set[str]] = {"appearance": set(), "playback": set(), "lyrics": set()}
           for xml_f in Path("app/src/main/res").rglob("*.xml"):
               xt = xml_f.read_text(errors="ignore")
               for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', xt):
                   k, val = m.group(1), m.group(2)
                   kl = k.lower()
-                  if "lyric" in kl or re.search(r'(?:Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke)', val, re.I):
-                      res_map["lyrics"].add(k)
                   if any(w in kl for w in ("appearance", "theme", "accent", "dynamic_color")) or re.search(r'(?:Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme)', val, re.I):
                       res_map["appearance"].add(k)
                   if any(w in kl for w in ("playback", "audio", "quality", "gapless", "normaliz")) or re.search(r'(?:Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση)', val, re.I):
                       res_map["playback"].add(k)
+                  if "lyric" in kl or re.search(r'(?:Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke)', val, re.I):
+                      res_map["lyrics"].add(k)
 
           def build_cat_regex(literals: str, keys: set[str]) -> str:
               parts = [rf'"[^"]*(?:{literals})[^"]*"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in sorted(keys)]
               return "|".join(parts)
 
           cat_configs = [
-              (
-                  "lyrics",
-                  "VnLyricsSettingsCard",
-                  build_cat_regex(r'Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke', res_map["lyrics"]),
-                  "com.music.spotui.ui.screens.VnLyricsSettingsCard()"
-              ),
               (
                   "appearance",
                   "VnAppearanceSettingsCard",
@@ -2526,9 +2567,14 @@ jobs:
                   build_cat_regex(r'Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση', res_map["playback"]),
                   "com.music.spotui.ui.screens.VnPlaybackSettingsCard()"
               ),
+              (
+                  "lyrics",
+                  "VnLyricsSettingsCard",
+                  build_cat_regex(r'Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke', res_map["lyrics"]),
+                  "com.music.spotui.ui.screens.VnLyricsSettingsCard()"
+              ),
           ]
 
-          # Strict whitelist of @Composable containers & inline control-flow constructs
           COMPOSABLE_CONTAINERS = {
               "Column", "Row", "Box", "BoxWithConstraints", "Surface", "Card",
               "ElevatedCard", "OutlinedCard", "Scaffold", "ModalBottomSheet",
@@ -2541,7 +2587,14 @@ jobs:
           LAZY_ITEM_CONTAINERS = {"item", "items", "itemsIndexed", "stickyHeader"}
           LAZY_CONTAINERS = {"LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid"}
 
-          def analyze_composable_scopes(lines: list[str]) -> dict[int, str]:
+          def find_scrollable_insertion_targets(lines: list[str]) -> tuple[dict[int, str], list[tuple[int, int, str]]]:
+              """
+              Returns:
+                - line_to_scroll_scope: maps line index -> 'LAZY_LIST' (direct child of LazyColumn)
+                  or 'SCROLL_COLUMN' (direct child of Column with verticalScroll).
+                  Never maps Box, Surface, Card, or nested children!
+                - top_lazy_items: list of (start_line, end_line, indent) for top-level item { ... } blocks inside LazyColumn.
+              """
               n = len(lines)
               clean_lines = []
               in_bc = False
@@ -2568,7 +2621,9 @@ jobs:
                   s = re.sub(r"'(?:\\.|[^'\\])'", "''", s)
                   clean_lines.append(s)
 
-              valid_points: dict[int, str] = {}
+              line_to_scroll_scope: dict[int, str] = {}
+              top_lazy_items: list[tuple[int, int, str]] = []
+
               i = 0
               while i < n:
                   m_fun = re.search(r'\bfun\s+(?:<[^>]+>\s*)?(?:[A-Za-z0-9_.]+\.)?([A-Za-z0-9_]+)\s*\(', clean_lines[i])
@@ -2627,16 +2682,20 @@ jobs:
                       i = sig_end_line + 1
                       continue
 
-                  scope_stack: list[str] = ["COMPOSABLE"]
+                  # Stack entries: (scope_type, open_line, indent_str)
+                  scope_stack: list[tuple[str, int, str]] = [("COMPOSABLE", body_open_line, "")]
                   paren_depth = 0
                   bracket_depth = 0
                   last_ident = ""
+                  last_ident_line = body_open_line
                   saw_equals_at_zero = False
                   saw_arrow_at_zero = False
 
                   for li in range(body_open_line, n):
-                      if paren_depth == 0 and bracket_depth == 0 and scope_stack and "NON_COMPOSABLE" not in scope_stack:
-                          valid_points[li] = scope_stack[-1]
+                      if paren_depth == 0 and bracket_depth == 0 and scope_stack:
+                          top_kind = scope_stack[-1][0]
+                          if top_kind in ("LAZY_LIST", "SCROLL_COLUMN"):
+                              line_to_scroll_scope[li] = top_kind
 
                       line_s = clean_lines[li]
                       start_col = (body_open_col + 1) if li == body_open_line else 0
@@ -2652,6 +2711,7 @@ jobs:
                               if paren_depth == 0 and bracket_depth == 0:
                                   if ident not in ("val", "var", "private", "internal", "public", "fun", "return"):
                                       last_ident = ident
+                                      last_ident_line = li
                               idx_c = j_c
                               continue
                           if ch == '-' and idx_c + 1 < L and line_s[idx_c + 1] == '>':
@@ -2683,27 +2743,33 @@ jobs:
                           elif ch == ']':
                               bracket_depth = max(0, bracket_depth - 1)
                           elif ch == '{':
-                              parent_scope = scope_stack[-1] if scope_stack else "NON_COMPOSABLE"
+                              parent_kind = scope_stack[-1][0] if scope_stack else "NON_COMPOSABLE"
+                              call_header = "".join(clean_lines[last_ident_line:li + 1])
+                              ind_str = re.match(r'^(\s*)', lines[last_ident_line]).group(1)
                               if paren_depth != 0 or bracket_depth != 0:
-                                  scope_stack.append("NON_COMPOSABLE")
+                                  scope_stack.append(("NON_COMPOSABLE", li, ind_str))
                               elif saw_equals_at_zero:
-                                  scope_stack.append("COMPOSABLE" if (last_ident == "content" and parent_scope == "COMPOSABLE") else "NON_COMPOSABLE")
-                              elif last_ident in LAZY_CONTAINERS and parent_scope == "COMPOSABLE":
-                                  scope_stack.append("LAZY_LIST")
-                              elif last_ident in LAZY_ITEM_CONTAINERS and parent_scope == "LAZY_LIST":
-                                  scope_stack.append("COMPOSABLE")
-                              elif last_ident in COMPOSABLE_CONTAINERS and parent_scope in ("COMPOSABLE", "LAZY_LIST"):
-                                  scope_stack.append(parent_scope)
-                              elif saw_arrow_at_zero and parent_scope in ("COMPOSABLE", "LAZY_LIST"):
-                                  scope_stack.append(parent_scope)
+                                  scope_stack.append(("COMPOSABLE" if (last_ident == "content" and parent_kind != "NON_COMPOSABLE") else "NON_COMPOSABLE", li, ind_str))
+                              elif last_ident == "LazyColumn" and parent_kind != "NON_COMPOSABLE":
+                                  scope_stack.append(("LAZY_LIST", last_ident_line, ind_str))
+                              elif last_ident == "Column" and "verticalScroll" in call_header and parent_kind != "NON_COMPOSABLE":
+                                  scope_stack.append(("SCROLL_COLUMN", last_ident_line, ind_str))
+                              elif last_ident in LAZY_ITEM_CONTAINERS and parent_kind == "LAZY_LIST":
+                                  scope_stack.append(("LAZY_ITEM", last_ident_line, ind_str))
+                              elif last_ident in COMPOSABLE_CONTAINERS and parent_kind != "NON_COMPOSABLE":
+                                  scope_stack.append(("COMPOSABLE", last_ident_line, ind_str))
+                              elif saw_arrow_at_zero and parent_kind != "NON_COMPOSABLE":
+                                  scope_stack.append((parent_kind, li, ind_str))
                               else:
-                                  scope_stack.append("NON_COMPOSABLE")
+                                  scope_stack.append(("NON_COMPOSABLE", li, ind_str))
                               last_ident = ""
                               saw_equals_at_zero = False
                               saw_arrow_at_zero = False
                           elif ch == '}':
                               if scope_stack:
-                                  scope_stack.pop()
+                                  popped_kind, popped_start, popped_ind = scope_stack.pop()
+                                  if popped_kind == "LAZY_ITEM" and scope_stack and scope_stack[-1][0] == "LAZY_LIST":
+                                      top_lazy_items.append((popped_start, li, popped_ind))
                               if paren_depth == 0 and bracket_depth == 0:
                                   last_ident = ""
                                   saw_equals_at_zero = False
@@ -2718,96 +2784,80 @@ jobs:
                   else:
                       i = n
 
-              return valid_points
+              return line_to_scroll_scope, top_lazy_items
 
           for sp_file in all_settings_files:
-              for cat_name, marker, anchor_rx, comp_call in cat_configs:
+              # Determine which VNEra cards belong in this file
+              fname_low = sp_file.name.lower()
+              if "appearance" in fname_low or "theme" in fname_low:
+                  target_cats = [c for c in cat_configs if c[0] == "appearance"]
+              elif "playback" in fname_low or "audio" in fname_low:
+                  target_cats = [c for c in cat_configs if c[0] == "playback"]
+              elif "lyric" in fname_low:
+                  target_cats = [c for c in cat_configs if c[0] == "lyrics"]
+              else:
+                  target_cats = cat_configs
+
+              for cat_name, marker, anchor_rx, comp_call in target_cats:
                   st = sp_file.read_text()
                   if marker in st:
                       continue
                   lines = st.splitlines(keepends=True)
-                  valid_scopes = analyze_composable_scopes(lines)
-                  if not valid_scopes:
+                  scroll_scopes, top_items = find_scrollable_insertion_targets(lines)
+                  if not scroll_scopes:
                       continue
 
                   placed = False
-                  for idx, line in enumerate(lines):
-                      s_strip = line.lstrip()
-                      if s_strip.startswith(("//", "/*", "*", "import ", "package ", "fun ", "object ", "class ")):
-                          continue
-                      near_win = "".join(lines[max(0, idx - 4):min(len(lines), idx + 6)])
-                      if re.search(r'\b(?:CenterAligned|Large|Medium)?TopAppBar\b', near_win):
-                          continue
-                      if re.search(anchor_rx, line, re.IGNORECASE):
-                          # Skip category navigation cards/rows that just open another page via onClick/clickable
-                          if re.search(r'\b(?:onClick|clickable|combinedClickable)\b', near_win) and not re.search(r'\b(?:Switch|Slider|RadioButton|Checkbox|VnSettingsBackup)\b', "".join(lines[idx:min(len(lines), idx + 25)])):
-                              continue
-                          anchor_indent = len(line) - len(s_strip)
-                          for k in range(idx + 1, min(idx + 90, len(lines))):
-                              if k not in valid_scopes:
-                                  continue
-                              scope_kind = valid_scopes[k]
-                              raw_k = lines[k]
-                              clean_k = raw_k.split("//")[0]
-                              ind_m = re.match(r'^(\s*)', raw_k)
-                              ind = ind_m.group(1) if ind_m else "    "
-                              ind_len = len(ind)
-
-                              if scope_kind == "LAZY_LIST" and re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', clean_k) and ind_len <= anchor_indent:
-                                  lines.insert(k, f"{ind}item {{ {comp_call} }}\n")
-                                  sp_file.write_text("".join(lines))
-                                  placed = True
-                                  print(f"Injected {marker} into {cat_name} LazyColumn of {sp_file}")
-                                  break
-                              if re.match(r'^\s*\}\s*$', clean_k) and ind_len < anchor_indent:
-                                  if scope_kind == "LAZY_LIST":
-                                      lines.insert(k, f"{ind}    item {{ {comp_call} }}\n")
-                                  else:
-                                      lines.insert(k, f"{ind}    {comp_call}\n")
-                                  sp_file.write_text("".join(lines))
-                                  placed = True
-                                  print(f"Injected {marker} into {cat_name} section of {sp_file}")
-                                  break
-                          if placed:
+                  # 1. If the file has top-level LazyColumn items, check if one matches this category's anchor
+                  for item_start, item_end, item_ind in top_items:
+                      item_body = "".join(lines[item_start:item_end + 1])
+                      if re.search(anchor_rx, item_body, re.IGNORECASE):
+                          # Skip if this item is just a single navigation card with onClick (opens a sub-screen)
+                          has_inline_controls = bool(re.search(r'\b(?:Switch|Slider|RadioButton|Checkbox|VnSettingsBackup)\b', item_body))
+                          has_nav_click = bool(re.search(r'\b(?:onClick|clickable)\b', item_body))
+                          if has_inline_controls or not has_nav_click:
+                              lines.insert(item_end + 1, f"{item_ind}item {{ {comp_call} }}\n")
+                              sp_file.write_text("".join(lines))
+                              placed = True
+                              print(f"Injected {marker} after {cat_name} LazyColumn item in {sp_file}")
                               break
+                  if placed:
+                      continue
 
-              # Per-file fallback for main SettingsScreen & ImmersiveSettingsScreen:
-              # Place any remaining unplaced cards right next to VnSettingsBackup() (or in the main LAZY_LIST/COMPOSABLE container)
-              if sp_file.name in ("SettingsScreen.kt", "ImmersiveSettingsScreen.kt"):
-                  for cat_name, marker, _, comp_call in cat_configs:
-                      st = sp_file.read_text()
-                      if marker in st:
-                          continue
-                      lines = st.splitlines(keepends=True)
-                      valid_scopes = analyze_composable_scopes(lines)
-                      backup_idx = next((idx for idx, l in enumerate(lines) if "VnSettingsBackup(" in l and idx in valid_scopes), None)
-                      if backup_idx is not None:
-                          ind = re.match(r'^(\s*)', lines[backup_idx]).group(1)
-                          if valid_scopes[backup_idx] == "LAZY_LIST":
-                              lines.insert(backup_idx, f"{ind}item {{ {comp_call} }}\n")
-                          else:
-                              lines.insert(backup_idx, f"{ind}{comp_call}\n")
+                  # 2. Otherwise, place inside the scrollable list right before VnSettingsBackup's item (or at the end of LazyColumn / verticalScroll Column)
+                  backup_line = next((idx for idx, l in enumerate(lines) if "VnSettingsBackup(" in l), None)
+                  if backup_line is not None and top_items:
+                      containing_item = next(((s, e, ind) for (s, e, ind) in top_items if s <= backup_line <= e), None)
+                      if containing_item is not None:
+                          s_idx, _, item_ind = containing_item
+                          lines.insert(s_idx, f"{item_ind}item {{ {comp_call} }}\n")
                           sp_file.write_text("".join(lines))
-                          print(f"Fallback injected {marker} next to VnSettingsBackup in {sp_file}")
+                          print(f"Injected {marker} before VnSettingsBackup LazyColumn item in {sp_file}")
                           continue
 
-                      best_k = None
-                      best_kind = None
-                      for k in range(len(lines) - 1, -1, -1):
-                          if k in valid_scopes and re.match(r'^\s*\}\s*$', lines[k].split("//")[0]):
-                              if valid_scopes[k] == "LAZY_LIST":
-                                  best_k, best_kind = k, "LAZY_LIST"
-                                  break
-                              elif best_k is None and valid_scopes[k] == "COMPOSABLE":
-                                  best_k, best_kind = k, "COMPOSABLE"
-                      if best_k is not None:
-                          ind = re.match(r'^(\s*)', lines[best_k]).group(1)
-                          if best_kind == "LAZY_LIST":
-                              lines.insert(best_k, f"{ind}    item {{ {comp_call} }}\n")
-                          else:
-                              lines.insert(best_k, f"{ind}    {comp_call}\n")
-                          sp_file.write_text("".join(lines))
-                          print(f"Fallback injected {marker} into {sp_file}")
+                  if top_items:
+                      _, last_item_end, last_item_ind = top_items[-1]
+                      lines.insert(last_item_end + 1, f"{last_item_ind}item {{ {comp_call} }}\n")
+                      sp_file.write_text("".join(lines))
+                      print(f"Injected {marker} at end of LazyColumn in {sp_file}")
+                      continue
+
+                  # 3. Fallback for verticalScroll Column
+                  best_k = None
+                  best_kind = None
+                  for k in range(len(lines) - 1, -1, -1):
+                      if k in scroll_scopes and re.match(r'^\s*\}\s*$', lines[k].split("//")[0]):
+                          best_k = k
+                          best_kind = scroll_scopes[k]
+                          break
+                  if best_k is not None:
+                      ind = re.match(r'^(\s*)', lines[best_k]).group(1)
+                      if best_kind == "LAZY_LIST":
+                          lines.insert(best_k, f"{ind}    item {{ {comp_call} }}\n")
+                      else:
+                          lines.insert(best_k, f"{ind}    {comp_call}\n")
+                      sp_file.write_text("".join(lines))
+                      print(f"Injected {marker} into {best_kind} of {sp_file}")
 
           for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
               if ap.exists() and "vnAnimatedElement" not in ap.read_text():
