@@ -2518,17 +2518,18 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # 5. Inject VNEra settings cards into the exact scrollable containers (LazyColumn / verticalScroll Column)
-          #    of Appearance, Playback, and Lyrics sub-pages (with fallback to App/Backup scrollable container).
+          # 5. Universal Settings Card Injector:
+          #    Supports LazyColumn { ... }, LazyColumn(...) { ... }, inner sub-page Column { ... } / Column(...) { ... },
+          #    direct `when` branches inside scrollable containers, and fallback to App/Backup screen.
           res_map: dict[str, set[str]] = {"appearance": set(), "playback": set(), "lyrics": set(), "app": set()}
           for xml_f in Path("app/src/main/res").rglob("*.xml"):
               xt = xml_f.read_text(errors="ignore")
               for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', xt):
                   k, val = m.group(1), m.group(2)
                   kl = k.lower()
-                  if any(w in kl for w in ("appearance", "theme", "accent", "dynamic_color")) or re.search(r'(?:Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme)', val, re.I):
+                  if any(w in kl for w in ("appearance", "theme", "accent", "dynamic_color", "display")) or re.search(r'(?:Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme|Γλώσσα|Language)', val, re.I):
                       res_map["appearance"].add(k)
-                  if any(w in kl for w in ("playback", "audio", "quality", "gapless", "normaliz")) or re.search(r'(?:Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση)', val, re.I):
+                  if any(w in kl for w in ("playback", "audio", "quality", "gapless", "normaliz", "crossfade", "automix")) or re.search(r'(?:Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση|AutoMix|Μεταβάσεις)', val, re.I):
                       res_map["playback"].add(k)
                   if "lyric" in kl or re.search(r'(?:Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke)', val, re.I):
                       res_map["lyrics"].add(k)
@@ -2561,18 +2562,8 @@ jobs:
           ]
           app_fallback_rx = build_cat_regex(r'Import / Export|Export settings|Έλεγχος για ενημερώσεις|Επανεκκίνηση του player|VnSettingsBackup', res_map["app"])
 
-          NON_LAYOUT_CALLS = {
-              "LaunchedEffect", "DisposableEffect", "SideEffect", "remember", "rememberSaveable",
-              "derivedStateOf", "mutableStateOf", "mutableIntStateOf", "mutableFloatStateOf",
-              "mutableLongStateOf", "graphicsLayer", "drawBehind", "drawWithContent", "drawWithCache",
-              "pointerInput", "clickable", "combinedClickable", "semantics", "testTag"
-          }
-          NON_LAYOUT_PARAMS = {
-              "onClick", "onCheckedChange", "onValueChange", "onValueChangeFinished",
-              "onDismissRequest", "confirmValueChange", "onLongClick", "onDoubleClick",
-              "onScroll", "onFocusChanged", "onGloballyPositioned", "onSizeChanged"
-          }
           LAZY_ITEM_CALLS = {"item", "items", "itemsIndexed", "stickyHeader"}
+          INLINE_ITEM_PARENTS = {"Row", "Surface", "Card", "ElevatedCard", "OutlinedCard", "AlertDialog", "DropdownMenu", "Button", "OutlinedButton", "TextButton", "IconButton"}
 
           def strip_comments_and_strings(lines: list[str]) -> list[str]:
               clean = []
@@ -2601,17 +2592,15 @@ jobs:
                   clean.append(s)
               return clean
 
-          def extract_scroll_containers(lines: list[str]) -> list[dict]:
+          def extract_layout_containers(lines: list[str]) -> list[dict]:
               """
-              Finds every LazyColumn { ... } and every Column(...verticalScroll...) { ... }
-              together with its enclosing @Composable fun name, exact start/end lines, indent,
-              and direct LazyColumn item { ... } ranges.
+              Finds every LazyColumn { ... } / LazyColumn(...) { ... } and
+              every page-level Column { ... } / Column(...) { ... } (excluding small Columns inside Row/Card/Surface).
               """
               n = len(lines)
               clean = strip_comments_and_strings(lines)
               containers: list[dict] = []
 
-              # Map each line to its enclosing @Composable function name & range
               fun_spans: list[tuple[int, int, str]] = []
               i = 0
               while i < n:
@@ -2652,128 +2641,143 @@ jobs:
                   fun_spans.append((i, end_line, fun_name))
                   i = end_line + 1
 
-              def enclosing_fun(line_idx: int) -> str:
-                  best = ""
+              def enclosing_fun(line_idx: int) -> tuple[str, int, int]:
+                  best = ("", 0, n - 1)
                   for fs, fe, fn in fun_spans:
                       if fs <= line_idx <= fe:
-                          best = fn
+                          best = (fn, fs, fe)
                   return best
 
-              # Scan for LazyColumn(...) { ... } and Column(...verticalScroll...) { ... }
+              # Find all block calls like LazyColumn, Column, Row, Card, Surface
+              block_nodes: list[dict] = []
               for start_li in range(n):
-                  m_call = re.search(r'(?<![.\w])(LazyColumn|Column)\s*\(', clean[start_li])
-                  if not m_call:
-                      continue
-                  kind = m_call.group(1)
-                  call_col = m_call.start(1)
-                  p_depth = 0
-                  saw_p = False
-                  header_end_li = None
-                  open_brace_li = None
-                  open_brace_col = None
+                  for m_call in re.finditer(r'(?<![.\w])([A-Z][A-Za-z0-9_]*)\b', clean[start_li]):
+                      kind = m_call.group(1)
+                      call_col = m_call.end(1)
+                      # Scan forward from call_col: allow optional (...) then {
+                      p_depth = 0
+                      in_parens = False
+                      header_end_li = start_li
+                      open_brace_li = None
+                      open_brace_col = None
 
-                  for li in range(start_li, min(n, start_li + 35)):
-                      s = clean[li]
-                      c0 = call_col if li == start_li else 0
-                      for ci in range(c0, len(s)):
-                          ch = s[ci]
-                          if not saw_p:
-                              if ch == '(':
-                                  saw_p = True
-                                  p_depth = 1
-                              continue
-                          if p_depth > 0:
-                              if ch == '(': p_depth += 1
-                              elif ch == ')':
-                                  p_depth -= 1
-                                  if p_depth == 0:
-                                      header_end_li = li
-                          else:
+                      for li in range(start_li, min(n, start_li + 30)):
+                          s = clean[li]
+                          c0 = call_col if li == start_li else 0
+                          for ci in range(c0, len(s)):
+                              ch = s[ci]
+                              if in_parens:
+                                  if ch == '(': p_depth += 1
+                                  elif ch == ')':
+                                      p_depth -= 1
+                                      if p_depth == 0:
+                                          in_parens = False
+                                          header_end_li = li
+                                  continue
                               if ch.isspace():
+                                  continue
+                              if ch == '(' and open_brace_li is None:
+                                  in_parens = True
+                                  p_depth = 1
                                   continue
                               if ch == '{':
                                   open_brace_li = li
                                   open_brace_col = ci
                                   break
-                              else:
-                                  # Call without trailing lambda (e.g., Column(...) with no body)
-                                  open_brace_li = -1
-                                  break
-                      if open_brace_li is not None:
-                          break
+                              open_brace_li = -1
+                              break
+                          if open_brace_li is not None:
+                              break
 
-                  if open_brace_li is None or open_brace_li < 0 or header_end_li is None:
+                      if open_brace_li is None or open_brace_li < 0:
+                          continue
+
+                      b_depth = 0
+                      close_brace_li = None
+                      lazy_items: list[tuple[int, int, str]] = []
+                      cur_item_start: int | None = None
+                      cur_item_indent: str = ""
+                      p_inner = 0
+                      last_word = ""
+                      last_word_li = open_brace_li
+
+                      for li in range(open_brace_li, n):
+                          s = clean[li]
+                          c0 = open_brace_col if li == open_brace_li else 0
+                          idx_c = c0
+                          L = len(s)
+                          while idx_c < L:
+                              ch = s[idx_c]
+                              if ch.isalpha() or ch == '_':
+                                  j_c = idx_c + 1
+                                  while j_c < L and (s[j_c].isalnum() or s[j_c] == '_'):
+                                      j_c += 1
+                                  if b_depth == 1 and p_inner == 0:
+                                      last_word = s[idx_c:j_c]
+                                      last_word_li = li
+                                  idx_c = j_c
+                                  continue
+                              if ch == '(':
+                                  if b_depth >= 1:
+                                      p_inner += 1
+                              elif ch == ')':
+                                  if b_depth >= 1:
+                                      p_inner = max(0, p_inner - 1)
+                              elif ch == '{':
+                                  if b_depth == 1 and p_inner == 0 and kind == "LazyColumn" and last_word in LAZY_ITEM_CALLS:
+                                      cur_item_start = last_word_li
+                                      cur_item_indent = re.match(r'^(\s*)', lines[last_word_li]).group(1)
+                                  b_depth += 1
+                                  if b_depth == 1:
+                                      last_word = ""
+                              elif ch == '}':
+                                  b_depth -= 1
+                                  if b_depth == 1 and cur_item_start is not None:
+                                      lazy_items.append((cur_item_start, li, cur_item_indent))
+                                      cur_item_start = None
+                                  if b_depth == 0:
+                                      close_brace_li = li
+                                      break
+                              idx_c += 1
+                          if close_brace_li is not None:
+                              break
+
+                      if close_brace_li is None or close_brace_li <= open_brace_li:
+                          continue
+
+                      header_txt = "".join(clean[start_li:header_end_li + 1])
+                      block_nodes.append({
+                          "kind": kind,
+                          "start_li": start_li,
+                          "header_end_li": header_end_li,
+                          "open_li": open_brace_li,
+                          "close_li": close_brace_li,
+                          "has_vscroll": "verticalScroll" in header_txt,
+                          "base_indent": re.match(r'^(\s*)', lines[start_li]).group(1),
+                          "lazy_items": lazy_items,
+                      })
+
+              for node in block_nodes:
+                  if node["kind"] not in ("LazyColumn", "Column"):
                       continue
-
-                  header_text = "".join(clean[start_li:header_end_li + 1])
-                  if kind == "Column" and "verticalScroll" not in header_text:
-                      continue
-
-                  # Find matching closing brace of this LazyColumn / Column body
-                  # Also track direct item { ... } children inside LazyColumn
-                  b_depth = 0
-                  close_brace_li = None
-                  lazy_items: list[tuple[int, int, str]] = []
-                  cur_item_start: int | None = None
-                  cur_item_indent: str = ""
-                  p_inner = 0
-                  last_word = ""
-                  last_word_li = open_brace_li
-
-                  for li in range(open_brace_li, n):
-                      s = clean[li]
-                      c0 = open_brace_col if li == open_brace_li else 0
-                      idx_c = c0
-                      L = len(s)
-                      while idx_c < L:
-                          ch = s[idx_c]
-                          if ch.isalpha() or ch == '_':
-                              j_c = idx_c + 1
-                              while j_c < L and (s[j_c].isalnum() or s[j_c] == '_'):
-                                  j_c += 1
-                              if b_depth == 1 and p_inner == 0:
-                                  last_word = s[idx_c:j_c]
-                                  last_word_li = li
-                              idx_c = j_c
-                              continue
-                          if ch == '(':
-                              if b_depth >= 1:
-                                  p_inner += 1
-                          elif ch == ')':
-                              if b_depth >= 1:
-                                  p_inner = max(0, p_inner - 1)
-                          elif ch == '{':
-                              if b_depth == 1 and p_inner == 0 and kind == "LazyColumn" and last_word in LAZY_ITEM_CALLS:
-                                  cur_item_start = last_word_li
-                                  cur_item_indent = re.match(r'^(\s*)', lines[last_word_li]).group(1)
-                              b_depth += 1
-                              if b_depth == 1:
-                                  last_word = ""
-                          elif ch == '}':
-                              b_depth -= 1
-                              if b_depth == 1 and cur_item_start is not None:
-                                  lazy_items.append((cur_item_start, li, cur_item_indent))
-                                  cur_item_start = None
-                              if b_depth == 0:
-                                  close_brace_li = li
-                                  break
-                          idx_c += 1
-                      if close_brace_li is not None:
-                          break
-
-                  if close_brace_li is None or close_brace_li <= open_brace_li:
-                      continue
-
-                  base_ind = re.match(r'^(\s*)', lines[start_li]).group(1)
-                  containers.append({
-                      "kind": kind,
-                      "fun_name": enclosing_fun(start_li),
-                      "start_li": start_li,
-                      "open_li": open_brace_li,
-                      "close_li": close_brace_li,
-                      "base_indent": base_ind,
-                      "lazy_items": lazy_items,
-                  })
+                  fn_name, fn_s, fn_e = enclosing_fun(node["start_li"])
+                  # Check ancestors within the same function
+                  ancestors = [
+                      other for other in block_nodes
+                      if other is not node
+                      and other["start_li"] >= fn_s
+                      and other["close_li"] <= fn_e
+                      and other["start_li"] <= node["start_li"]
+                      and other["close_li"] >= node["close_li"]
+                  ]
+                  if node["kind"] == "Column":
+                      # Ignore small internal Columns inside Row, Card, Surface, Button, Dialog, etc.
+                      if any(a["kind"] in INLINE_ITEM_PARENTS for a in ancestors):
+                          continue
+                  has_scroll_ancestor = any(a["kind"] == "LazyColumn" or a["has_vscroll"] for a in ancestors)
+                  node["fun_name"] = fn_name
+                  node["has_scroll_ancestor"] = has_scroll_ancestor
+                  containers.append(node)
 
               return containers
 
@@ -2795,7 +2799,6 @@ jobs:
                   new_lines.insert(cont["close_li"], f"{child_ind}item {{ {comp_call} }}\n")
                   return new_lines
               else:
-                  # Column with verticalScroll
                   if before_backup:
                       for li in range(cont["open_li"] + 1, cont["close_li"]):
                           if "VnSettingsBackup(" in new_lines[li]:
@@ -2811,7 +2814,6 @@ jobs:
               if p.name not in ("VnFrameRateManager.kt", "VnSettingsBackup.kt")
           ]
 
-          # Prioritize SettingsScreen.kt and ImmersiveSettingsScreen.kt first, then any other UI screens
           def file_priority(p: Path) -> tuple[int, str]:
               if p.name == "SettingsScreen.kt":
                   return (0, str(p))
@@ -2823,11 +2825,10 @@ jobs:
 
           ui_kt_files.sort(key=file_priority)
 
-          # Track which categories have been placed in standard UI and Immersive UI
           placed_standard: set[str] = set()
           placed_immersive: set[str] = set()
 
-          # Pass 1: Match dedicated sub-page scrollable containers
+          # Pass 1: Match dedicated sub-page LazyColumn or Column containers
           for kt_file in ui_kt_files:
               is_imm_file = "immersive" in str(kt_file).lower()
               placed_set = placed_immersive if is_imm_file else placed_standard
@@ -2840,7 +2841,7 @@ jobs:
                       placed_set.add(cat_name)
                       continue
                   lines = src_text.splitlines(keepends=True)
-                  containers = extract_scroll_containers(lines)
+                  containers = extract_layout_containers(lines)
                   if not containers:
                       continue
 
@@ -2858,16 +2859,17 @@ jobs:
                           continue
                       score = 0
                       if re.search(cat_name, cont["fun_name"], re.I):
-                          score += 10
+                          score += 12
                       matches = len(re.findall(anchor_rx, body_txt, re.I))
                       score += matches * 3
-                      # Prefer leaf scrollable containers (not outer wrappers)
+                      if cont["kind"] == "LazyColumn" or cont["has_vscroll"] or cont["has_scroll_ancestor"]:
+                          score += 4
                       is_outer = any(
                           other is not cont and other["start_li"] > cont["start_li"] and other["close_li"] < cont["close_li"]
                           for other in containers
                       )
                       if not is_outer:
-                          score += 2
+                          score += 3
                       if score > best_score and matches > 0:
                           best_score = score
                           best_cont = cont
@@ -2878,7 +2880,7 @@ jobs:
                       placed_set.add(cat_name)
                       print(f"INJECTED {marker} into {kt_file} (fun={best_cont['fun_name']}, kind={best_cont['kind']}, lines={best_cont['start_li']+1}..{best_cont['close_li']+1})")
 
-          # Pass 2: Any category not yet placed in Standard or Immersive UI goes cleanly into the App (Εφαρμογή) scrollable list right above VnSettingsBackup()
+          # Pass 2: Any category not yet placed goes into the App (Εφαρμογή) scrollable container right above VnSettingsBackup()
           for target_group, placed_set in [("standard", placed_standard), ("immersive", placed_immersive)]:
               missing_cats = [c for c in cat_configs if c[0] not in placed_set]
               if not missing_cats:
@@ -2889,7 +2891,7 @@ jobs:
                       continue
                   src_text = kt_file.read_text()
                   lines = src_text.splitlines(keepends=True)
-                  containers = extract_scroll_containers(lines)
+                  containers = extract_layout_containers(lines)
                   app_cont = None
                   for cont in containers:
                       body_txt = "".join(lines[cont["start_li"]:cont["close_li"] + 1])
@@ -2904,6 +2906,8 @@ jobs:
                               print(f"FALLBACK INJECTED {marker} into App sub-page of {kt_file} (fun={app_cont['fun_name']}, kind={app_cont['kind']})")
                       kt_file.write_text("".join(lines))
                       break
+
+          print(f"SETTINGS INJECTION SUMMARY -> standard={sorted(placed_standard)}, immersive={sorted(placed_immersive)}")
 
           for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
               if ap.exists() and "vnAnimatedElement" not in ap.read_text():
@@ -2950,7 +2954,16 @@ jobs:
                           d += lines[i].count("{") - lines[i].count("}")
                           if "{" in lines[i]: op = True
                           if op and d <= 0:
-                              lines.insert(i, re.match(r'^(\s*)', lines[i]).group(1) + "    com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
+                              # Also inject any category that failed both Pass 1 & Pass 2 into VnSettingsBackup as ultimate safety net
+                              safety_calls = []
+                              for cat_name, marker, _, comp_call in cat_configs:
+                                  if cat_name not in placed_standard and cat_name not in placed_immersive:
+                                      safety_calls.append(f"    {comp_call}\n")
+                              ind_b = re.match(r'^(\s*)', lines[i]).group(1)
+                              for sc in safety_calls:
+                                  lines.insert(i, ind_b + sc)
+                                  i += 1
+                              lines.insert(i, ind_b + "    com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
                               bt = "".join(lines); break
               bf.write_text(bt)
 
