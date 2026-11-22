@@ -2484,7 +2484,7 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # 5. Inject VNEra settings cards PER-FILE into verified @Composable / LazyListScope contexts
+          # 5. Inject VNEra settings cards PER-FILE using STRICT @Composable container whitelisting
           all_settings_files = [
               p for p in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt"))
               if "Settings" in p.name and p.name not in ("VnSettingsBackup.kt", "VnFrameRateManager.kt")
@@ -2528,21 +2528,18 @@ jobs:
               ),
           ]
 
-          NON_COMPOSABLE_CALLEES = {
-              "clickable", "combinedClickable", "pointerInput", "graphicsLayer", "drawBehind",
-              "drawWithContent", "drawWithCache", "onGloballyPositioned", "onSizeChanged",
-              "layout", "offset", "semantics", "remember", "derivedStateOf", "LaunchedEffect",
-              "DisposableEffect", "SideEffect", "produceState", "launch", "async", "withContext",
-              "runCatching", "forEach", "forEachIndexed", "map", "mapNotNull", "filter",
-              "firstOrNull", "any", "all", "none", "sortedBy", "groupBy", "let", "also",
-              "apply", "run", "with", "buildList", "buildString", "rememberLauncherForActivityResult"
+          # Strict whitelist of @Composable containers & inline control-flow constructs
+          COMPOSABLE_CONTAINERS = {
+              "Column", "Row", "Box", "BoxWithConstraints", "Surface", "Card",
+              "ElevatedCard", "OutlinedCard", "Scaffold", "ModalBottomSheet",
+              "DropdownMenu", "AnimatedVisibility", "AnimatedContent", "Crossfade",
+              "CompositionLocalProvider", "ProvideTextStyle", "NavHost", "composable",
+              "HorizontalPager", "VerticalPager", "FlowRow", "FlowColumn",
+              "SelectionContainer", "BadgedBox", "PullToRefreshBox",
+              "if", "else", "when", "for", "forEach", "forEachIndexed"
           }
-          NON_COMPOSABLE_NAMED_ARGS = {
-              "transitionSpec", "key", "contentType", "span", "contentAlignment"
-          }
-          LAZY_CONTAINERS = {
-              "LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid"
-          }
+          LAZY_ITEM_CONTAINERS = {"item", "items", "itemsIndexed", "stickyHeader"}
+          LAZY_CONTAINERS = {"LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid"}
 
           def analyze_composable_scopes(lines: list[str]) -> dict[int, str]:
               n = len(lines)
@@ -2635,6 +2632,7 @@ jobs:
                   bracket_depth = 0
                   last_ident = ""
                   saw_equals_at_zero = False
+                  saw_arrow_at_zero = False
 
                   for li in range(body_open_line, n):
                       if paren_depth == 0 and bracket_depth == 0 and scope_stack and "NON_COMPOSABLE" not in scope_stack:
@@ -2656,6 +2654,11 @@ jobs:
                                       last_ident = ident
                               idx_c = j_c
                               continue
+                          if ch == '-' and idx_c + 1 < L and line_s[idx_c + 1] == '>':
+                              if paren_depth == 0 and bracket_depth == 0:
+                                  saw_arrow_at_zero = True
+                              idx_c += 2
+                              continue
                           if ch == '=':
                               prev_ch = line_s[idx_c - 1] if idx_c > 0 else ''
                               next_ch = line_s[idx_c + 1] if idx_c + 1 < L else ''
@@ -2668,6 +2671,7 @@ jobs:
                               if paren_depth == 0 and bracket_depth == 0:
                                   last_ident = ""
                                   saw_equals_at_zero = False
+                                  saw_arrow_at_zero = False
                               idx_c += 1
                               continue
                           if ch == '(':
@@ -2679,25 +2683,31 @@ jobs:
                           elif ch == ']':
                               bracket_depth = max(0, bracket_depth - 1)
                           elif ch == '{':
+                              parent_scope = scope_stack[-1] if scope_stack else "NON_COMPOSABLE"
                               if paren_depth != 0 or bracket_depth != 0:
                                   scope_stack.append("NON_COMPOSABLE")
                               elif saw_equals_at_zero:
-                                  is_cb_arg = bool(re.match(r'^on[A-Z]', last_ident)) or last_ident in NON_COMPOSABLE_NAMED_ARGS
-                                  scope_stack.append("NON_COMPOSABLE" if is_cb_arg else "COMPOSABLE")
-                              elif last_ident in NON_COMPOSABLE_CALLEES:
-                                  scope_stack.append("NON_COMPOSABLE")
-                              elif last_ident in LAZY_CONTAINERS:
+                                  scope_stack.append("COMPOSABLE" if (last_ident == "content" and parent_scope == "COMPOSABLE") else "NON_COMPOSABLE")
+                              elif last_ident in LAZY_CONTAINERS and parent_scope == "COMPOSABLE":
                                   scope_stack.append("LAZY_LIST")
-                              else:
+                              elif last_ident in LAZY_ITEM_CONTAINERS and parent_scope == "LAZY_LIST":
                                   scope_stack.append("COMPOSABLE")
+                              elif last_ident in COMPOSABLE_CONTAINERS and parent_scope in ("COMPOSABLE", "LAZY_LIST"):
+                                  scope_stack.append(parent_scope)
+                              elif saw_arrow_at_zero and parent_scope in ("COMPOSABLE", "LAZY_LIST"):
+                                  scope_stack.append(parent_scope)
+                              else:
+                                  scope_stack.append("NON_COMPOSABLE")
                               last_ident = ""
                               saw_equals_at_zero = False
+                              saw_arrow_at_zero = False
                           elif ch == '}':
                               if scope_stack:
                                   scope_stack.pop()
                               if paren_depth == 0 and bracket_depth == 0:
                                   last_ident = ""
                                   saw_equals_at_zero = False
+                                  saw_arrow_at_zero = False
                               if not scope_stack:
                                   break
                           idx_c += 1
@@ -2722,17 +2732,18 @@ jobs:
 
                   placed = False
                   for idx, line in enumerate(lines):
-                      if idx not in valid_scopes:
-                          continue
                       s_strip = line.lstrip()
                       if s_strip.startswith(("//", "/*", "*", "import ", "package ", "fun ", "object ", "class ")):
                           continue
-                      near_before = "".join(lines[max(0, idx - 4):idx + 1])
-                      if re.search(r'\b(?:CenterAligned|Large|Medium)?TopAppBar\b', near_before):
+                      near_win = "".join(lines[max(0, idx - 4):min(len(lines), idx + 6)])
+                      if re.search(r'\b(?:CenterAligned|Large|Medium)?TopAppBar\b', near_win):
                           continue
                       if re.search(anchor_rx, line, re.IGNORECASE):
+                          # Skip category navigation cards/rows that just open another page via onClick/clickable
+                          if re.search(r'\b(?:onClick|clickable|combinedClickable)\b', near_win) and not re.search(r'\b(?:Switch|Slider|RadioButton|Checkbox|VnSettingsBackup)\b', "".join(lines[idx:min(len(lines), idx + 25)])):
+                              continue
                           anchor_indent = len(line) - len(s_strip)
-                          for k in range(idx + 1, min(idx + 80, len(lines))):
+                          for k in range(idx + 1, min(idx + 90, len(lines))):
                               if k not in valid_scopes:
                                   continue
                               scope_kind = valid_scopes[k]
@@ -2761,7 +2772,7 @@ jobs:
                               break
 
               # Per-file fallback for main SettingsScreen & ImmersiveSettingsScreen:
-              # Ensure ALL 3 cards exist in each main settings screen even if a category sub-page uses indirect navigation
+              # Place any remaining unplaced cards right next to VnSettingsBackup() (or in the main LAZY_LIST/COMPOSABLE container)
               if sp_file.name in ("SettingsScreen.kt", "ImmersiveSettingsScreen.kt"):
                   for cat_name, marker, _, comp_call in cat_configs:
                       st = sp_file.read_text()
@@ -2769,6 +2780,17 @@ jobs:
                           continue
                       lines = st.splitlines(keepends=True)
                       valid_scopes = analyze_composable_scopes(lines)
+                      backup_idx = next((idx for idx, l in enumerate(lines) if "VnSettingsBackup(" in l and idx in valid_scopes), None)
+                      if backup_idx is not None:
+                          ind = re.match(r'^(\s*)', lines[backup_idx]).group(1)
+                          if valid_scopes[backup_idx] == "LAZY_LIST":
+                              lines.insert(backup_idx, f"{ind}item {{ {comp_call} }}\n")
+                          else:
+                              lines.insert(backup_idx, f"{ind}{comp_call}\n")
+                          sp_file.write_text("".join(lines))
+                          print(f"Fallback injected {marker} next to VnSettingsBackup in {sp_file}")
+                          continue
+
                       best_k = None
                       best_kind = None
                       for k in range(len(lines) - 1, -1, -1):
