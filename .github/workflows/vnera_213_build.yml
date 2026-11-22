@@ -12,7 +12,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Link SDK 37 & Fix Versions & Apply Patches- name: Link SDK 37 & Fix Versions & Apply Patches
+      - name: Link SDK 37 & Fix Versions & Apply Patches
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
