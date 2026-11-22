@@ -1,16 +1,17 @@
-name: Build VNEra Debug APK (Revera 1.0.8 Base)
+name: Build VNEra Debug APK
 
 on:
   push:
-    branches: [ main, master, "work/**" ]
-  pull_request:
-    branches: [ main, master ]
+    branches:
+      - work/source-review
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
 
     steps:
       - name: Checkout main for Persistent Signing Key
@@ -152,8 +153,8 @@ jobs:
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
-          distribution: 'temurin'
+          distribution: temurin
+          java-version: 21
 
       - name: Link SDK 37 & Fix Versions & Apply Patches
         run: |
@@ -183,18 +184,16 @@ jobs:
           import androidx.compose.foundation.layout.*
           import androidx.compose.foundation.shape.*
           import androidx.compose.material.icons.Icons
-          import androidx.compose.material.icons.rounded.Check
           import androidx.compose.material.icons.rounded.Fullscreen
           import androidx.compose.material.icons.rounded.FullscreenExit
-          import androidx.compose.material.icons.rounded.Refresh
           import androidx.compose.material3.*
           import androidx.compose.runtime.*
           import androidx.compose.ui.*
           import androidx.compose.ui.draw.clip
-          import androidx.compose.ui.draw.drawWithContent
           import androidx.compose.ui.graphics.*
           import androidx.compose.ui.input.pointer.*
           import androidx.compose.ui.platform.LocalContext
+          import androidx.compose.ui.platform.LocalDensity
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.unit.*
           import androidx.compose.ui.window.Popup
@@ -218,8 +217,6 @@ jobs:
               const val KEY_LYRICS_BEAUTIFUL = "lyrics_beautiful_enabled"
               const val KEY_LYRICS_COLOR = "lyrics_custom_color_argb"
               const val KEY_LYRICS_FONT_SCALE = "lyrics_font_scale"
-              const val KEY_PLAYER_VIGNETTE_ENABLED = "player_artwork_vignette_enabled"
-              const val KEY_PLAYER_VIGNETTE_INTENSITY = "player_artwork_vignette_intensity"
 
               var targetFps by mutableIntStateOf(0); private set
               var lyricsImmersiveEnabled by mutableStateOf(true); private set
@@ -234,8 +231,6 @@ jobs:
               var lyricsBeautifulEnabled by mutableStateOf(false); private set
               var lyricsCustomColorArgb by mutableLongStateOf(0L); private set
               var lyricsFontScale by mutableFloatStateOf(1.0f); private set
-              var playerVignetteEnabled by mutableStateOf(false); private set
-              var playerVignetteIntensity by mutableFloatStateOf(0.55f); private set
               var defaultThemePrimaryArgb by mutableLongStateOf(0L)
 
               val extraColorPalette = listOf(
@@ -258,9 +253,7 @@ jobs:
                   cachedExtensionsText = getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
                   lyricsBeautifulEnabled = getBoolean(KEY_LYRICS_BEAUTIFUL, false)
                   lyricsCustomColorArgb = getLong(KEY_LYRICS_COLOR, 0L)
-                  lyricsFontScale = getFloat(KEY_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.75f, 1.75f)
-                  playerVignetteEnabled = getBoolean(KEY_PLAYER_VIGNETTE_ENABLED, false)
-                  playerVignetteIntensity = getFloat(KEY_PLAYER_VIGNETTE_INTENSITY, 0.55f).coerceIn(0.05f, 1.0f)
+                  lyricsFontScale = getFloat(KEY_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.70f, 1.70f)
               }
 
               fun reload(c: Context) { init(c); c.findActivity()?.let { applyWindowFrameRate(it, targetFps, true) } }
@@ -275,18 +268,9 @@ jobs:
               fun updateLyricsBeautiful(c: Context, en: Boolean) { lyricsBeautifulEnabled = en; prefs(c).edit().putBoolean(KEY_LYRICS_BEAUTIFUL, en).apply() }
               fun updateLyricsCustomColor(c: Context, argb: Long) { lyricsCustomColorArgb = argb; prefs(c).edit().putLong(KEY_LYRICS_COLOR, argb).apply() }
               fun updateLyricsFontScale(c: Context, scale: Float) {
-                  val s = ((scale * 20f).roundToInt() / 20f).coerceIn(0.75f, 1.75f)
+                  val s = ((scale * 20f).roundToInt() / 20f).coerceIn(0.70f, 1.70f)
                   lyricsFontScale = s
                   prefs(c).edit().putFloat(KEY_LYRICS_FONT_SCALE, s).apply()
-              }
-              fun updatePlayerVignette(c: Context, en: Boolean) {
-                  playerVignetteEnabled = en
-                  prefs(c).edit().putBoolean(KEY_PLAYER_VIGNETTE_ENABLED, en).apply()
-              }
-              fun updatePlayerVignetteIntensity(c: Context, value: Float) {
-                  val v = ((value * 20f).roundToInt() / 20f).coerceIn(0.05f, 1.0f)
-                  playerVignetteIntensity = v
-                  prefs(c).edit().putFloat(KEY_PLAYER_VIGNETTE_INTENSITY, v).apply()
               }
 
               fun resolvedLyricsArgb(): Long = when {
@@ -428,32 +412,26 @@ jobs:
               if (!VnFpsPref.lyricsBeautifulEnabled) return original
               val argb = VnFpsPref.resolvedLyricsArgb()
               if (argb == 0L) return original
-              return Color(argb).copy(alpha = original.alpha.coerceIn(0.75f, 1f))
+              return Color(argb).copy(alpha = original.alpha.coerceIn(0.65f, 1f))
           }
 
-          fun Modifier.vnPlayerArtworkVignette(): Modifier = composed {
+          @Composable
+          fun VnPlayerInlineLyricScope(content: @Composable () -> Unit) {
               val c = LocalContext.current
               LaunchedEffect(c) { VnFpsPref.init(c) }
-              if (!VnFpsPref.playerVignetteEnabled) return@composed this
-              val intensity = VnFpsPref.playerVignetteIntensity.coerceIn(0.05f, 1.0f)
-              this.drawWithContent {
-                  drawContent()
-                  val maxDim = maxOf(size.width, size.height)
-                  if (maxDim > 0f) {
-                      val centerAlpha = (intensity * 0.05f).coerceIn(0f, 0.20f)
-                      val midAlpha = (intensity * 0.42f).coerceIn(0f, 0.78f)
-                      val edgeAlpha = (intensity * 0.94f).coerceIn(0f, 0.97f)
-                      drawRect(
-                          brush = Brush.radialGradient(
-                              0.0f to Color.Black.copy(alpha = centerAlpha),
-                              0.46f to Color.Black.copy(alpha = midAlpha * 0.42f),
-                              0.76f to Color.Black.copy(alpha = midAlpha),
-                              1.0f to Color.Black.copy(alpha = edgeAlpha),
-                              center = center,
-                              radius = (maxDim * 0.70f).coerceAtLeast(1f)
-                          )
-                      )
-                  }
+              val primaryArgb = MaterialTheme.colorScheme.primary.toArgb().toLong()
+              if (primaryArgb != 0L) VnFpsPref.defaultThemePrimaryArgb = primaryArgb
+              val baseDensity = LocalDensity.current
+              val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
+              val scaledDensity = remember(baseDensity, scale) {
+                  Density(density = baseDensity.density, fontScale = baseDensity.fontScale * scale)
+              }
+              val activeColor = vnPlayerInlineLyricColor(LocalContentColor.current)
+              CompositionLocalProvider(
+                  LocalDensity provides scaledDensity,
+                  LocalContentColor provides activeColor
+              ) {
+                  content()
               }
           }
 
@@ -672,10 +650,6 @@ jobs:
               VnPlaybackMonitorDialog()
           }
 
-          /**
-           * Native UI ρυθμίσεις για τους στίχους του Player στην κατηγορία «Στίχοι» (Lyrics)
-           * Ταιριάζει απόλυτα με το native Material 3 UI της εφαρμογής (χωρίς ξένη κάρτα).
-           */
           @Composable
           fun VnLyricsBeautifulSettingsCard(modifier: Modifier = Modifier) {
               val c = LocalContext.current
@@ -683,223 +657,132 @@ jobs:
               val primaryArgb = MaterialTheme.colorScheme.primary.toArgb().toLong()
               if (primaryArgb != 0L) VnFpsPref.defaultThemePrimaryArgb = primaryArgb
 
-              Column(modifier = modifier.fillMaxWidth()) {
-                  HorizontalDivider(
-                      modifier = Modifier.padding(vertical = 8.dp),
-                      color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                  )
-
-                  Row(
-                      modifier = Modifier
-                          .fillMaxWidth()
-                          .clickable { VnFpsPref.updateLyricsBeautiful(c, !VnFpsPref.lyricsBeautifulEnabled) }
-                          .padding(horizontal = 16.dp, vertical = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(12.dp)
-                  ) {
-                      Column(modifier = Modifier.weight(1f)) {
-                          Text(
-                              text = "Χρώμα στίχων στον Player",
-                              style = MaterialTheme.typography.titleMedium,
-                              color = MaterialTheme.colorScheme.onSurface
-                          )
-                          Spacer(modifier = Modifier.height(2.dp))
-                          Text(
-                              text = "Αλλάζει το χρώμα μόνο της γραμμής στίχων μέσα στην οθόνη αναπαραγωγής",
-                              style = MaterialTheme.typography.bodyMedium,
-                              color = MaterialTheme.colorScheme.onSurfaceVariant
-                          )
-                      }
-                      Switch(
-                          checked = VnFpsPref.lyricsBeautifulEnabled,
-                          onCheckedChange = { VnFpsPref.updateLyricsBeautiful(c, it) }
-                      )
-                  }
-
-                  if (VnFpsPref.lyricsBeautifulEnabled) {
+              Surface(
+                  modifier = modifier.fillMaxWidth().padding(vertical = 4.dp).vnAnimatedElement(0),
+                  shape = RoundedCornerShape(16.dp),
+                  color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+              ) {
+                  Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
                       Row(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .horizontalScroll(rememberScrollState())
-                              .padding(horizontal = 16.dp, vertical = 8.dp),
-                          horizontalArrangement = Arrangement.spacedBy(12.dp),
-                          verticalAlignment = Alignment.CenterVertically
+                          Modifier.fillMaxWidth(),
+                          verticalAlignment = Alignment.CenterVertically,
+                          horizontalArrangement = Arrangement.spacedBy(12.dp)
                       ) {
-                          VnFpsPref.extraColorPalette.forEach { (name, argb) ->
-                              val sel = VnFpsPref.lyricsCustomColorArgb == argb
-                              val previewColor = if (argb == 0L) {
-                                  if (VnFpsPref.customAccentColorArgb != 0L) Color(VnFpsPref.customAccentColorArgb)
-                                  else MaterialTheme.colorScheme.primary
-                              } else Color(argb)
-                              Column(
-                                  horizontalAlignment = Alignment.CenterHorizontally,
-                                  modifier = Modifier.clickable { VnFpsPref.updateLyricsCustomColor(c, argb) }
-                              ) {
-                                  Box(
-                                      modifier = Modifier
-                                          .size(32.dp)
-                                          .clip(CircleShape)
-                                          .background(previewColor)
-                                          .border(
-                                              width = if (sel) 2.5.dp else 1.dp,
-                                              color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
-                                              shape = CircleShape
-                                          ),
-                                      contentAlignment = Alignment.Center
-                                  ) {
-                                      if (sel) {
-                                          Icon(
-                                              imageVector = Icons.Rounded.Check,
-                                              contentDescription = null,
-                                              tint = Color.White,
-                                              modifier = Modifier.size(16.dp)
-                                          )
-                                      }
-                                  }
-                                  Spacer(modifier = Modifier.height(2.dp))
-                                  Text(
-                                      text = if (argb == 0L) "Θέμα" else name,
-                                      style = MaterialTheme.typography.labelSmall,
-                                      fontSize = 10.sp,
-                                      color = MaterialTheme.colorScheme.onSurfaceVariant
-                                  )
-                              }
-                          }
-                      }
-                  }
-
-                  Column(
-                      modifier = Modifier
-                          .fillMaxWidth()
-                          .padding(horizontal = 16.dp, vertical = 10.dp)
-                  ) {
-                      Row(
-                          modifier = Modifier.fillMaxWidth(),
-                          verticalAlignment = Alignment.CenterVertically
-                      ) {
-                          Column(modifier = Modifier.weight(1f)) {
+                          Column(Modifier.weight(1f)) {
                               Text(
-                                  text = "Μέγεθος στίχων στον Player",
-                                  style = MaterialTheme.typography.titleMedium,
-                                  color = MaterialTheme.colorScheme.onSurface
+                                  "Κάνε όμορφους τους στίχους",
+                                  style = MaterialTheme.typography.titleSmall,
+                                  fontWeight = FontWeight.SemiBold
                               )
                               Text(
-                                  text = "Μεγαλώνει μόνο το κείμενο στίχων στον player και προσαρμόζει αυτόματα το πλαίσιό του",
-                                  style = MaterialTheme.typography.bodyMedium,
+                                  "Οι στίχοι του Player θα ακολουθούν το χρώμα που επέλεξες",
+                                  style = MaterialTheme.typography.bodySmall,
                                   color = MaterialTheme.colorScheme.onSurfaceVariant
                               )
                           }
-                          Text(
-                              text = "${(VnFpsPref.lyricsFontScale * 100).roundToInt()}%",
-                              style = MaterialTheme.typography.labelLarge,
-                              fontWeight = FontWeight.SemiBold,
-                              color = MaterialTheme.colorScheme.primary
+                          Switch(
+                              checked = VnFpsPref.lyricsBeautifulEnabled,
+                              onCheckedChange = { VnFpsPref.updateLyricsBeautiful(c, it) }
                           )
-                          if (abs(VnFpsPref.lyricsFontScale - 1.0f) > 0.02f) {
-                              IconButton(
-                                  onClick = { VnFpsPref.updateLyricsFontScale(c, 1.0f) },
+                      }
+
+                      if (VnFpsPref.lyricsBeautifulEnabled) {
+                          HorizontalDivider(Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                          Text(
+                              "Επιλεγμένο χρώμα στίχων Player",
+                              style = MaterialTheme.typography.labelMedium,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                          Spacer(Modifier.height(8.dp))
+                          Row(
+                              Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                              horizontalArrangement = Arrangement.spacedBy(10.dp)
+                          ) {
+                              VnFpsPref.extraColorPalette.forEach { (name, argb) ->
+                                  val sel = VnFpsPref.lyricsCustomColorArgb == argb
+                                  val previewColor = if (argb == 0L) {
+                                      if (VnFpsPref.customAccentColorArgb != 0L) Color(VnFpsPref.customAccentColorArgb)
+                                      else MaterialTheme.colorScheme.primary
+                                  } else Color(argb)
+                                  Column(
+                                      horizontalAlignment = Alignment.CenterHorizontally,
+                                      modifier = Modifier.clickable { VnFpsPref.updateLyricsCustomColor(c, argb) }
+                                  ) {
+                                      Box(
+                                          Modifier
+                                              .size(30.dp)
+                                              .clip(CircleShape)
+                                              .background(previewColor)
+                                              .border(
+                                                  if (sel) 2.5.dp else 1.dp,
+                                                  if (sel) MaterialTheme.colorScheme.onSurface else Color.White.copy(0.35f),
+                                                  CircleShape
+                                              )
+                                      )
+                                      Text(
+                                          if (argb == 0L) "Επιλεγμένο" else name,
+                                          style = MaterialTheme.typography.labelSmall,
+                                          fontSize = 10.sp
+                                      )
+                                  }
+                              }
+                          }
+                      }
+
+                      HorizontalDivider(Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                      Row(
+                          Modifier.fillMaxWidth(),
+                          verticalAlignment = Alignment.CenterVertically,
+                          horizontalArrangement = Arrangement.SpaceBetween
+                      ) {
+                          Column(Modifier.weight(1f)) {
+                              Text(
+                                  "Μέγεθος στίχων Player",
+                                  style = MaterialTheme.typography.titleSmall,
+                                  fontWeight = FontWeight.SemiBold
+                              )
+                              Text(
+                                  "Μέγεθος γραμμής στίχων στον Player (${(VnFpsPref.lyricsFontScale * 100).roundToInt()}%)",
+                                  style = MaterialTheme.typography.bodySmall,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                          Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                              FilledTonalIconButton(
+                                  onClick = { VnFpsPref.updateLyricsFontScale(c, VnFpsPref.lyricsFontScale - 0.10f) },
                                   modifier = Modifier.size(32.dp)
                               ) {
-                                  Icon(
-                                      imageVector = Icons.Rounded.Refresh,
-                                      contentDescription = "Επαναφορά",
-                                      modifier = Modifier.size(18.dp),
-                                      tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                  )
+                                  Text("−", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                              }
+                              FilledTonalIconButton(
+                                  onClick = { VnFpsPref.updateLyricsFontScale(c, VnFpsPref.lyricsFontScale + 0.10f) },
+                                  modifier = Modifier.size(32.dp)
+                              ) {
+                                  Text("+", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                              }
+                              if (abs(VnFpsPref.lyricsFontScale - 1.0f) > 0.01f) {
+                                  TextButton(
+                                      onClick = { VnFpsPref.updateLyricsFontScale(c, 1.0f) },
+                                      contentPadding = PaddingValues(horizontal = 6.dp)
+                                  ) {
+                                      Text("100%", style = MaterialTheme.typography.labelSmall)
+                                  }
                               }
                           }
                       }
                       Slider(
                           value = VnFpsPref.lyricsFontScale,
                           onValueChange = { VnFpsPref.updateLyricsFontScale(c, it) },
-                          valueRange = 0.75f..1.75f,
+                          valueRange = 0.70f..1.70f,
+                          steps = 19,
                           modifier = Modifier.fillMaxWidth()
                       )
                   }
               }
           }
 
-          /**
-           * Native UI ρύθμιση: Βινιετάρισμα (Vignette) στις άκρες της εικόνας του Player (κατηγορία «Αναπαραγωγή / Player»)
-           */
           @Composable
-          fun VnPlayerVignetteSettingsRow(modifier: Modifier = Modifier) {
-              val c = LocalContext.current
-              LaunchedEffect(c) { VnFpsPref.init(c) }
-
-              Column(modifier = modifier.fillMaxWidth()) {
-                  HorizontalDivider(
-                      modifier = Modifier.padding(vertical = 8.dp),
-                      color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                  )
-
-                  Row(
-                      modifier = Modifier
-                          .fillMaxWidth()
-                          .clickable { VnFpsPref.updatePlayerVignette(c, !VnFpsPref.playerVignetteEnabled) }
-                          .padding(horizontal = 16.dp, vertical = 12.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(12.dp)
-                  ) {
-                      Column(modifier = Modifier.weight(1f)) {
-                          Text(
-                              text = "Βινιετάρισμα εικόνας Player",
-                              style = MaterialTheme.typography.titleMedium,
-                              color = MaterialTheme.colorScheme.onSurface
-                          )
-                          Spacer(modifier = Modifier.height(2.dp))
-                          Text(
-                              text = "Χαμηλώνει ομαλά τη φωτεινότητα στις άκρες της εικόνας όσο παίζει μουσική",
-                              style = MaterialTheme.typography.bodyMedium,
-                              color = MaterialTheme.colorScheme.onSurfaceVariant
-                          )
-                      }
-                      Switch(
-                          checked = VnFpsPref.playerVignetteEnabled,
-                          onCheckedChange = { VnFpsPref.updatePlayerVignette(c, it) }
-                      )
-                  }
-
-                  if (VnFpsPref.playerVignetteEnabled) {
-                      Column(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .padding(horizontal = 16.dp, vertical = 8.dp)
-                      ) {
-                          Row(
-                              modifier = Modifier.fillMaxWidth(),
-                              horizontalArrangement = Arrangement.SpaceBetween,
-                              verticalAlignment = Alignment.CenterVertically
-                          ) {
-                              Text(
-                                  text = "Ένταση βινιεταρίσματος",
-                                  style = MaterialTheme.typography.bodyLarge,
-                                  color = MaterialTheme.colorScheme.onSurface
-                              )
-                              Text(
-                                  text = "${(VnFpsPref.playerVignetteIntensity * 100).roundToInt()}%",
-                                  style = MaterialTheme.typography.labelLarge,
-                                  fontWeight = FontWeight.SemiBold,
-                                  color = MaterialTheme.colorScheme.primary
-                              )
-                          }
-                          Slider(
-                              value = VnFpsPref.playerVignetteIntensity,
-                              onValueChange = { VnFpsPref.updatePlayerVignetteIntensity(c, it) },
-                              valueRange = 0.05f..1.0f,
-                              modifier = Modifier.fillMaxWidth()
-                          )
-                      }
-                  }
-              }
-          }
-
-          @Composable
-          fun VnFpsSelectorCard(
-              modifier: Modifier = Modifier,
-              includeLyricsStyleCard: Boolean = true,
-              includeVignetteCard: Boolean = true
-          ) {
+          fun VnFpsSelectorCard(modifier: Modifier = Modifier, includeLyricsStyleCard: Boolean = true) {
               val c = LocalContext.current; LaunchedEffect(c) { VnFpsPref.init(c) }
               val rates = remember(c) { c.findActivity()?.let(::getSupportedRefreshRates).orEmpty() }
               Surface(modifier.fillMaxWidth().padding(bottom = 12.dp).vnAnimatedElement(0), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceVariant.copy(0.45f)) {
@@ -921,10 +804,6 @@ jobs:
                       if (includeLyricsStyleCard) {
                           Spacer(Modifier.height(8.dp))
                           VnLyricsBeautifulSettingsCard()
-                      }
-                      if (includeVignetteCard) {
-                          Spacer(Modifier.height(8.dp))
-                          VnPlayerVignetteSettingsRow()
                       }
                       Spacer(Modifier.height(12.dp))
                       Text("Χρώματα Εμφάνισης VNEra", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -1076,6 +955,7 @@ jobs:
                   i += 1
               return "".join(out)
 
+          # LyricsScreen.kt & ImmersiveLyricsPanel.kt: κρατάμε ΜΟΝΟ red-edge scroll + κουμπί fullscreen
           lf = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lf.exists():
               s0 = lf.read_text()
@@ -1141,162 +1021,59 @@ jobs:
                               break
               if t1 != t0: il.write_text(t1)
 
-          def find_call_end(src: str, open_paren_idx: int) -> int:
-              depth = 0
-              in_str = False
-              esc = False
-              for i in range(open_paren_idx, len(src)):
-                  ch = src[i]
-                  if in_str:
-                      if esc:
-                          esc = False
-                      elif ch == "\\":
-                          esc = True
-                      elif ch == '"':
-                          in_str = False
-                      continue
-                  if ch == '"':
-                      in_str = True
-                  elif ch == "(":
-                      depth += 1
-                  elif ch == ")":
-                      depth -= 1
-                      if depth == 0:
-                          return i
-              return -1
-
-          # Χρωματισμός & μέγεθος ΜΟΝΟ στο Text της γραμμής στίχων του Player + σωστό auto-resize του box
-          def patch_inline_player_lyrics_and_vignette(path: Path):
+          # Χρωματισμός & κλίμακα μεγέθους ΜΟΝΟ για τους inline στίχους με ">" μέσα στον Player (όχι στο εικονίδιο ")
+          def patch_inline_player_lyrics(path: Path):
               if not path.exists():
                   return
               src = path.read_text()
-              orig = src
-              lyric_hint_re = re.compile(r'\b(?:currentLyric\w*|activeLyric\w*|lyricLine\w*|syncedLyric\w*|inlineLyric\w*|lyricText\w*)\b', re.IGNORECASE)
-              exclude_re = re.compile(r'\b(?:title|artist|album|duration|position|lossless|kbps|khz|quality|chapter|subtitle)\b', re.IGNORECASE)
-
-              pos = 0
-              patched_lyric = False
-              while True:
-                  m = re.search(r'\bText\s*\(', src[pos:])
-                  if not m:
-                      break
-                  call_start = pos + m.start()
-                  open_p = pos + m.end() - 1
-                  close_p = find_call_end(src, open_p)
-                  if close_p == -1:
-                      pos = open_p + 1
-                      continue
-
-                  call_body = src[open_p + 1:close_p]
-                  ctx_before = src[max(0, call_start - 350):call_start]
-                  ctx_after = src[close_p + 1:min(len(src), close_p + 350)]
-                  is_lyric_text = (
-                      bool(lyric_hint_re.search(call_body))
-                      or (
-                          ("lyric" in (ctx_before + ctx_after).lower())
-                          and not exclude_re.search(call_body)
-                          and not re.search(r'FormatQuote|lyrics_button|openLyrics', ctx_before + ctx_after, re.IGNORECASE)
-                      )
-                  )
-
-                  if is_lyric_text and "vnPlayerInlineLyricColor" not in call_body:
-                      new_body = call_body
-                      # 1) Χρώμα μόνο στο Text του στίχου
-                      if re.search(r'\bcolor\s*=', new_body):
-                          new_body = re.sub(
-                              r'(\bcolor\s*=\s*)([^,\n)]+(?:\([^)]*\))?)',
-                              r'\1com.music.spotui.ui.screens.vnPlayerInlineLyricColor(\2)',
-                              new_body,
-                              count=1
-                          )
-                      else:
-                          new_body = new_body.rstrip() + ",\n        color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current)"
-
-                      # 2) Μέγεθος μόνο στο Text του στίχου
-                      if re.search(r'\bfontSize\s*=', new_body):
-                          new_body = re.sub(
-                              r'(\bfontSize\s*=\s*)(\d+(?:\.\d+)?\.sp)',
-                              r'\1(\2 * com.music.spotui.ui.screens.VnFpsPref.lyricsFontScale)',
-                              new_body,
-                              count=1
-                          )
-                      else:
-                          new_body = new_body.rstrip() + ",\n        fontSize = (14.sp * com.music.spotui.ui.screens.VnFpsPref.lyricsFontScale)"
-
-                      if re.search(r'\blineHeight\s*=', new_body):
-                          new_body = re.sub(
-                              r'(\blineHeight\s*=\s*)(\d+(?:\.\d+)?\.sp)',
-                              r'\1(\2 * com.music.spotui.ui.screens.VnFpsPref.lyricsFontScale)',
-                              new_body,
-                              count=1
-                          )
-
-                      if re.search(r'\bmaxLines\s*=', new_body):
-                          new_body = re.sub(
-                              r'(\bmaxLines\s*=\s*)\d+',
-                              r'\1(if (com.music.spotui.ui.screens.VnFpsPref.lyricsFontScale > 1.15f) 2 else 1)',
-                              new_body,
-                              count=1
-                          )
-
-                      # 3) Το box γύρω από το Text μεγαλώνει σωστά ευθυγραμμισμένα χωρίς να κόβει το κείμενο
-                      box_win = src[max(0, call_start - 450):call_start]
-                      fixed_box = re.sub(
-                          r'\.height\(\s*(\d+(?:\.\d+)?\.dp)\s*\)',
-                          r'.heightIn(min = \1).wrapContentHeight(align = androidx.compose.ui.Alignment.CenterVertically)',
-                          box_win
-                      )
-                      if fixed_box != box_win:
-                          src = src[:max(0, call_start - 450)] + fixed_box + src[call_start:]
-                          delta = len(fixed_box) - len(box_win)
-                          open_p += delta
-                          close_p += delta
-
-                      src = src[:open_p + 1] + new_body + src[close_p:]
-                      patched_lyric = True
-                      pos = open_p + 1 + len(new_body) + 1
-                      continue
-
-                  pos = close_p + 1
-
-              # 4) Βινιετάρισμα (Vignette) στις άκρες της εικόνας/εξωφύλλου του Player
-              pos = 0
-              patched_vignette = False
-              art_kw_re = re.compile(r'\b(?:artwork\w*|cover\w*|albumArt\w*|artUri\w*|bgImage\w*|imageUrl\w*|thumbnail\w*)\b', re.IGNORECASE)
-              while True:
-                  m = re.search(r'\b(?:AsyncImage|SubcomposeAsyncImage|Image)\s*\(', src[pos:])
-                  if not m:
-                      break
-                  open_p = pos + m.end() - 1
-                  close_p = find_call_end(src, open_p)
-                  if close_p == -1:
-                      pos = open_p + 1
-                      continue
-                  call_body = src[open_p + 1:close_p]
-                  is_small = bool(re.search(r'\bIcons\.|\.size\(\s*(?:1\d|2\d|3[0-6])\.dp\s*\)', call_body))
-                  if not is_small and art_kw_re.search(call_body) and "vnPlayerArtworkVignette" not in call_body:
-                      if re.search(r'\bmodifier\s*=\s*Modifier\b', call_body):
-                          new_body = re.sub(r'(\bmodifier\s*=\s*Modifier\b)', r'\1.vnPlayerArtworkVignette()', call_body, count=1)
-                      elif re.search(r'\bmodifier\s*=', call_body):
-                          new_body = re.sub(r'(\bmodifier\s*=\s*)([^\n,]+)', r'\1(\2).vnPlayerArtworkVignette()', call_body, count=1)
-                      else:
-                          new_body = call_body.rstrip() + ",\n        modifier = Modifier.vnPlayerArtworkVignette()"
-                      if new_body != call_body:
-                          src = src[:open_p + 1] + new_body + src[close_p:]
-                          patched_vignette = True
-                          pos = open_p + 1 + len(new_body) + 1
-                          continue
-                  pos = close_p + 1
-
-              if src != orig:
-                  if "vnPlayerArtworkVignette" in src and "import com.music.spotui.ui.screens.vnPlayerArtworkVignette" not in src:
-                      src = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.vnPlayerArtworkVignette', src, count=1)
-                  path.write_text(src)
-                  print(f"Patched {path}: inlineLyrics={patched_lyric}, vignette={patched_vignette}")
+              if "vnPlayerInlineLyricColor" in src:
+                  return
+              lines = src.splitlines(keepends=True)
+              changed = False
+              for idx, line in enumerate(lines):
+                  if re.search(r'(?:ChevronRight|KeyboardArrowRight|">")', line):
+                      win_start = max(0, idx - 18)
+                      win_end = min(len(lines), idx + 12)
+                      win_txt = "".join(lines[win_start:win_end])
+                      if re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics', win_txt, re.IGNORECASE):
+                          for k in range(win_start, win_end):
+                              orig_l = lines[k]
+                              new_l = re.sub(
+                                  r'\bColor\.White(?:\.copy\([^)]*\))?',
+                                  lambda m: f"com.music.spotui.ui.screens.vnPlayerInlineLyricColor({m.group(0)})",
+                                  orig_l
+                              )
+                              new_l = re.sub(
+                                  r'\bMaterialTheme\.colorScheme\.(?:onSurface|onBackground)(?:\.copy\([^)]*\))?',
+                                  lambda m: f"com.music.spotui.ui.screens.vnPlayerInlineLyricColor({m.group(0)})",
+                                  new_l
+                              )
+                              if new_l != orig_l:
+                                  lines[k] = new_l
+                                  changed = True
+                          for k in range(win_start, win_end):
+                              if re.search(r'\bText\s*\(', lines[k]) and '">"' not in lines[k]:
+                                  ind = re.match(r'^(\s*)', lines[k]).group(1)
+                                  p_cnt = 0
+                                  t_end = k
+                                  for j in range(k, min(len(lines), k + 15)):
+                                      p_cnt += lines[j].count("(") - lines[j].count(")")
+                                      if p_cnt <= 0:
+                                          t_end = j
+                                          break
+                                  lines[k] = f"{ind}com.music.spotui.ui.screens.VnPlayerInlineLyricScope {{\n" + lines[k]
+                                  lines[t_end] = lines[t_end] + f"{ind}}}\n"
+                                  changed = True
+                                  break
+                          if changed:
+                              break
+              if changed:
+                  path.write_text("".join(lines))
+                  print(f"Patched inline player lyrics color/scale in {path}")
 
           for player_kt in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
               if any(tag in player_kt.name for tag in ("Player", "NowPlaying")):
-                  patch_inline_player_lyrics_and_vignette(player_kt)
+                  patch_inline_player_lyrics(player_kt)
 
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
@@ -1322,89 +1099,46 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # Ενσωμάτωση ρυθμίσεων στο native UI της εφαρμογής:
-          #  - Κατηγορία «Στίχοι» (Lyrics) -> VnLyricsBeautifulSettingsCard()
-          #  - Κατηγορία «Αναπαραγωγή» (Player / Playback) -> VnPlayerVignetteSettingsRow()
-          lyrics_res_keys = set()
-          player_res_keys = set()
+          # Εντοπισμός της κατηγορίας "Στοιχεία" / "Elements" από strings.xml & τοποθέτηση εκεί
+          element_res_keys = set()
           for xml_f in Path("app/src/main/res").rglob("*.xml"):
               xt = xml_f.read_text(errors="ignore")
-              for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>\s*(?:Στίχοι|Lyrics)\s*</string>', xt, re.IGNORECASE):
-                  lyrics_res_keys.add(m.group(1))
-              for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>\s*(?:Αναπαραγωγή|Player|Playback)\s*</string>', xt, re.IGNORECASE):
-                  player_res_keys.add(m.group(1))
+              for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>[^<]*\b(?:Στοιχεία|Elements)\b[^<]*</string>', xt, re.IGNORECASE):
+                  element_res_keys.add(m.group(1))
 
-          lyrics_regex = "|".join([r'"(?:Στίχοι|Lyrics)"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in lyrics_res_keys])
-          player_regex = "|".join([r'"(?:Αναπαραγωγή|Player|Playback)"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in player_res_keys])
+          elem_patterns = [r'"[^"]*\b(?:Στοιχεία|Elements)\b[^"]*"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in element_res_keys]
+          elem_regex = "|".join(elem_patterns)
 
-          def inject_into_settings_tab(src: str, cat_regex: str, composable_call: str) -> tuple[str, bool]:
-              lines = src.splitlines(keepends=True)
-              # 1) ScrollableTabRow / listOf(...) tabs -> when (selectedTabIndex)
-              for i, l in enumerate(lines):
-                  if "listOf(" in l:
-                      block = "".join(lines[i:min(len(lines), i + 25)])
-                      if re.search(cat_regex, block, re.IGNORECASE):
-                          items_raw = re.findall(r'(?:stringResource\([^)]+\)|"[^"]+")', block)
-                          target_idx = None
-                          for idx_item, it_str in enumerate(items_raw):
-                              if re.search(cat_regex, it_str, re.IGNORECASE):
-                                  target_idx = idx_item
-                                  break
-                          if target_idx is not None:
-                              for j in range(i, min(len(lines), i + 120)):
-                                  if re.search(r'\bwhen\s*\(\s*\w*(?:Tab|Index|Category|Section)\w*\s*\)', lines[j]):
-                                      for k in range(j + 1, min(len(lines), j + 150)):
-                                          if re.match(rf'^\s*{target_idx}\s*->\s*\{{', lines[k]):
-                                              depth = 0
-                                              opened = False
-                                              for b in range(k, len(lines)):
-                                                  depth += lines[b].count("{") - lines[b].count("}")
-                                                  if "{" in lines[b]:
-                                                      opened = True
-                                                  if opened and depth <= 0:
-                                                      ind = re.match(r'^(\s*)', lines[b]).group(1) + "    "
-                                                      ctx_lazy = "".join(lines[max(0, j - 15):k])
-                                                      if "LazyColumn" in ctx_lazy:
-                                                          lines.insert(b, f"{ind}item {{ {composable_call} }}\n")
-                                                      else:
-                                                          lines.insert(b, f"{ind}{composable_call}\n")
-                                                      return "".join(lines), True
-              # 2) Section / Header με το όνομα της κατηγορίας
-              for idx, line in enumerate(lines):
-                  if re.search(cat_regex, line, re.IGNORECASE):
-                      for k in range(idx, min(idx + 25, len(lines))):
-                          ind_m = re.match(r'^(\s*)', lines[k])
-                          ind = ind_m.group(1) if ind_m else "    "
-                          if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', lines[k]):
-                              lines.insert(k, f"{ind}item {{ {composable_call} }}\n")
-                              return "".join(lines), True
-              return src, False
-
-          injected_in_lyrics = False
-          injected_in_player = False
+          injected_in_elements = False
           for sp_file in [
               Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"),
               Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt")
           ]:
               if sp_file.exists():
                   st = sp_file.read_text()
-                  changed = False
                   if "VnLyricsBeautifulSettingsCard" not in st:
-                      st2, ok1 = inject_into_settings_tab(st, lyrics_regex, "com.music.spotui.ui.screens.VnLyricsBeautifulSettingsCard()")
-                      if ok1:
-                          st = st2
-                          injected_in_lyrics = True
-                          changed = True
-                          print(f"Injected Lyrics settings into Lyrics category of {sp_file}")
-                  if "VnPlayerVignetteSettingsRow" not in st:
-                      st2, ok2 = inject_into_settings_tab(st, player_regex, "com.music.spotui.ui.screens.VnPlayerVignetteSettingsRow()")
-                      if ok2:
-                          st = st2
-                          injected_in_player = True
-                          changed = True
-                          print(f"Injected Player Vignette settings into Player category of {sp_file}")
-                  if changed:
-                      sp_file.write_text(st)
+                      lines = st.splitlines(keepends=True)
+                      for idx, line in enumerate(lines):
+                          if line.lstrip().startswith(("//", "/*", "*", "import ", "package ")):
+                              continue
+                          if re.search(elem_regex, line, re.IGNORECASE):
+                              for k in range(idx, min(idx + 40, len(lines))):
+                                  ind_m = re.match(r'^(\s*)', lines[k])
+                                  ind = ind_m.group(1) if ind_m else "    "
+                                  if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', lines[k]):
+                                      lines.insert(k, f"{ind}item {{ com.music.spotui.ui.screens.VnLyricsBeautifulSettingsCard() }}\n")
+                                      sp_file.write_text("".join(lines))
+                                      injected_in_elements = True
+                                      print(f"Injected VnLyricsBeautifulSettingsCard into Elements section of {sp_file}")
+                                      break
+                                  if k > idx and re.match(r'^\s*(?:SettingsSwitch|SettingsRow|SwitchPreference|PreferenceRow|ImmersiveSettingsSwitch|ImmersiveSettingsRow)\s*\(', lines[k]):
+                                      lines.insert(k, f"{ind}com.music.spotui.ui.screens.VnLyricsBeautifulSettingsCard()\n")
+                                      sp_file.write_text("".join(lines))
+                                      injected_in_elements = True
+                                      print(f"Injected VnLyricsBeautifulSettingsCard into Elements column of {sp_file}")
+                                      break
+                              if injected_in_elements:
+                                  break
 
           for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
               if ap.exists() and "vnAnimatedElement" not in ap.read_text():
@@ -1451,8 +1185,7 @@ jobs:
                               bt = "".join(lines); break
               bf.write_text(bt)
 
-          inc_lyrics = "false" if injected_in_lyrics else "true"
-          inc_vignette = "false" if injected_in_player else "true"
+          inc_flag = "false" if injected_in_elements else "true"
           for uf in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
               if uf.name in ("VnSettingsBackup.kt", "VnFrameRateManager.kt") or "VnFpsSelectorCard" in uf.read_text(): continue
               lines, ch = uf.read_text().splitlines(keepends=True), False
@@ -1460,9 +1193,9 @@ jobs:
                   st = l.lstrip(); ind = l[:len(l)-len(st)]
                   if st.startswith(("import ", "package ", "//", "/*", "*", "fun ", "object ", "class ")): continue
                   if re.match(r'^item\b.*\{.*\bVn(?:Settings)?Backup\w*', st):
-                      lines.insert(i, f"{ind}item {{ com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyricsStyleCard = {inc_lyrics}, includeVignetteCard = {inc_vignette}) }}\n"); ch = True; break
+                      lines.insert(i, f"{ind}item {{ com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyricsStyleCard = {inc_flag}) }}\n"); ch = True; break
                   if re.match(r'^(?:com\.music\.spotui\.ui\.screens\.)?Vn(?:Settings)?Backup(?:\.[A-Za-z0-9_]+|\w*)\s*\(', st):
-                      lines.insert(i, f"{ind}com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyricsStyleCard = {inc_lyrics}, includeVignetteCard = {inc_vignette})\n"); ch = True; break
+                      lines.insert(i, f"{ind}com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyricsStyleCard = {inc_flag})\n"); ch = True; break
               if ch: uf.write_text("".join(lines))
 
           gh = False
@@ -1486,6 +1219,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VNEra-2.1.4-Debug
-          path: "**/build/outputs/apk/debug/*.apk"
+          path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
