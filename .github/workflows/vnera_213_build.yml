@@ -1,4 +1,4 @@
-Name: Build VNEra Debug APK
+name: Build VNEra Debug APK
 
 on:
   push:
