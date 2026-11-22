@@ -194,6 +194,8 @@ jobs:
           import androidx.compose.ui.platform.LocalDensity
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.unit.*
+          import androidx.compose.ui.window.Popup
+          import androidx.compose.ui.window.PopupProperties
           import androidx.core.view.*
           import kotlinx.coroutines.delay
           import org.json.*
@@ -227,6 +229,7 @@ jobs:
               var lyricsBeautifulEnabled by mutableStateOf(false); private set
               var lyricsCustomColorArgb by mutableLongStateOf(0L); private set
               var lyricsFontScale by mutableFloatStateOf(1.0f); private set
+              var defaultThemePrimaryArgb by mutableLongStateOf(0L)
 
               val extraColorPalette = listOf(
                   "Default" to 0L, "Crimson" to 0xFFE53935L, "Coral" to 0xFFFF5722L, "Amber" to 0xFFFF9800L,
@@ -268,11 +271,16 @@ jobs:
                   prefs(c).edit().putFloat(KEY_LYRICS_FONT_SCALE, s).apply()
               }
 
+              fun resolvedLyricsArgb(): Long = when {
+                  lyricsCustomColorArgb != 0L -> lyricsCustomColorArgb
+                  customAccentColorArgb != 0L -> customAccentColorArgb
+                  else -> defaultThemePrimaryArgb
+              }
+
               @Composable
-              fun resolveLyricsAccentColor(fallback: Color = MaterialTheme.colorScheme.primary): Color = when {
-                  lyricsCustomColorArgb != 0L -> Color(lyricsCustomColorArgb)
-                  customAccentColorArgb != 0L -> Color(customAccentColorArgb)
-                  else -> fallback
+              fun resolveLyricsAccentColor(fallback: Color = MaterialTheme.colorScheme.primary): Color {
+                  val argb = resolvedLyricsArgb()
+                  return if (argb != 0L) Color(argb) else fallback
               }
 
               fun setSystemBarsHidden(act: Activity?, hidden: Boolean) {
@@ -404,25 +412,26 @@ jobs:
               }
           }
 
-          @Composable
           fun vnLyricColor(original: Color): Color {
               if (!VnFpsPref.lyricsBeautifulEnabled) return original
-              val chosen = VnFpsPref.resolveLyricsAccentColor()
-              return chosen.copy(alpha = original.alpha.coerceIn(0.45f, 1f))
+              val argb = VnFpsPref.resolvedLyricsArgb()
+              if (argb == 0L) return original
+              return Color(argb).copy(alpha = original.alpha.coerceIn(0.45f, 1f))
           }
 
           @Composable
           fun VnLyricsStylingWrapper(content: @Composable () -> Unit) {
               val c = LocalContext.current
               LaunchedEffect(c) { VnFpsPref.init(c) }
+              val baseScheme = MaterialTheme.colorScheme
+              VnFpsPref.defaultThemePrimaryArgb = baseScheme.primary.toArgb().toLong()
               val baseDensity = LocalDensity.current
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
               val scaledDensity = remember(baseDensity, scale) {
                   Density(density = baseDensity.density, fontScale = baseDensity.fontScale * scale)
               }
               val beautiful = VnFpsPref.lyricsBeautifulEnabled
-              val chosenColor = VnFpsPref.resolveLyricsAccentColor()
-              val baseScheme = MaterialTheme.colorScheme
+              val chosenColor = VnFpsPref.resolveLyricsAccentColor(baseScheme.primary)
               val styledScheme = if (beautiful) {
                   baseScheme.copy(
                       primary = chosenColor,
@@ -448,23 +457,33 @@ jobs:
           @Composable
           fun VnLyricsFullscreenButton(
               isFullscreen: Boolean,
-              onClick: () -> Unit,
-              modifier: Modifier = Modifier
+              onClick: () -> Unit
           ) {
-              Surface(
-                  onClick = onClick,
-                  modifier = modifier.size(40.dp),
-                  shape = CircleShape,
-                  color = Color.White.copy(alpha = 0.14f),
-                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f))
+              Popup(
+                  alignment = Alignment.TopEnd,
+                  offset = IntOffset(-42, 96),
+                  properties = PopupProperties(
+                      focusable = false,
+                      dismissOnBackPress = false,
+                      dismissOnClickOutside = false,
+                      clippingEnabled = false
+                  )
               ) {
-                  Box(contentAlignment = Alignment.Center) {
-                      Icon(
-                          imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                          contentDescription = if (isFullscreen) "Έξοδος από πλήρη οθόνη" else "Πλήρης οθόνη στίχων",
-                          tint = Color.White,
-                          modifier = Modifier.size(20.dp)
-                      )
+                  Surface(
+                      onClick = onClick,
+                      modifier = Modifier.size(40.dp),
+                      shape = CircleShape,
+                      color = Color.Black.copy(alpha = 0.52f),
+                      border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f))
+                  ) {
+                      Box(contentAlignment = Alignment.Center) {
+                          Icon(
+                              imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                              contentDescription = if (isFullscreen) "Έξοδος από πλήρη οθόνη" else "Πλήρης οθόνη στίχων",
+                              tint = Color.White,
+                              modifier = Modifier.size(20.dp)
+                          )
+                      }
                   }
               }
           }
@@ -578,8 +597,26 @@ jobs:
               DisposableEffect(act, imm) { VnFpsPref.setSystemBarsHidden(act, imm); onDispose { VnFpsPref.setSystemBarsHidden(act, false); VnFpsPref.isLyricsEdgeDragging = false } }
           }
 
-          fun Modifier.vnLyricsCenterGestures(act: Activity?, onClose: (() -> Unit)? = null): Modifier = this
+          fun Modifier.vnLyricsCenterGestures(act: Activity?): Modifier = this
               .pointerInput(act) { detectTapGestures { o -> val w = size.width.toFloat(); if (w > 0f && o.x in (w * 0.22f)..(w * 0.78f)) VnFpsPref.toggleSystemBars(act) } }
+              .pointerInput(Unit) {
+                  awaitEachGesture {
+                      val down = awaitFirstDown(false, PointerEventPass.Initial)
+                      val w = size.width.toFloat(); val inEdge = w > 0f && down.position.x !in (w * 0.22f)..(w * 0.78f)
+                      VnFpsPref.isLyricsEdgeDragging = inEdge
+                      try {
+                          while (true) {
+                              val ch = awaitPointerEvent(PointerEventPass.Initial).changes.let { l -> l.firstOrNull { it.id == down.id } ?: l.firstOrNull() }
+                              if (ch == null || !ch.pressed) break
+                              val dy = ch.positionChange().y
+                              if (abs(dy) > 0.1f && inEdge) {
+                                  ch.consume()
+                                  VnFpsPref.activeLyricsScrollState?.dispatchRawDelta(-dy * 2.2f)
+                              }
+                          }
+                      } finally { VnFpsPref.isLyricsEdgeDragging = false }
+                  }
+              }
 
           fun Modifier.vnAnimatedElement(phaseIndex: Int = 0): Modifier = composed {
               if (!VnFpsPref.elementAnimEnabled) return@composed this
@@ -943,10 +980,9 @@ jobs:
           if lf.exists():
               s0 = lf.read_text()
               s1 = hook_lazy_cols(s0)
-              # Remove bottom-to-top / top-to-bottom drag-to-open and drag-to-close triggers
               s1 = re.sub(r'if\s*\(\s*drag\s*[<>]\s*-?\s*[^)]+\)\s*(?:onClose|onExpand)\(\)', 'if (false) {}', s1)
               s1 = style_lyrics_colors(s1)
-              if "VnLyricsFullscreenButton" not in s1:
+              if "vnLyricsCenterGestures" not in s1:
                   lines = s1.splitlines(keepends=True)
                   for i in range(len(lines)):
                       if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', lines[i]):
@@ -962,6 +998,7 @@ jobs:
                               if be is not None and ".fillMaxSize()" in "".join(lines[se:be+1]):
                                   lines[se] += (
                                       "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
+                                      "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, onClick = { onClose() })\n"
                                       "    val vnLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
                                       "    com.music.spotui.ui.screens.VnLyricsStylingWrapper {\n"
                                   )
@@ -969,32 +1006,10 @@ jobs:
                                   hooked = False
                                   for k in range(se + 1, be + 1):
                                       if not hooked and ".fillMaxSize()" in lines[k]:
-                                          lines[k] = lines[k].replace(".fillMaxSize()", ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnLyricsActivity, null))", 1)
+                                          lines[k] = lines[k].replace(".fillMaxSize()", ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnLyricsActivity))", 1)
                                           hooked = True
                                       if "indication = null" in lines[k] and "onClick = onClose" in lines[k]:
                                           lines[k] = lines[k].replace("onClick = onClose", "onClick = { com.music.spotui.ui.screens.VnFpsPref.toggleSystemBars(vnLyricsActivity) }")
-                                  # Insert player-style Fullscreen button inside root Box if present, else wrap
-                                  body_str = "".join(lines[se+1:be+1])
-                                  box_m = re.search(r'(?m)^(\s*)Box\s*\(', body_str)
-                                  if box_m:
-                                      # Find closing brace of the first root Box
-                                      start_pos = se + 1 + body_str[:box_m.start()].count("\n")
-                                      bd = 0; b_open = False; box_end = None
-                                      for k in range(start_pos, be + 1):
-                                          bd += lines[k].count("{") - lines[k].count("}")
-                                          if "{" in lines[k]: b_open = True
-                                          if b_open and bd <= 0:
-                                              box_end = k; break
-                                      if box_end is not None:
-                                          ind_b = re.match(r'^(\s*)', lines[box_end]).group(1)
-                                          lines.insert(
-                                              box_end,
-                                              f'{ind_b}    com.music.spotui.ui.screens.VnLyricsFullscreenButton('
-                                              f'isFullscreen = true, '
-                                              f'onClick = {{ onClose() }}, '
-                                              f'modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd)'
-                                              f'.statusBarsPadding().padding(top = 12.dp, end = 16.dp))\n'
-                                          )
                                   s1 = "".join(lines); break
               if s1 != s0: lf.write_text(s1)
 
@@ -1004,7 +1019,7 @@ jobs:
               t1 = hook_lazy_cols(t0)
               t1 = re.sub(r'if\s*\(\s*drag\s*[<>]\s*-?\s*[^)]+\)\s*(?:onClose|onExpand)\(\)', 'if (false) {}', t1)
               t1 = style_lyrics_colors(t1)
-              if "VnLyricsFullscreenButton" not in t1 and ".fillMaxSize()" in t1:
+              if "vnLyricsCenterGestures" not in t1 and ".fillMaxSize()" in t1:
                   lines = t1.splitlines(keepends=True)
                   for i in range(len(lines)):
                       if re.search(r'\bfun\s+ImmersiveLyricsPanel\b', lines[i]):
@@ -1015,6 +1030,7 @@ jobs:
                           if se is not None:
                               sig = "".join(lines[i:se+1])
                               has_expand = bool(re.search(r'\bonExpand\s*:', sig))
+                              action_expr = "onExpand()" if has_expand else "com.music.spotui.ui.screens.VnFpsPref.toggleSystemBars(vnImmLyricsActivity)"
                               d = 0; be = None
                               for k in range(se, len(lines)):
                                   d += lines[k].count("{") - lines[k].count("}")
@@ -1023,34 +1039,14 @@ jobs:
                                   lines[se] += (
                                       "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
                                       "    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
+                                      f"    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = com.music.spotui.ui.screens.VnFpsPref.lyricsBarsHidden, onClick = {{ {action_expr} }})\n"
                                       "    com.music.spotui.ui.screens.VnLyricsStylingWrapper {\n"
                                   )
                                   lines[be] = "    }\n" + lines[be]
                                   for k in range(se + 1, be + 1):
                                       if ".fillMaxSize()" in lines[k]:
-                                          lines[k] = lines[k].replace(".fillMaxSize()", ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnImmLyricsActivity, null))", 1)
+                                          lines[k] = lines[k].replace(".fillMaxSize()", ".fillMaxSize().then(Modifier.vnLyricsCenterGestures(vnImmLyricsActivity))", 1)
                                           break
-                                  body_str = "".join(lines[se+1:be+1])
-                                  box_m = re.search(r'(?m)^(\s*)Box\s*\(', body_str)
-                                  if box_m:
-                                      start_pos = se + 1 + body_str[:box_m.start()].count("\n")
-                                      bd = 0; b_open = False; box_end = None
-                                      for k in range(start_pos, be + 1):
-                                          bd += lines[k].count("{") - lines[k].count("}")
-                                          if "{" in lines[k]: b_open = True
-                                          if b_open and bd <= 0:
-                                              box_end = k; break
-                                      if box_end is not None:
-                                          ind_b = re.match(r'^(\s*)', lines[box_end]).group(1)
-                                          action_expr = "onExpand()" if has_expand else "com.music.spotui.ui.screens.VnFpsPref.toggleSystemBars(vnImmLyricsActivity)"
-                                          lines.insert(
-                                              box_end,
-                                              f'{ind_b}    com.music.spotui.ui.screens.VnLyricsFullscreenButton('
-                                              f'isFullscreen = com.music.spotui.ui.screens.VnFpsPref.lyricsBarsHidden, '
-                                              f'onClick = {{ {action_expr} }}, '
-                                              f'modifier = Modifier.align(androidx.compose.ui.Alignment.TopEnd)'
-                                              f'.statusBarsPadding().padding(top = 12.dp, end = 16.dp))\n'
-                                          )
                                   t1 = "".join(lines)
                                   t1 = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnLyricsCenterGestures', t1, count=1)
                                   break
@@ -1059,7 +1055,11 @@ jobs:
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
               s = p2.read_text()
-              # Disable bottom-to-top / top-to-bottom drag gesture to open/close lyrics
+              if "PointerEventPass" not in s and "import androidx.compose.ui.input.pointer.positionChange" in s:
+                  s = s.replace("import androidx.compose.ui.input.pointer.positionChange", "import androidx.compose.ui.input.pointer.positionChange\nimport androidx.compose.ui.input.pointer.PointerEventPass\nimport androidx.compose.ui.input.pointer.positionChangeIgnoreConsumed", 1)
+              s = s.replace("awaitPointerEvent()", "awaitPointerEvent(PointerEventPass.Initial)").replace("change.positionChange().y", "change.positionChangeIgnoreConsumed().y").replace("76.dp.toPx()", "48.dp.toPx()")
+              if "isLyricsEdgeDragging" not in s:
+                  s = re.sub(r'\b([A-Za-z0-9_]+)\s*>\s*48\.dp\.toPx\(\)', r'(!com.music.spotui.ui.screens.VnFpsPref.isLyricsEdgeDragging && \1 > 48.dp.toPx())', s)
               s = re.sub(r'if\s*\(\s*(?:drag|totalDrag|offsetY|dy)\s*[<>]\s*-?\s*(?:48|56|64|72|76|80|120|180)\.dp\.toPx\(\)\s*\)\s*(?:onExpand|onOpenLyrics|showLyrics\s*=\s*true|isLyricsExpanded\s*=\s*true)[^\n]*', 'if (false) {}', s)
               p2.write_text(s)
 
@@ -1076,7 +1076,6 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # Inject "Κάνε όμορφους τους στίχους" into Settings -> Lyrics section (same UI)
           injected_in_lyrics_settings = False
           for sp_file in [
               Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"),
@@ -1088,7 +1087,6 @@ jobs:
                       lines = st.splitlines(keepends=True)
                       for idx, line in enumerate(lines):
                           if re.search(r'"(?:Lyrics|Στίχοι)"', line):
-                              # Look ahead a few lines for the end of that settings header/item or start of items inside Lyrics section
                               for k in range(idx, min(idx + 12, len(lines))):
                                   ind_m = re.match(r'^(\s*)', lines[k])
                                   ind = ind_m.group(1) if ind_m else "    "
