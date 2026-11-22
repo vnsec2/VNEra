@@ -1,4 +1,4 @@
-name: Build VNEra Debug APK
+Name: Build VNEra Debug APK
 
 on:
   push:
@@ -260,6 +260,7 @@ jobs:
               var isPlaybackPlaying by mutableStateOf(true)
               var playbackAlertsEnabled by mutableStateOf(true); private set
               var keepShuffleEnabled by mutableStateOf(false); private set
+              val shuffleLockEnabled: Boolean get() = keepShuffleEnabled
               var cachedExtensionsText by mutableStateOf(""); private set
               var lyricsBeautifulEnabled by mutableStateOf(false); private set
               var lyricsCustomColorArgb by mutableLongStateOf(0L); private set
@@ -611,7 +612,6 @@ jobs:
 
               private fun collectInstalledExtensionsOnly(c: Context): LinkedHashSet<String> {
                   val collected = LinkedHashSet<String>()
-                  // 1. Scan dedicated extension/plugin/repo files in app filesDir (excluding system settings)
                   runCatching {
                       File(c.filesDir.path).walkTopDown().maxDepth(4)
                           .filter { f ->
@@ -631,7 +631,6 @@ jobs:
                               }
                           }
                   }
-                  // 2. Scan ONLY extension/repo storage entries in SharedPreferences (ignoring vnera_display_prefs & all system settings)
                   runCatching {
                       File(c.applicationInfo.dataDir, "shared_prefs").listFiles()?.filter { it.name.endsWith(".xml") }?.forEach { f ->
                           val spName = f.name.removeSuffix(".xml")
@@ -648,7 +647,6 @@ jobs:
                           }
                       }
                   }
-                  // 3. Previously restored or backup-extracted extensions (never settings)
                   prefs(c).getString(KEY_RESTORED_EXTENSIONS, "").orEmpty().lines().filter { it.isNotBlank() }.forEach(collected::add)
                   cachedExtensionsText.lines().filter { it.isNotBlank() }.forEach(collected::add)
                   return collected
@@ -691,7 +689,6 @@ jobs:
                       .putString(KEY_LAST_BACKUP_EXTENSIONS, mergedText)
                       .apply()
 
-                  // Write ONLY extension/repo lists back to extension-specific prefs/files WITHOUT touching any system settings
                   val urlRegex = Regex("""https?://[^\s"'<>\]\)]+""")
                   val extObjects = JSONArray()
                   val extUrls = LinkedHashSet<String>()
@@ -842,7 +839,24 @@ jobs:
           }
 
           @Composable
-          fun vnScaleAnnotatedLyric(text: AnnotatedString): AnnotatedString {
+          fun vnStyleKaraokeSpan(span: SpanStyle): SpanStyle {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
+              val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
+              val beautiful = VnFpsPref.lyricsBeautifulEnabled
+              val newFontSize = if (abs(scale - 1.0f) >= 0.01f && span.fontSize.isSpecified) {
+                  (span.fontSize.value * scale).sp
+              } else span.fontSize
+              val newColor = if (beautiful && span.color.isSpecified) {
+                  val chosen = vnResolveSelectedLyricColor()
+                  val a = if (span.color.alpha < 0.72f) 0.52f else 0.98f
+                  chosen.copy(alpha = a)
+              } else span.color
+              return span.copy(color = newColor, fontSize = newFontSize)
+          }
+
+          @Composable
+          fun vnStyleKaraokeText(text: AnnotatedString): AnnotatedString {
               val c = LocalContext.current
               VnFpsPref.ensureInit(c)
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
@@ -871,6 +885,9 @@ jobs:
                   paragraphStyles = text.paragraphStyles
               )
           }
+
+          @Composable
+          fun vnStyleKaraokeText(text: String): String = vnPlayerInlineLyricText(text)
 
           @Composable
           fun VnPlayerInlineLyricScope(content: @Composable () -> Unit) {
@@ -909,33 +926,20 @@ jobs:
               }
               if (VnFpsPref.activeFullscreenButtonOwner != ownerId) return
 
-              // Single compact button positioned in the lower-right area below the photo/artwork (never at the top)
-              val bottomOffsetY = if (isFullscreen) -72 else -152
-              Popup(
-                  alignment = Alignment.BottomEnd,
-                  offset = IntOffset(-28, bottomOffsetY),
-                  properties = PopupProperties(
-                      focusable = false,
-                      dismissOnBackPress = false,
-                      dismissOnClickOutside = false,
-                      clippingEnabled = false
-                  )
+              Surface(
+                  onClick = onClick,
+                  modifier = Modifier.size(34.dp),
+                  shape = CircleShape,
+                  color = Color.Black.copy(alpha = 0.62f),
+                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f))
               ) {
-                  Surface(
-                      onClick = onClick,
-                      modifier = Modifier.size(34.dp),
-                      shape = CircleShape,
-                      color = Color.Black.copy(alpha = 0.62f),
-                      border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f))
-                  ) {
-                      Box(contentAlignment = Alignment.Center) {
-                          Icon(
-                              imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                              contentDescription = if (isFullscreen) "Κλείσιμο πλήρους οθόνης" else "Πλήρης οθόνη στίχων",
-                              tint = Color.White,
-                              modifier = Modifier.size(16.dp)
-                          )
-                      }
+                  Box(contentAlignment = Alignment.Center) {
+                      Icon(
+                          imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                          contentDescription = if (isFullscreen) "Κλείσιμο πλήρους οθόνης" else "Πλήρης οθόνη στίχων",
+                          tint = Color.White,
+                          modifier = Modifier.size(16.dp)
+                      )
                   }
               }
           }
@@ -1037,6 +1041,7 @@ jobs:
           object VnShuffleGuard {
               var activeBannerMessage by mutableStateOf<String?>(null)
               var userWantsShuffle by mutableStateOf(false)
+              val shuffleLockedByUser: Boolean get() = userWantsShuffle
               var onForceEnableShuffle: (() -> Unit)? = null
               private var lastReenableMs = 0L
 
@@ -1055,6 +1060,10 @@ jobs:
                   userWantsShuffle = newShuffleState
               }
 
+              fun onUserExplicitShuffleToggle(newShuffleState: Boolean) {
+                  userWantsShuffle = newShuffleState
+              }
+
               fun observeShuffleState(
                   c: Context,
                   isShuffleOn: Boolean,
@@ -1070,7 +1079,29 @@ jobs:
                       userWantsShuffle = true
                       return
                   }
-                  // Shuffle was turned OFF externally (e.g. by Spotify / queue transition) while Auto-Shuffle is locked ON
+                  if (userWantsShuffle) {
+                      reEnableWithoutBreakingQueue()
+                      val now = SystemClock.elapsedRealtime()
+                      if (now - lastReenableMs > 1800L) {
+                          lastReenableMs = now
+                          activeBannerMessage = "Ενεργοποιήθηκε ξανά η τυχαία σειρά (η ουρά σου διατηρήθηκε)"
+                      }
+                  }
+              }
+
+              fun onShuffleStateObserved(
+                  isShuffleOn: Boolean,
+                  reEnableWithoutBreakingQueue: () -> Unit
+              ) {
+                  onForceEnableShuffle = reEnableWithoutBreakingQueue
+                  if (!VnFpsPref.keepShuffleEnabled) {
+                      userWantsShuffle = isShuffleOn
+                      return
+                  }
+                  if (isShuffleOn) {
+                      userWantsShuffle = true
+                      return
+                  }
                   if (userWantsShuffle) {
                       reEnableWithoutBreakingQueue()
                       val now = SystemClock.elapsedRealtime()
@@ -1889,7 +1920,6 @@ jobs:
               return "".join(out)
 
           def suppress_duplicate_top_fullscreen_icons(src: str) -> str:
-              # Remove duplicate native top fullscreen IconButtons so only our single lower-right button is shown
               lines = src.splitlines(keepends=True)
               out = []
               i = 0
@@ -1912,6 +1942,19 @@ jobs:
                   i += 1
               return "".join(out)
 
+          def find_composable_body_open(lines: list[str], call_line_idx: int, limit_idx: int) -> int | None:
+              paren = 0
+              for j in range(max(0, call_line_idx - 6), min(limit_idx + 1, call_line_idx + 12)):
+                  stripped = lines[j].split("//")[0]
+                  for ch in stripped:
+                      if ch == '(':
+                          paren += 1
+                      elif ch == ')':
+                          paren -= 1
+                  if paren <= 0 and "{" in stripped and j >= call_line_idx:
+                      return j
+              return None
+
           # 1. Connect ImmersivePlayer's lyrics-open boolean state + capture player background color
           p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if p2.exists():
@@ -1933,9 +1976,10 @@ jobs:
                       f"{ind}}}\n"
                   )
                   ps = ps.replace(m_state.group(0), hook_code, 1)
+                  ps = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport androidx.compose.ui.graphics.toArgb', ps, count=1)
               p2.write_text(ps)
 
-          # 2. LyricsScreen.kt (black full-screen lyrics): single button below artwork (ownerId = "lyrics_screen") + slide-down close without wiping lyrics
+          # 2. LyricsScreen.kt: single exit-fullscreen button inside content Box below artwork + slide-down close
           lf = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lf.exists():
               s0 = lf.read_text()
@@ -1969,7 +2013,6 @@ jobs:
                                       "            }\n"
                                       "        }\n"
                                       "    }\n"
-                                      "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, ownerId = \"lyrics_screen\", onClick = vnTriggerClose)\n"
                                   )
                                   for k in range(se + 1, be + 1):
                                       if ".fillMaxSize()" in lines[k]:
@@ -1978,13 +2021,22 @@ jobs:
                                               ".fillMaxSize().then(Modifier.vnFullscreenSlideContainer(vnClosingDown, matchPlayerBackground = false)).then(Modifier.vnSmartLyricsSwipe(vnLyricsActivity, isExpanded = true, onCollapseToPlayer = vnTriggerClose))",
                                               1
                                           )
+                                          body_open = find_composable_body_open(lines, k, be)
+                                          if body_open is not None:
+                                              b_ind = re.match(r'^(\s*)', lines[body_open]).group(1) + "    "
+                                              lines[body_open] += (
+                                                  f"{b_ind}androidx.compose.foundation.layout.Box("
+                                                  f"modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(top = 180.dp, end = 14.dp), "
+                                                  f"contentAlignment = androidx.compose.ui.Alignment.CenterEnd) {{ "
+                                                  f"com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, ownerId = \"lyrics_screen\", onClick = vnTriggerClose) }}\n"
+                                              )
                                           break
                                   s1 = "".join(lines)
-                                  s1 = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport androidx.compose.ui.graphics.toArgb\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnFullscreenSlideContainer\nimport com.music.spotui.ui.screens.vnSmartLyricsSwipe\nimport kotlinx.coroutines.launch', s1, count=1)
+                                  s1 = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnFullscreenSlideContainer\nimport com.music.spotui.ui.screens.vnSmartLyricsSwipe\nimport kotlinx.coroutines.launch', s1, count=1)
                                   break
               if s1 != s0: lf.write_text(s1)
 
-          # 3. ImmersiveLyricsPanel.kt: single button below artwork + smooth matching background on exit
+          # 3. ImmersiveLyricsPanel.kt: single compact button below cover photo (NOT at top)
           il = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
           if il.exists():
               t0 = il.read_text()
@@ -2027,7 +2079,6 @@ jobs:
                                   "            }\n"
                                   "        }\n"
                                   "    }\n"
-                                  "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, ownerId = \"immersive_panel\", onClick = { if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() })\n"
                               )
                               for k in range(se + 1, len(lines)):
                                   if ".fillMaxSize()" in lines[k]:
@@ -2036,13 +2087,22 @@ jobs:
                                           ".fillMaxSize().then(if (vnIsFullscreen) Modifier.vnFullscreenSlideContainer(vnImmClosingDown, matchPlayerBackground = true) else Modifier).then(Modifier.vnSmartLyricsSwipe(vnImmLyricsActivity, isExpanded = vnIsFullscreen, onExpandToFullscreen = vnOnOpenFs, onCollapseToPlayer = vnOnCloseFs))",
                                           1
                                       )
+                                      body_open = find_composable_body_open(lines, k, len(lines) - 1)
+                                      if body_open is not None:
+                                          b_ind = re.match(r'^(\s*)', lines[body_open]).group(1) + "    "
+                                          lines[body_open] += (
+                                              f"{b_ind}androidx.compose.foundation.layout.Box("
+                                              f"modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(top = 12.dp, end = 10.dp), "
+                                              f"contentAlignment = androidx.compose.ui.Alignment.CenterEnd) {{ "
+                                              f"com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, ownerId = \"immersive_panel\", onClick = {{ if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() }}) }}\n"
+                                          )
                                       break
                               t1 = "".join(lines)
                               t1 = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnFullscreenSlideContainer\nimport com.music.spotui.ui.screens.vnSmartLyricsSwipe\nimport kotlinx.coroutines.launch', t1, count=1)
                               break
               if t1 != t0: il.write_text(t1)
 
-          # 4. Inline Player Lyrics & Word-by-Word Karaoke Lyrics: enforce user color & font size everywhere
+          # 4. Inline & Word-by-Word Karaoke Player Lyrics ONLY
           def wrap_arg_call(call_src: str, param_name: str, wrapper_fn: str, default_expr: str | None = None) -> tuple[str, bool]:
               m = re.search(rf'\b{param_name}\s*=\s*', call_src)
               if not m:
@@ -2054,7 +2114,7 @@ jobs:
                           return f"{before}{comma}{param_name} = {wrapper_fn}({default_expr}){call_src[close_idx:]}", True
                   return call_src, False
               start_val = m.end()
-              if wrapper_fn in call_src[start_val:start_val + len(wrapper_fn) + 45]:
+              if wrapper_fn in call_src[start_val:start_val + len(wrapper_fn) + 55]:
                   return call_src, False
               depth_p = depth_b = depth_c = 0
               end_val = len(call_src)
@@ -2078,22 +2138,28 @@ jobs:
                   return call_src, False
               return f"{call_src[:start_val]}{wrapper_fn}({expr}){call_src[end_val:]}", True
 
-          def patch_call_block(call_block: str, is_karaoke: bool = False) -> tuple[str, bool]:
+          def patch_lyric_text_call(call_block: str, is_karaoke_file: bool) -> tuple[str, bool]:
               new_block = call_block
               c0 = c1 = c2 = False
-              # If text is AnnotatedString (karaoke word-by-word) or String
-              m_txt = re.search(r'\btext\s*=\s*([^,\n\)]+)', new_block)
-              if m_txt:
-                  texpr = m_txt.group(1).strip()
-                  if any(tok in texpr for tok in ("annotated", "Annotated", "buildAnnotated", "karaoke", "Karaoke", "span", "styled")):
-                      new_block, c0 = wrap_arg_call(new_block, "text", "com.music.spotui.ui.screens.vnScaleAnnotatedLyric")
-                  else:
-                      new_block, c0 = wrap_arg_call(new_block, "text", "com.music.spotui.ui.screens.vnPlayerInlineLyricText")
-              color_fn = "com.music.spotui.ui.screens.vnKaraokeWordColor" if is_karaoke else "com.music.spotui.ui.screens.vnPlayerInlineLyricColor"
+              m_txt = re.search(r'\btext\s*=\s*([^,\)\n]+)', new_block)
+              txt_expr = m_txt.group(1).strip() if m_txt else ""
+              if is_karaoke_file:
+                  if txt_expr and not txt_expr.startswith('"'):
+                      new_block, c0 = wrap_arg_call(
+                          new_block,
+                          "text",
+                          "com.music.spotui.ui.screens.vnStyleKaraokeText"
+                      )
+              else:
+                  new_block, c0 = wrap_arg_call(
+                      new_block,
+                      "text",
+                      "com.music.spotui.ui.screens.vnPlayerInlineLyricText"
+                  )
               new_block, c1 = wrap_arg_call(
                   new_block,
                   "color",
-                  color_fn,
+                  "com.music.spotui.ui.screens.vnPlayerInlineLyricColor",
                   "androidx.compose.material3.LocalContentColor.current"
               )
               if "fontSize" in new_block:
@@ -2110,132 +2176,108 @@ jobs:
               return new_block, (c0 or c1 or c2)
 
           def patch_inline_and_karaoke_lyrics(path: Path):
-              if not path.exists() or path.name in ("VnFrameRateManager.kt", "LyricsScreen.kt", "ImmersiveLyricsPanel.kt"):
+              if not path.exists() or path.name in ("VnFrameRateManager.kt", "LyricsScreen.kt", "LookPreview.kt"):
                   return
+              is_karaoke_or_lyric_comp = bool(re.search(r'(?:Karaoke|WordByWord|SyncedLyric|SweptLyric|LyricLine|LyricPreview|InlineLyric)', path.name, re.I))
+              is_player_ctrl = path.name == "PlayerControls.kt"
+              if not is_karaoke_or_lyric_comp and not is_player_ctrl:
+                  return
+
               src = path.read_text()
-              is_lyric_file = bool(re.search(r'(?:Lyric|Karaoke|Synced|RichSync)', path.name, re.IGNORECASE))
-              is_player_file = bool(re.search(r'(?:Player|Immersive)', path.name, re.IGNORECASE))
-              if not (is_lyric_file or is_player_file):
+              if "vnPlayerInlineLyricColor" in src:
                   return
-              lines = src.splitlines(keepends=True)
               changed = False
 
-              # Patch SpanStyle(...) inside Karaoke / Lyric files so word-by-word spans obey user color & fontSize
-              if is_lyric_file or re.search(r'karaoke|wordByWord|syllable', src, re.IGNORECASE):
-                  k = 0
-                  while k < len(lines):
-                      if re.search(r'\bSpanStyle\s*\(', lines[k]):
-                          p_cnt = 0
-                          t_end = k
-                          for j in range(k, min(len(lines), k + 16)):
-                              p_cnt += lines[j].count("(") - lines[j].count(")")
-                              if p_cnt <= 0:
-                                  t_end = j
-                                  break
-                          sb = "".join(lines[k:t_end + 1])
-                          sb2, sc1 = wrap_arg_call(sb, "color", "com.music.spotui.ui.screens.vnKaraokeWordColor")
-                          sb2, sc2 = wrap_arg_call(sb2, "fontSize", "com.music.spotui.ui.screens.vnScaleLyricFontSize")
-                          if sc1 or sc2:
-                              lines[k:t_end + 1] = [sb2]
-                              changed = True
-                              k = t_end + 1
-                              continue
-                      k += 1
+              if is_karaoke_or_lyric_comp:
+                  target_prefix = "com.music.spotui.ui.screens.vnStyleKaraokeSpan(SpanStyle("
+                  new_src, n_span = re.subn(r'(?<![.\w])SpanStyle\s*\(', target_prefix, src)
+                  if n_span > 0:
+                      out_chars = []
+                      idx_s = 0
+                      while idx_s < len(new_src):
+                          pos = new_src.find(target_prefix, idx_s)
+                          if pos == -1:
+                              out_chars.append(new_src[idx_s:])
+                              break
+                          out_chars.append(new_src[idx_s:pos + len(target_prefix)])
+                          scan_i = pos + len(target_prefix)
+                          depth = 1
+                          while scan_i < len(new_src) and depth > 0:
+                              ch = new_src[scan_i]
+                              if ch == '(': depth += 1
+                              elif ch == ')': depth -= 1
+                              out_chars.append(ch)
+                              scan_i += 1
+                          out_chars.append(')')
+                          idx_s = scan_i
+                      src = "".join(out_chars)
+                      changed = True
 
-              # Patch Text(...) inside inline player lyrics AND karaoke lyric composables
-              k = 0
-              while k < len(lines):
-                  if re.search(r'\bText\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
-                      ctx_win = "".join(lines[max(0, k - 22):min(len(lines), k + 14)])
-                      in_karaoke = bool(re.search(r'karaoke|word|syllable|activeWord|sung|richSync', ctx_win, re.IGNORECASE))
-                      in_inline_lyrics = bool(
-                          re.search(r'\blyric', ctx_win, re.IGNORECASE)
-                          and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', ctx_win, re.IGNORECASE)
-                      )
-                      if is_lyric_file or in_karaoke or in_inline_lyrics:
-                          p_cnt = 0
-                          t_end = k
-                          for j in range(k, min(len(lines), k + 18)):
-                              p_cnt += lines[j].count("(") - lines[j].count(")")
-                              if p_cnt <= 0:
-                                  t_end = j
-                                  break
-                          call_block = "".join(lines[k:t_end + 1])
-                          new_block, did = patch_call_block(call_block, is_karaoke=(is_lyric_file or in_karaoke))
-                          if did:
-                              lines[k:t_end + 1] = [new_block]
-                              changed = True
-                              k = t_end + 1
-                              continue
-                  k += 1
-
+              lines = src.splitlines(keepends=True)
+              for idx, line in enumerate(lines):
+                  near_chevron = is_player_ctrl and bool(re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›")', line))
+                  near_karaoke = is_karaoke_or_lyric_comp and bool(re.search(r'\b(?:Text|BasicText)\s*\(', line))
+                  if near_chevron or near_karaoke:
+                      win_start = max(0, idx - 26) if near_chevron else idx
+                      win_end = min(len(lines), idx + 16) if near_chevron else min(len(lines), idx + 1)
+                      win_txt = "".join(lines[win_start:win_end])
+                      if near_karaoke or (re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', win_txt, re.IGNORECASE)):
+                          k = win_start
+                          while k < win_end:
+                              if re.search(r'\b(?:Text|BasicText)\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
+                                  p_cnt = 0
+                                  t_end = k
+                                  for j in range(k, min(len(lines), k + 18)):
+                                      p_cnt += lines[j].count("(") - lines[j].count(")")
+                                      if p_cnt <= 0:
+                                          t_end = j
+                                          break
+                                  call_block = "".join(lines[k:t_end + 1])
+                                  new_block, did_patch = patch_lyric_text_call(call_block, is_karaoke_or_lyric_comp)
+                                  if did_patch:
+                                      lines[k:t_end + 1] = [new_block]
+                                      changed = True
+                                      k = t_end + 1
+                                      continue
+                              k += 1
+                          if changed and near_chevron:
+                              break
               if changed:
                   path.write_text("".join(lines))
-                  print(f"Patched inline/karaoke lyrics in {path}")
+                  print(f"Patched inline/karaoke player lyrics in {path}")
 
           for ui_kt in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
               patch_inline_and_karaoke_lyrics(ui_kt)
 
-          # Hook Shuffle state & queue-safe Auto-Shuffle guard across player/controls/viewmodel files
-          for sh_kt in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
-              if sh_kt.name == "VnFrameRateManager.kt":
-                  continue
-              st = sh_kt.read_text()
-              if "observeShuffleState" in st:
-                  continue
-              sh_changed = False
-              # Hook manual shuffle button toggles so user intent is tracked
-              st2, n_tog = re.subn(
-                  r'(?m)^([ \t]*)([A-Za-z0-9_.]*(?:toggleShuffle|setShuffleModeEnabled|setShuffle)\s*\(\s*([^)]*)\s*\))',
-                  lambda m: (
-                      f"{m.group(1)}com.music.spotui.ui.screens.VnShuffleGuard.onUserManualToggle({m.group(3) if m.group(3).strip() in ('true', 'false') else 'true'})\n"
-                      f"{m.group(1)}{m.group(2)}"
-                  ),
-                  st,
-                  count=2
-              )
-              if n_tog > 0:
-                  st = st2
-                  sh_changed = True
-
-              # Observe shuffle boolean in @Composable player/controls to auto-restore if disabled externally without altering queue
-              if "@Composable" in st and re.search(r'\b(shuffleModeEnabled|isShuffleEnabled|shuffleEnabled)\b', st):
-                  m_sh = re.search(r'\bval\s+(shuffleModeEnabled|isShuffleEnabled|shuffleEnabled)\b[^\n]*\n', st)
-                  m_ctx = re.search(r'\bval\s+([A-Za-z0-9_]+)\s*=\s*LocalContext\.current\b', st)
-                  m_setter = re.search(r'\b([A-Za-z0-9_.]*(?:setShuffleModeEnabled|setShuffle))\s*\(', st)
-                  if m_sh and m_setter:
-                      sh_var = m_sh.group(1)
-                      setter_fn = m_setter.group(1)
-                      ctx_expr = m_ctx.group(1) if m_ctx else "androidx.compose.ui.platform.LocalContext.current"
-                      ind = re.match(r'^(\s*)', m_sh.group(0)).group(1)
-                      guard_snippet = (
-                          f"{m_sh.group(0)}"
-                          f"{ind}androidx.compose.runtime.LaunchedEffect({sh_var}) {{\n"
-                          f"{ind}    com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState({ctx_expr}, {sh_var}) {{\n"
-                          f"{ind}        {setter_fn}(true)\n"
-                          f"{ind}    }}\n"
-                          f"{ind}}}\n"
-                      )
-                      st = st.replace(m_sh.group(0), guard_snippet, 1)
-                      sh_changed = True
-              if sh_changed:
-                  sh_kt.write_text(st)
-                  print(f"Hooked Auto-Shuffle guard in {sh_kt}")
-
-          # Track isPlaying state for animation pause/resume
-          for ctrl_kt in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
+          # Track isPlaying state & hook Shuffle Lock
+          for ctrl_kt in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
               if ctrl_kt.name == "VnFrameRateManager.kt":
                   continue
               ct = ctrl_kt.read_text()
+              orig_ct = ct
               if "isPlaying" in ct and "VnFpsPref.isPlaybackPlaying" not in ct and "@Composable" in ct:
-                  ct_new, n = re.subn(
+                  ct, _ = re.subn(
                       r'(?m)^([ \t]*)(if\s*\(\s*isPlaying\s*\))',
                       r'\1com.music.spotui.ui.screens.VnFpsPref.isPlaybackPlaying = isPlaying\n\1\2',
                       ct,
                       count=1
                   )
-                  if n > 0:
-                      ctrl_kt.write_text(ct_new)
+              if re.search(r'\bfun\s+toggleShuffle\s*\(', ct) and "VnShuffleGuard" not in ct:
+                  ct, _ = re.subn(
+                      r'(fun\s+toggleShuffle\s*\([^{]*\{)',
+                      r'\1\n        val vnNextShuffle = !(runCatching { shuffleModeEnabled.value }.getOrDefault(com.music.spotui.ui.screens.VnFpsPref.shuffleLockEnabled && com.music.spotui.ui.screens.VnShuffleGuard.shuffleLockedByUser))\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(vnNextShuffle)',
+                      ct,
+                      count=1
+                  )
+                  if "@Composable" in ct and "shuffleModeEnabled" in ct and "onShuffleStateObserved" not in ct:
+                      ct, _ = re.subn(
+                          r'(?m)^([ \t]*)(val\s+([A-Za-z0-9_]+)\s+by\s+[A-Za-z0-9_.]*shuffleModeEnabled\.collectAsState[^\n]*\n)',
+                          r'\1\2\1androidx.compose.runtime.LaunchedEffect(\3) {\n\1    com.music.spotui.ui.screens.VnShuffleGuard.onShuffleStateObserved(\3) { toggleShuffle() }\n\1}\n',
+                          ct,
+                          count=1
+                      )
+              if ct != orig_ct:
+                  ctrl_kt.write_text(ct)
 
           extra_c = ", ".join(f"Color(0xFF{c})" for c in ["E53935","FF5722","FF9800","FFC107","00BFA5","00BCD4","3F51B5","7C4DFF","E040FB","FF4081","64FFDA","FFAB91","B388FF","ECEFF1"])
           for kf in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
@@ -2250,172 +2292,177 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # 5. Inject VNEra settings cards directly into the REAL Settings categories (Lyrics, Appearance, Playback)
-          all_settings_candidates = sorted(
-              p for p in Path("app/src/main/java/com/music/spotui/ui").rglob("*Settings*.kt")
-              if p.name not in ("VnFrameRateManager.kt", "VnSettingsBackup.kt")
-          )
+          # 5. Inject each VNEra settings card directly into its exact Settings category (Lyrics, Appearance, Playback)
+          all_settings_files = [
+              p for p in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt"))
+              if "Settings" in p.name and p.name not in ("VnSettingsBackup.kt", "VnFrameRateManager.kt")
+          ]
 
           res_map: dict[str, set[str]] = {"lyrics": set(), "appearance": set(), "playback": set()}
           for xml_f in Path("app/src/main/res").rglob("*.xml"):
               xt = xml_f.read_text(errors="ignore")
               for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', xt):
                   k, val = m.group(1), m.group(2)
-                  if re.search(r'(?:Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Καραόκε|Karaoke)', val, re.I):
+                  kl = k.lower()
+                  if "lyric" in kl or re.search(r'(?:Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke)', val, re.I):
                       res_map["lyrics"].add(k)
-                  if re.search(r'(?:Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme|Διεπαφή|Interface)', val, re.I):
+                  if any(w in kl for w in ("appearance", "theme", "accent", "dynamic_color")) or re.search(r'(?:Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme)', val, re.I):
                       res_map["appearance"].add(k)
-                  if re.search(r'(?:Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση|Ήχος|Audio|Πρόγραμμα αναπαραγωγής|Player)', val, re.I):
+                  if any(w in kl for w in ("playback", "audio", "quality", "gapless", "normaliz")) or re.search(r'(?:Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση)', val, re.I):
                       res_map["playback"].add(k)
 
           def build_cat_regex(literals: str, keys: set[str]) -> str:
-              parts = [rf'"[^"]*(?:{literals})[^"]*"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in keys]
+              parts = [rf'"[^"]*(?:{literals})[^"]*"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in sorted(keys)]
               return "|".join(parts)
 
           cat_configs = [
               (
                   "lyrics",
                   "VnLyricsSettingsCard",
-                  build_cat_regex(r'Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Καραόκε|Karaoke', res_map["lyrics"]),
+                  build_cat_regex(r'Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke', res_map["lyrics"]),
                   "com.music.spotui.ui.screens.VnLyricsSettingsCard()"
               ),
               (
                   "appearance",
                   "VnAppearanceSettingsCard",
-                  build_cat_regex(r'Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme|Διεπαφή|Interface', res_map["appearance"]),
+                  build_cat_regex(r'Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme', res_map["appearance"]),
                   "com.music.spotui.ui.screens.VnAppearanceSettingsCard()"
               ),
               (
                   "playback",
                   "VnPlaybackSettingsCard",
-                  build_cat_regex(r'Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση|Ήχος|Audio|Πρόγραμμα αναπαραγωγής|Player', res_map["playback"]),
+                  build_cat_regex(r'Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση', res_map["playback"]),
                   "com.music.spotui.ui.screens.VnPlaybackSettingsCard()"
               ),
           ]
 
-          def inject_into_section(sp_file: Path, anchor_rx: str, comp_call: str) -> bool:
-              st = sp_file.read_text()
-              lines = st.splitlines(keepends=True)
-              is_lazy = "LazyColumn" in st
+          def is_inside_lazy_list_scope(lines: list[str], target_idx: int) -> bool:
+              # Parenthesis-aware scope stack so nested calls like PaddingValues(...) inside LazyColumn(...)
+              # never overwrite the enclosing LazyColumn / LazyListScope owner.
+              scope_stack: list[str] = []
+              pending_word = ""
+              paren_depth = 0
+              bracket_depth = 0
+              in_block_comment = False
 
-              for idx, line in enumerate(lines):
-                  if line.lstrip().startswith(("//", "/*", "*", "import ", "package ", "fun ", "object ", "class ")):
+              for li in range(target_idx):
+                  raw = lines[li]
+                  if in_block_comment:
+                      end_bc = raw.find("*/")
+                      if end_bc == -1:
+                          continue
+                      raw = raw[end_bc + 2:]
+                      in_block_comment = False
+                  if "/*" in raw:
+                      bc_start = raw.find("/*")
+                      bc_end = raw.find("*/", bc_start + 2)
+                      if bc_end != -1:
+                          raw = raw[:bc_start] + " " + raw[bc_end + 2:]
+                      else:
+                          raw = raw[:bc_start]
+                          in_block_comment = True
+
+                  clean = re.sub(r'"(?:\\.|[^"\\])*"', '""', raw.split("//")[0])
+
+                  # Detect LazyListScope extension functions (e.g. fun LazyListScope.appearanceSection() {)
+                  if paren_depth == 0 and re.search(r'\bfun\s+LazyListScope\s*\.', clean):
+                      pending_word = "LazyListScope"
+
+                  i_c = 0
+                  n_c = len(clean)
+                  while i_c < n_c:
+                      ch = clean[i_c]
+                      if ch.isalpha() or ch == '_':
+                          j_c = i_c + 1
+                          while j_c < n_c and (clean[j_c].isalnum() or clean[j_c] in ('_', '.')):
+                              j_c += 1
+                          ident = clean[i_c:j_c].split('.')[-1]
+                          if paren_depth == 0 and bracket_depth == 0 and ident not in ("val", "var", "if", "else", "for", "while", "when", "return", "private", "internal", "public", "fun"):
+                              pending_word = ident
+                          i_c = j_c
+                          continue
+                      if ch == '(':
+                          paren_depth += 1
+                      elif ch == ')':
+                          paren_depth = max(0, paren_depth - 1)
+                      elif ch == '[':
+                          bracket_depth += 1
+                      elif ch == ']':
+                          bracket_depth = max(0, bracket_depth - 1)
+                      elif ch == '{':
+                          scope_stack.append(pending_word if paren_depth == 0 else "")
+                          if paren_depth == 0:
+                              pending_word = ""
+                      elif ch == '}':
+                          if scope_stack:
+                              scope_stack.pop()
+                          if paren_depth == 0:
+                              pending_word = ""
+                      i_c += 1
+
+              if scope_stack and scope_stack[-1] in ("LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid", "LazyListScope"):
+                  return True
+
+              # Fallback check: inspect sibling lines at the same indentation inside the same block
+              target_indent = len(lines[target_idx]) - len(lines[target_idx].lstrip())
+              for back in range(target_idx - 1, max(-1, target_idx - 40), -1):
+                  s_b = lines[back].lstrip()
+                  if not s_b or s_b.startswith("//"):
                       continue
-                  if not re.search(anchor_rx, line, re.IGNORECASE):
-                      continue
-
-                  # Strategy A: Look upward (up to 6 lines) for a wrapping SettingsSection / SettingsGroup / Card / Surface / Column block
-                  for up in range(idx, max(-1, idx - 7), -1):
-                      if re.search(r'\b(?:SettingsSection|SettingsGroup|SettingsCard|PreferenceCategory|Card|Surface|Column)\b', lines[up]) and "{" in "".join(lines[up:idx + 2]):
-                          brace = 0
-                          opened = False
-                          for end_i in range(up, len(lines)):
-                              brace += lines[end_i].count("{") - lines[end_i].count("}")
-                              if "{" in lines[end_i]:
-                                  opened = True
-                              if opened and brace <= 0:
-                                  inner_ind = re.match(r'^(\s*)', lines[end_i]).group(1) + "    "
-                                  # If this section block itself wraps LazyColumn items, use item { ... }, else direct call
-                                  block_body = "".join(lines[up:end_i + 1])
-                                  if re.search(r'^\s*item\s*\{', block_body, re.M):
-                                      lines.insert(end_i, f"{inner_ind}item {{ {comp_call} }}\n")
-                                  else:
-                                      lines.insert(end_i, f"{inner_ind}{comp_call}\n")
-                                  sp_file.write_text("".join(lines))
-                                  return True
-
-                  # Strategy B: Inside a LazyColumn, find the end of the header item { ... } and insert item { comp_call } right after it
-                  if is_lazy:
-                      for up in range(idx, max(-1, idx - 8), -1):
-                          if re.match(r'^\s*(?:item|stickyHeader)\s*(?:\([^)]*\))?\s*\{', lines[up]):
-                              brace = 0
-                              opened = False
-                              for end_i in range(up, len(lines)):
-                                  brace += lines[end_i].count("{") - lines[end_i].count("}")
-                                  if "{" in lines[end_i]:
-                                      opened = True
-                                  if opened and brace <= 0:
-                                      ind = re.match(r'^(\s*)', lines[up]).group(1)
-                                      lines.insert(end_i + 1, f"{ind}item {{ {comp_call} }}\n")
-                                      sp_file.write_text("".join(lines))
-                                      return True
-
-                  # Strategy C: Direct composable sibling after a header Text/Row
-                  for down in range(idx + 1, min(idx + 12, len(lines))):
-                      if ")" in lines[down] and "{" not in lines[down]:
-                          ind = re.match(r'^(\s*)', lines[down]).group(1)
-                          if is_lazy:
-                              lines.insert(down + 1, f"{ind}item {{ {comp_call} }}\n")
-                          else:
-                              lines.insert(down + 1, f"{ind}{comp_call}\n")
-                          sp_file.write_text("".join(lines))
+                  ind_b = len(lines[back]) - len(s_b)
+                  if ind_b < target_indent and "{" in s_b:
+                      if re.search(r'\b(?:LazyColumn|LazyRow|LazyVerticalGrid|LazyListScope)\b', s_b):
                           return True
+                      break
+                  if ind_b == target_indent and re.match(r'^(?:item|items|stickyHeader)\s*(?:\(|\{)', s_b):
+                      return True
               return False
 
-          # First inject into dedicated category sub-screens if Revera splits them (e.g. AppearanceSettingsScreen.kt)
-          for sp_file in all_settings_candidates:
-              fname = sp_file.name.lower()
-              if fname in ("immersivesettingsscreen.kt", "settingsscreen.kt"):
+          for sp_file in all_settings_files:
+              st_initial = sp_file.read_text()
+              if not re.search(r'(?:LazyColumn|Column|SettingsSection|ImmersiveSettings|SettingsGroup)', st_initial):
                   continue
-              st = sp_file.read_text()
-              for cat_name, marker, _, comp_call in cat_configs:
-                  if cat_name in fname and marker not in st:
-                      lines = st.splitlines(keepends=True)
-                      if "LazyColumn" in st:
-                          for idx, l in enumerate(lines):
-                              if re.match(r'^\s*item\s*\{', l):
-                                  ind = re.match(r'^(\s*)', l).group(1)
-                                  lines.insert(idx, f"{ind}item {{ {comp_call} }}\n")
-                                  sp_file.write_text("".join(lines))
-                                  print(f"Injected {marker} into dedicated screen {sp_file}")
-                                  break
-                      else:
-                          m_col = re.search(r'(?m)^([ \t]*)Column\b[^{]*\{\s*\n', st)
-                          if m_col:
-                              ind = m_col.group(1) + "    "
-                              st = st.replace(m_col.group(0), f"{m_col.group(0)}{ind}{comp_call}\n", 1)
-                              sp_file.write_text(st)
-                              print(f"Injected {marker} into dedicated screen {sp_file}")
-
-          # Inject into main Settings screens by matching each category section
-          main_settings_files = [
-              Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"),
-              Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"),
-          ]
-          for sp_file in main_settings_files:
-              if not sp_file.exists():
-                  continue
-              injected_here = {"lyrics": False, "appearance": False, "playback": False}
               for cat_name, marker, anchor_rx, comp_call in cat_configs:
-                  if marker in sp_file.read_text():
-                      injected_here[cat_name] = True
-                      continue
-                  if inject_into_section(sp_file, anchor_rx, comp_call):
-                      injected_here[cat_name] = True
-                      print(f"Injected {marker} into {cat_name} category of {sp_file}")
-
-              # Only if a category wasn't matched at all in this screen, add the missing one cleanly
-              inc_lyr = "false" if injected_here["lyrics"] else "true"
-              inc_app = "false" if injected_here["appearance"] else "true"
-              inc_ply = "false" if injected_here["playback"] else "true"
-              if any(v == "true" for v in (inc_lyr, inc_app, inc_ply)):
                   st = sp_file.read_text()
-                  if "VnFpsSelectorCard" not in st:
-                      lines = st.splitlines(keepends=True)
-                      for i, l in enumerate(lines):
-                          s_line = l.lstrip()
-                          ind = l[:len(l) - len(s_line)]
-                          if s_line.startswith(("import ", "package ", "//", "/*", "*", "fun ", "object ", "class ")):
-                              continue
-                          if re.match(r'^item\b.*\{.*\bVn(?:Settings)?Backup\w*', s_line):
-                              lines.insert(i, f"{ind}item {{ com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyrics = {inc_lyr}, includeAppearance = {inc_app}, includePlayback = {inc_ply}) }}\n")
-                              sp_file.write_text("".join(lines))
-                              print(f"Injected fallback VnFpsSelectorCard into {sp_file}")
-                              break
-                          if re.match(r'^(?:com\.music\.spotui\.ui\.screens\.)?Vn(?:Settings)?Backup(?:\.[A-Za-z0-9_]+|\w*)\s*\(', s_line):
-                              lines.insert(i, f"{ind}com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyrics = {inc_lyr}, includeAppearance = {inc_app}, includePlayback = {inc_ply})\n")
-                              sp_file.write_text("".join(lines))
-                              print(f"Injected fallback VnFpsSelectorCard into {sp_file}")
+                  if marker in st:
+                      continue
+                  lines = st.splitlines(keepends=True)
+                  placed = False
+                  for idx, line in enumerate(lines):
+                      s_strip = line.lstrip()
+                      if s_strip.startswith(("//", "/*", "*", "import ", "package ", "fun ", "object ", "class ")):
+                          continue
+                      if re.search(anchor_rx, line, re.IGNORECASE):
+                          for k in range(idx + 1, min(idx + 55, len(lines))):
+                              ind_m = re.match(r'^(\s*)', lines[k])
+                              ind = ind_m.group(1) if ind_m else "    "
+                              if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', lines[k]):
+                                  lines.insert(k, f"{ind}item {{ {comp_call} }}\n")
+                                  sp_file.write_text("".join(lines))
+                                  placed = True
+                                  print(f"Injected {marker} into {cat_name} LazyColumn of {sp_file}")
+                                  break
+                              if re.match(r'^\s*\}\s*$', lines[k]):
+                                  block_slice = "".join(lines[max(0, idx - 8):k + 1])
+                                  if block_slice.count("{") <= block_slice.count("}"):
+                                      if is_inside_lazy_list_scope(lines, k):
+                                          lines.insert(k, f"{ind}    item {{ {comp_call} }}\n")
+                                      else:
+                                          lines.insert(k, f"{ind}    {comp_call}\n")
+                                      sp_file.write_text("".join(lines))
+                                      placed = True
+                                      print(f"Injected {marker} into {cat_name} section of {sp_file}")
+                                      break
+                              if re.match(r'^\s*(?:Spacer|HorizontalDivider)\s*\(', lines[k]) and k + 1 < len(lines) and re.match(r'^\s*(?:Text|Settings|Immersive|Surface|Card|Column|Row)\b', lines[k + 1]):
+                                  if is_inside_lazy_list_scope(lines, k + 1):
+                                      lines.insert(k + 1, f"{ind}item {{ {comp_call} }}\n")
+                                  else:
+                                      lines.insert(k + 1, f"{ind}{comp_call}\n")
+                                  sp_file.write_text("".join(lines))
+                                  placed = True
+                                  print(f"Injected {marker} after divider in {cat_name} of {sp_file}")
+                                  break
+                          if placed:
                               break
 
           for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
