@@ -1951,7 +1951,6 @@ jobs:
                   if paren <= 0 and "{" in stripped and j >= call_line_idx:
                       if re.search(r'\.\s*(?:graphicsLayer|drawBehind|drawWithContent|drawWithCache|pointerInput|clickable|combinedClickable)\s*(?:\([^)]*\))?\s*\{', stripped):
                           continue
-                      # If the next line has lambda parameters (e.g. `innerPadding ->`), insert AFTER that line
                       insert_idx = j
                       for look in range(j + 1, min(limit_idx + 1, j + 4)):
                           nxt = lines[look].split("//")[0].strip()
@@ -2327,7 +2326,7 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # 5. Inject each VNEra settings card directly into its exact Settings category (Lyrics, Appearance, Playback)
+          # 5. Inject each VNEra settings card ONLY into verified @Composable / LazyListScope contexts
           all_settings_files = [
               p for p in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt"))
               if "Settings" in p.name and p.name not in ("VnSettingsBackup.kt", "VnFrameRateManager.kt")
@@ -2371,87 +2370,221 @@ jobs:
               ),
           ]
 
-          def is_inside_lazy_list_scope(lines: list[str], target_idx: int) -> bool:
-              scope_stack: list[str] = []
-              pending_word = ""
-              paren_depth = 0
-              bracket_depth = 0
-              in_block_comment = False
+          COMPOSABLE_CONTAINERS = {
+              "Column", "Row", "Box", "BoxWithConstraints", "Surface", "Card", "ElevatedCard",
+              "OutlinedCard", "Scaffold", "ModalBottomSheet", "DropdownMenu", "AnimatedVisibility",
+              "AnimatedContent", "Crossfade", "CompositionLocalProvider", "ProvideTextStyle",
+              "item", "items", "itemsIndexed", "stickyHeader", "if", "else", "when"
+          }
+          LAZY_CONTAINERS = {
+              "LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid"
+          }
 
-              for li in range(target_idx):
-                  raw = lines[li]
-                  if in_block_comment:
-                      end_bc = raw.find("*/")
+          def analyze_composable_scopes(lines: list[str]) -> dict[int, str]:
+              """
+              Returns a mapping: line_idx -> 'COMPOSABLE' | 'LAZY_LIST'
+              ONLY for lines where a @Composable function call is 100% legal in Kotlin.
+              Any line inside a non-@Composable function, clickable {}, onClick = {},
+              remember {}, LaunchedEffect {}, forEach {}, etc. is excluded.
+              """
+              n = len(lines)
+              clean_lines = []
+              in_bc = False
+              for raw in lines:
+                  s = raw
+                  if in_bc:
+                      end_bc = s.find("*/")
                       if end_bc == -1:
+                          clean_lines.append("")
                           continue
-                      raw = raw[end_bc + 2:]
-                      in_block_comment = False
-                  if "/*" in raw:
-                      bc_start = raw.find("/*")
-                      bc_end = raw.find("*/", bc_start + 2)
-                      if bc_end != -1:
-                          raw = raw[:bc_start] + " " + raw[bc_end + 2:]
+                      s = s[end_bc + 2:]
+                      in_bc = False
+                  while "/*" in s:
+                      st_bc = s.find("/*")
+                      en_bc = s.find("*/", st_bc + 2)
+                      if en_bc != -1:
+                          s = s[:st_bc] + " " + s[en_bc + 2:]
                       else:
-                          raw = raw[:bc_start]
-                          in_block_comment = True
+                          s = s[:st_bc]
+                          in_bc = True
+                          break
+                  s = s.split("//")[0]
+                  s = re.sub(r'"(?:\\.|[^"\\])*"', '""', s)
+                  s = re.sub(r"'(?:\\.|[^'\\])'", "''", s)
+                  clean_lines.append(s)
 
-                  clean = re.sub(r'"(?:\\.|[^"\\])*"', '""', raw.split("//")[0])
+              valid_points: dict[int, str] = {}
 
-                  if paren_depth == 0 and re.search(r'\bfun\s+LazyListScope\s*\.', clean):
-                      pending_word = "LazyListScope"
-
-                  i_c = 0
-                  n_c = len(clean)
-                  while i_c < n_c:
-                      ch = clean[i_c]
-                      if ch.isalpha() or ch == '_':
-                          j_c = i_c + 1
-                          while j_c < n_c and (clean[j_c].isalnum() or clean[j_c] in ('_', '.')):
-                              j_c += 1
-                          ident = clean[i_c:j_c].split('.')[-1]
-                          if paren_depth == 0 and bracket_depth == 0 and ident not in ("val", "var", "if", "else", "for", "while", "when", "return", "private", "internal", "public", "fun"):
-                              pending_word = ident
-                          i_c = j_c
-                          continue
-                      if ch == '(':
-                          paren_depth += 1
-                      elif ch == ')':
-                          paren_depth = max(0, paren_depth - 1)
-                      elif ch == '[':
-                          bracket_depth += 1
-                      elif ch == ']':
-                          bracket_depth = max(0, bracket_depth - 1)
-                      elif ch == '{':
-                          scope_stack.append(pending_word if paren_depth == 0 else "")
-                          if paren_depth == 0:
-                              pending_word = ""
-                      elif ch == '}':
-                          if scope_stack:
-                              scope_stack.pop()
-                          if paren_depth == 0:
-                              pending_word = ""
-                      i_c += 1
-
-              for owner in reversed(scope_stack):
-                  if not owner:
+              # Find every @Composable fun declaration
+              i = 0
+              while i < n:
+                  m_fun = re.search(r'\bfun\s+(?:<[^>]+>\s*)?(?:[A-Za-z0-9_.]+\.)?([A-Za-z0-9_]+)\s*\(', clean_lines[i])
+                  if not m_fun:
+                      i += 1
                       continue
-                  if owner in ("LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid", "LazyListScope"):
-                      return True
-                  if owner in ("item", "items", "stickyHeader", "Column", "Row", "Box", "Surface", "Card", "Scaffold"):
-                      return False
-              return False
+
+                  # Verify @Composable annotation on preceding lines
+                  has_composable_ann = "@Composable" in clean_lines[i]
+                  if not has_composable_ann:
+                      checked = 0
+                      for back in range(i - 1, -1, -1):
+                          bt = clean_lines[back].strip()
+                          if not bt:
+                              continue
+                          if "@Composable" in bt:
+                              has_composable_ann = True
+                              break
+                          if any(tok in bt for tok in ("}", "{", ";")) or re.match(r'^(?:fun|class|object|interface|val|var|package|import)\b', bt):
+                              break
+                          checked += 1
+                          if checked >= 6:
+                              break
+
+                  # Find end of parameter list '(' ... ')'
+                  p_depth = 0
+                  saw_open_p = False
+                  sig_end_line = i
+                  body_open_line = None
+                  body_open_col = None
+                  is_expr_body = False
+                  for li in range(i, n):
+                      line_s = clean_lines[li]
+                      for ci, ch in enumerate(line_s):
+                          if not saw_open_p:
+                              if ch == '(':
+                                  saw_open_p = True
+                                  p_depth = 1
+                              continue
+                          if p_depth > 0:
+                              if ch == '(':
+                                  p_depth += 1
+                              elif ch == ')':
+                                  p_depth -= 1
+                          else:
+                              if ch == '=':
+                                  is_expr_body = True
+                                  break
+                              if ch == '{':
+                                  body_open_line = li
+                                  body_open_col = ci
+                                  break
+                      if is_expr_body or body_open_line is not None:
+                          sig_end_line = li
+                          break
+
+                  if not has_composable_ann or is_expr_body or body_open_line is None:
+                      i = sig_end_line + 1
+                      continue
+
+                  # Walk the @Composable function body tracking exact scope types
+                  scope_stack: list[str] = ["COMPOSABLE"]
+                  paren_depth = 0
+                  bracket_depth = 0
+                  last_ident = ""
+                  saw_equals_at_zero = False
+                  saw_arrow_at_zero = False
+
+                  for li in range(body_open_line, n):
+                      # Record validity at the START of line li (before tokens on line li mutate the stack)
+                      if paren_depth == 0 and bracket_depth == 0 and scope_stack and "NON_COMPOSABLE" not in scope_stack:
+                          valid_points[li] = scope_stack[-1]
+
+                      line_s = clean_lines[li]
+                      start_col = (body_open_col + 1) if li == body_open_line else 0
+                      idx_c = start_col
+                      L = len(line_s)
+                      while idx_c < L:
+                          ch = line_s[idx_c]
+                          if ch.isalpha() or ch == '_':
+                              j_c = idx_c + 1
+                              while j_c < L and (line_s[j_c].isalnum() or line_s[j_c] in ('_', '.')):
+                                  j_c += 1
+                              ident = line_s[idx_c:j_c].split('.')[-1]
+                              if paren_depth == 0 and bracket_depth == 0:
+                                  if ident not in ("val", "var", "private", "internal", "public", "fun", "return"):
+                                      last_ident = ident
+                              idx_c = j_c
+                              continue
+                          if ch == '-' and idx_c + 1 < L and line_s[idx_c + 1] == '>':
+                              if paren_depth == 0 and bracket_depth == 0:
+                                  saw_arrow_at_zero = True
+                              idx_c += 2
+                              continue
+                          if ch == '=':
+                              prev_ch = line_s[idx_c - 1] if idx_c > 0 else ''
+                              next_ch = line_s[idx_c + 1] if idx_c + 1 < L else ''
+                              if prev_ch not in ('=', '!', '<', '>') and next_ch not in ('=', '>'):
+                                  if paren_depth == 0 and bracket_depth == 0:
+                                      saw_equals_at_zero = True
+                              idx_c += 1
+                              continue
+                          if ch == ';':
+                              if paren_depth == 0 and bracket_depth == 0:
+                                  last_ident = ""
+                                  saw_equals_at_zero = False
+                                  saw_arrow_at_zero = False
+                              idx_c += 1
+                              continue
+                          if ch == '(':
+                              paren_depth += 1
+                          elif ch == ')':
+                              paren_depth = max(0, paren_depth - 1)
+                          elif ch == '[':
+                              bracket_depth += 1
+                          elif ch == ']':
+                              bracket_depth = max(0, bracket_depth - 1)
+                          elif ch == '{':
+                              if paren_depth != 0 or bracket_depth != 0:
+                                  scope_stack.append("NON_COMPOSABLE")
+                              elif saw_equals_at_zero:
+                                  scope_stack.append("COMPOSABLE" if last_ident == "content" else "NON_COMPOSABLE")
+                              elif last_ident in LAZY_CONTAINERS:
+                                  scope_stack.append("LAZY_LIST")
+                              elif last_ident in COMPOSABLE_CONTAINERS:
+                                  scope_stack.append("COMPOSABLE")
+                              elif saw_arrow_at_zero and scope_stack and scope_stack[-1] == "COMPOSABLE":
+                                  scope_stack.append("COMPOSABLE")
+                              else:
+                                  scope_stack.append("NON_COMPOSABLE")
+                              last_ident = ""
+                              saw_equals_at_zero = False
+                              saw_arrow_at_zero = False
+                          elif ch == '}':
+                              if scope_stack:
+                                  scope_stack.pop()
+                              if paren_depth == 0 and bracket_depth == 0:
+                                  last_ident = ""
+                                  saw_equals_at_zero = False
+                                  saw_arrow_at_zero = False
+                              if not scope_stack:
+                                  break
+                          idx_c += 1
+
+                      if not scope_stack:
+                          i = li + 1
+                          break
+                  else:
+                      i = n
+
+              return valid_points
+
+          placed_globally: dict[str, bool] = {"lyrics": False, "appearance": False, "playback": False}
 
           for sp_file in all_settings_files:
-              st_initial = sp_file.read_text()
-              if not re.search(r'(?:LazyColumn|Column|SettingsSection|ImmersiveSettings|SettingsGroup)', st_initial):
-                  continue
               for cat_name, marker, anchor_rx, comp_call in cat_configs:
                   st = sp_file.read_text()
                   if marker in st:
+                      placed_globally[cat_name] = True
                       continue
                   lines = st.splitlines(keepends=True)
+                  valid_scopes = analyze_composable_scopes(lines)
+                  if not valid_scopes:
+                      continue
+
                   placed = False
                   for idx, line in enumerate(lines):
+                      if idx not in valid_scopes:
+                          continue
                       s_strip = line.lstrip()
                       if s_strip.startswith(("//", "/*", "*", "import ", "package ", "fun ", "object ", "class ")):
                           continue
@@ -2460,39 +2593,68 @@ jobs:
                           continue
                       if re.search(anchor_rx, line, re.IGNORECASE):
                           anchor_indent = len(line) - len(s_strip)
-                          callback_brace_depth = 0
                           for k in range(idx + 1, min(idx + 60, len(lines))):
+                              if k not in valid_scopes:
+                                  continue
+                              scope_kind = valid_scopes[k]
                               raw_k = lines[k]
-                              clean_k = re.sub(r'"(?:\\.|[^"\\])*"', '""', raw_k.split("//")[0])
+                              clean_k = raw_k.split("//")[0]
                               ind_m = re.match(r'^(\s*)', raw_k)
                               ind = ind_m.group(1) if ind_m else "    "
                               ind_len = len(ind)
 
-                              # Track callback lambdas like onClick = { ... } so we never inject inside them
-                              if callback_brace_depth > 0:
-                                  callback_brace_depth += clean_k.count("{") - clean_k.count("}")
-                                  continue
-                              if re.search(r'=\s*\{', clean_k) and clean_k.count("{") > clean_k.count("}"):
-                                  callback_brace_depth = clean_k.count("{") - clean_k.count("}")
-                                  continue
-
-                              if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', clean_k) and ind_len <= anchor_indent:
+                              if scope_kind == "LAZY_LIST" and re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', clean_k) and ind_len <= anchor_indent:
                                   lines.insert(k, f"{ind}item {{ {comp_call} }}\n")
                                   sp_file.write_text("".join(lines))
                                   placed = True
+                                  placed_globally[cat_name] = True
                                   print(f"Injected {marker} into {cat_name} LazyColumn of {sp_file}")
                                   break
                               if re.match(r'^\s*\}\s*$', clean_k) and ind_len < anchor_indent:
-                                  if is_inside_lazy_list_scope(lines, k):
+                                  if scope_kind == "LAZY_LIST":
                                       lines.insert(k, f"{ind}    item {{ {comp_call} }}\n")
                                   else:
                                       lines.insert(k, f"{ind}    {comp_call}\n")
                                   sp_file.write_text("".join(lines))
                                   placed = True
+                                  placed_globally[cat_name] = True
                                   print(f"Injected {marker} into {cat_name} section of {sp_file}")
                                   break
                           if placed:
                               break
+
+          # Fallback: if any category wasn't placed in a dedicated @Composable section, append safely to main SettingsScreen / ImmersiveSettingsScreen
+          unplaced = [cfg for cfg in cat_configs if not placed_globally[cfg[0]]]
+          if unplaced:
+              for main_name in ("SettingsScreen.kt", "ImmersiveSettingsScreen.kt"):
+                  candidates = [p for p in all_settings_files if p.name == main_name]
+                  if not candidates:
+                      continue
+                  mp = candidates[0]
+                  for cat_name, marker, _, comp_call in unplaced:
+                      st = mp.read_text()
+                      if marker in st:
+                          continue
+                      lines = st.splitlines(keepends=True)
+                      valid_scopes = analyze_composable_scopes(lines)
+                      # Find the last closing brace inside a LAZY_LIST or top-level COMPOSABLE container
+                      best_k = None
+                      best_kind = None
+                      for k in range(len(lines) - 1, -1, -1):
+                          if k in valid_scopes and re.match(r'^\s*\}\s*$', lines[k].split("//")[0]):
+                              if valid_scopes[k] == "LAZY_LIST":
+                                  best_k, best_kind = k, "LAZY_LIST"
+                                  break
+                              elif best_k is None and valid_scopes[k] == "COMPOSABLE":
+                                  best_k, best_kind = k, "COMPOSABLE"
+                      if best_k is not None:
+                          ind = re.match(r'^(\s*)', lines[best_k]).group(1)
+                          if best_kind == "LAZY_LIST":
+                              lines.insert(best_k, f"{ind}    item {{ {comp_call} }}\n")
+                          else:
+                              lines.insert(best_k, f"{ind}    {comp_call}\n")
+                          mp.write_text("".join(lines))
+                          print(f"Fallback injected {marker} into {mp}")
 
           for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
               if ap.exists() and "vnAnimatedElement" not in ap.read_text():
