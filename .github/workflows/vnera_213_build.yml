@@ -1,16 +1,159 @@
-name: Build Vnera
+name: Build VNEra APK
 
 on:
   push:
-    branches: [main]
+    branches: [ main, work/source-review ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout main for Persistent Signing Key
         uses: actions/checkout@v4
+        with:
+          ref: main
+          path: _keystore_repo
+          fetch-depth: 1
+
+      - name: Prepare Persistent Debug Keystore
+        run: |
+          mkdir -p "$HOME/.android"
+          if [ ! -f "_keystore_repo/.github/vnera-debug.keystore" ]; then
+            mkdir -p "_keystore_repo/.github"
+            keytool -genkeypair -v \
+              -keystore "_keystore_repo/.github/vnera-debug.keystore" \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=VNEra Debug,O=VNEra,C=GR"
+            cd _keystore_repo
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .github/vnera-debug.keystore
+            git commit -m "Add persistent keystore for seamless VNEra updates"
+            git push || echo "Warning: Could not push keystore to main"
+            cd ..
+          fi
+          cp -f "_keystore_repo/.github/vnera-debug.keystore" "$HOME/.android/debug.keystore"
+          cp -f "_keystore_repo/.github/vnera-debug.keystore" "/tmp/vnera-debug.keystore"
+
+      - name: Checkout source-review
+        uses: actions/checkout@v4
+        with:
+          ref: work/source-review
+          fetch-depth: 0
+
+      - name: Merge VNEra Custom Changes onto Revera 1.0.8 Base
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old /tmp/merge_repo
+          mkdir -p /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old
+
+          [ -f "gradlew" ] && cp -f "gradlew" /tmp/vnera_gradle/
+          [ -f "gradlew.bat" ] && cp -f "gradlew.bat" /tmp/vnera_gradle/
+          if [ -d "gradle/wrapper" ]; then
+            mkdir -p /tmp/vnera_gradle/wrapper
+            cp -rf gradle/wrapper/* /tmp/vnera_gradle/wrapper/
+          fi
+          if [ -d "app/src/main/res" ]; then
+            cp -rn app/src/main/res/mipmap* /tmp/vnera_res/ 2>/dev/null || true
+            find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
+          fi
+
+          tar --exclude='.git' --exclude='.github' --exclude='_keystore_repo' --exclude='*.zip' -cf - . | tar -xf - -C /tmp/vnera_custom
+
+          git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
+          git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
+
+          git archive refs/tags/v1.0.8 | tar -x -C /tmp/revera_108
+          NEW_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1)
+          [ -n "$NEW_SETTINGS" ] || { echo "ERROR: Δεν βρέθηκε Gradle root στο Revera v1.0.8"; exit 1; }
+          NEW_BASE_ROOT=$(dirname "$NEW_SETTINGS")
+
+          python3 <<'PY'
+          import shutil, subprocess
+          from pathlib import Path
+
+          exts = {".kt", ".kts", ".xml", ".toml", ".properties", ".pro"}
+          vnera_files = {
+              str(p.relative_to("/tmp/vnera_custom")): p.read_bytes()
+              for p in Path("/tmp/vnera_custom").rglob("*")
+              if p.is_file() and p.suffix in exts and ".git" not in p.parts and ".github" not in p.parts
+          }
+          tags = [t for t in sorted(subprocess.check_output(["git", "tag", "-l", "v1.0.*"], text=True).splitlines()) if t != "v1.0.8"]
+          best_label, best_ref, best_score = "v1.0.7", "refs/tags/v1.0.7", -1
+          for t in tags:
+              tmp_dir = Path("/tmp/rev_cand")
+              shutil.rmtree(tmp_dir, ignore_errors=True)
+              tmp_dir.mkdir(parents=True)
+              subprocess.run(f"git archive refs/tags/{t} | tar -x -C {tmp_dir}", shell=True, check=True)
+              base_dir = tmp_dir / "base" if (tmp_dir / "base").exists() else tmp_dir
+              matches = sum(1 for rel, data in vnera_files.items() if (base_dir / rel).exists() and (base_dir / rel).read_bytes() == data)
+              if matches > best_score:
+                  best_label, best_ref, best_score = t, f"refs/tags/{t}", matches
+          print(f"SELECTED_OLD_BASE={best_label} ({best_score}/{len(vnera_files)} files matched)")
+          Path("/tmp/best_base_ref.txt").write_text(best_ref)
+          PY
+
+          git archive "$(cat /tmp/best_base_ref.txt)" | tar -x -C /tmp/revera_old
+          OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
+          OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
+
+          git init /tmp/merge_repo
+          cd /tmp/merge_repo
+          git config user.name "VNEra Merge Bot"
+          git config user.email "bot@vnera.local"
+
+          cp -a "$OLD_BASE_ROOT"/. .
+          git add -A && git commit -q -m "Old Revera base"
+
+          git checkout -q -b vnera-custom
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+          cp -a /tmp/vnera_custom/. .
+          git add -A && git commit -q -m "VNEra custom changes"
+
+          git checkout -q -b revera-108 master
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
+          cp -a "$NEW_BASE_ROOT"/. .
+          git add -A && git commit -q -m "Revera 1.0.8 base"
+
+          git cherry-pick -X theirs vnera-custom || {
+            git diff --name-only --diff-filter=U | xargs -r git checkout --theirs --
+            git add -A
+            git commit -q --no-edit
+          }
+          git diff --stat HEAD~1 HEAD
+
+          cd "$GITHUB_WORKSPACE"
+          find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" ! -name "_keystore_repo" -exec rm -rf {} +
+          tar --exclude='.git' -cf - -C /tmp/merge_repo . | tar -xf - -C .
+
+          mkdir -p app
+          cp -f "/tmp/vnera-debug.keystore" "app/vnera-debug.keystore"
+
+          if [ ! -f "gradlew" ] && [ -f "/tmp/vnera_gradle/gradlew" ]; then
+            cp -f /tmp/vnera_gradle/gradlew ./gradlew
+            [ -f "/tmp/vnera_gradle/gradlew.bat" ] && cp -f /tmp/vnera_gradle/gradlew.bat ./gradlew.bat
+            mkdir -p gradle/wrapper
+            [ -f "/tmp/vnera_gradle/wrapper/gradle-wrapper.jar" ] && cp -f /tmp/vnera_gradle/wrapper/gradle-wrapper.jar gradle/wrapper/
+            [ ! -f "gradle/wrapper/gradle-wrapper.properties" ] && [ -f "/tmp/vnera_gradle/wrapper/gradle-wrapper.properties" ] && cp -f /tmp/vnera_gradle/wrapper/gradle-wrapper.properties gradle/wrapper/
+          fi
+          chmod +x ./gradlew
+
+          if [ -d "/tmp/vnera_res" ] && [ -d "app/src/main/res" ]; then
+            cp -rf /tmp/vnera_res/mipmap* app/src/main/res/ 2>/dev/null || true
+            [ -d "/tmp/vnera_res/app/src/main/res" ] && cp -rf /tmp/vnera_res/app/src/main/res/* app/src/main/res/ 2>/dev/null || true
+          fi
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
 
       - name: Link SDK 37 & Fix Versions & Apply Patches
         run: |
@@ -31,11 +174,12 @@ jobs:
 
           import android.app.*
           import android.content.*
+          import android.media.AudioAttributes
+          import android.media.AudioFocusRequest
           import android.media.AudioManager
           import android.os.*
           import android.view.*
           import android.widget.Toast
-          import androidx.compose.animation.*
           import androidx.compose.animation.core.*
           import androidx.compose.foundation.*
           import androidx.compose.foundation.gestures.*
@@ -45,7 +189,6 @@ jobs:
           import androidx.compose.material.icons.Icons
           import androidx.compose.material.icons.rounded.Fullscreen
           import androidx.compose.material.icons.rounded.FullscreenExit
-          import androidx.compose.material.icons.rounded.Shuffle
           import androidx.compose.material3.*
           import androidx.compose.runtime.*
           import androidx.compose.ui.*
@@ -57,11 +200,14 @@ jobs:
           import androidx.compose.ui.platform.LocalConfiguration
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.platform.LocalDensity
-          import androidx.compose.ui.text.*
+          import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.unit.*
+          import androidx.compose.ui.window.Popup
+          import androidx.compose.ui.window.PopupProperties
           import androidx.core.view.*
           import kotlinx.coroutines.delay
+          import kotlinx.coroutines.launch
           import org.json.*
           import java.io.File
           import kotlin.math.*
@@ -75,10 +221,10 @@ jobs:
               const val KEY_ANIM_MODE = "element_animation_mode"
               const val KEY_ANIM_PAUSE_ON_PAUSE = "element_animation_pause_on_playback_pause"
               const val KEY_PLAYBACK_ALERTS = "playback_quality_order_alerts"
-              const val KEY_SHUFFLE_GUARD = "playback_shuffle_guard_enabled"
+              const val KEY_SHUFFLE_GUARD = "shuffle_guard_enabled"
+              const val KEY_AUDIO_FOCUS_PAUSE = "audio_focus_auto_pause"
               const val KEY_LAST_BACKUP_JSON = "last_loaded_backup_json"
               const val KEY_LAST_BACKUP_EXTENSIONS = "last_loaded_backup_extensions"
-              const val KEY_RESTORED_EXTENSIONS = "vnera_restored_extensions_list"
               const val KEY_LYRICS_BEAUTIFUL = "lyrics_beautiful_enabled"
               const val KEY_LYRICS_COLOR = "lyrics_custom_color_argb"
               const val KEY_LYRICS_FONT_SCALE = "lyrics_font_scale"
@@ -86,8 +232,9 @@ jobs:
               var targetFps by mutableIntStateOf(0); private set
               var lyricsImmersiveEnabled by mutableStateOf(true); private set
               var lyricsBarsHidden by mutableStateOf(false)
-              var isBlackFullscreenMode by mutableStateOf(false)
-              var lyricsViewVisibleCount by mutableIntStateOf(0)
+              var lyricsFullscreenOpen by mutableStateOf(false)
+              var onExternalOpenLyrics: (() -> Unit)? = null
+              var onExternalCloseLyrics: (() -> Unit)? = null
 
               var activeLyricsScrollState: ScrollableState? = null
               var savedPlayerLyricText by mutableStateOf("")
@@ -100,7 +247,8 @@ jobs:
               var elementAnimPauseOnPause by mutableStateOf(true); private set
               var isPlaybackPlaying by mutableStateOf(true)
               var playbackAlertsEnabled by mutableStateOf(true); private set
-              var shuffleGuardEnabled by mutableStateOf(false); private set
+              var shuffleGuardEnabled by mutableStateOf(true); private set
+              var audioFocusPauseEnabled by mutableStateOf(true); private set
               var cachedExtensionsText by mutableStateOf(""); private set
               var lyricsBeautifulEnabled by mutableStateOf(false); private set
               var lyricsCustomColorArgb by mutableLongStateOf(0L); private set
@@ -115,12 +263,6 @@ jobs:
                   "Peach" to 0xFFFFAB91L, "Silver" to 0xFFCFD8DCL
               )
 
-              private val blockedSettingPrefixes = listOf(
-                  "target_fps", "lyrics_", "custom_accent", "element_animation",
-                  "playback_", "last_loaded_backup", "vnera_", "theme", "accent",
-                  "dynamic_color", "oled", "shuffle", "repeat", "equalizer", "crossfade", "gapless"
-              )
-
               private fun prefs(c: Context) = c.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
               fun init(c: Context) = prefs(c).run {
@@ -131,7 +273,8 @@ jobs:
                   elementAnimMode = getInt(KEY_ANIM_MODE, 1).coerceIn(1, 3)
                   elementAnimPauseOnPause = getBoolean(KEY_ANIM_PAUSE_ON_PAUSE, true)
                   playbackAlertsEnabled = getBoolean(KEY_PLAYBACK_ALERTS, true)
-                  shuffleGuardEnabled = getBoolean(KEY_SHUFFLE_GUARD, false)
+                  shuffleGuardEnabled = getBoolean(KEY_SHUFFLE_GUARD, true)
+                  audioFocusPauseEnabled = getBoolean(KEY_AUDIO_FOCUS_PAUSE, true)
                   cachedExtensionsText = getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
                   lyricsBeautifulEnabled = getBoolean(KEY_LYRICS_BEAUTIFUL, false)
                   lyricsCustomColorArgb = getLong(KEY_LYRICS_COLOR, 0L)
@@ -151,11 +294,8 @@ jobs:
                   prefs(c).edit().putBoolean(KEY_ANIM_PAUSE_ON_PAUSE, pause).apply()
               }
               fun updatePlaybackAlerts(c: Context, en: Boolean) { playbackAlertsEnabled = en; prefs(c).edit().putBoolean(KEY_PLAYBACK_ALERTS, en).apply() }
-              fun updateShuffleGuard(c: Context, en: Boolean) {
-                  shuffleGuardEnabled = en
-                  prefs(c).edit().putBoolean(KEY_SHUFFLE_GUARD, en).apply()
-                  if (!en) VnShuffleGuard.reset()
-              }
+              fun updateShuffleGuard(c: Context, en: Boolean) { shuffleGuardEnabled = en; prefs(c).edit().putBoolean(KEY_SHUFFLE_GUARD, en).apply() }
+              fun updateAudioFocusPause(c: Context, en: Boolean) { audioFocusPauseEnabled = en; prefs(c).edit().putBoolean(KEY_AUDIO_FOCUS_PAUSE, en).apply() }
               fun updateLyricsBeautiful(c: Context, en: Boolean) { lyricsBeautifulEnabled = en; prefs(c).edit().putBoolean(KEY_LYRICS_BEAUTIFUL, en).apply() }
               fun updateLyricsCustomColor(c: Context, argb: Long) { lyricsCustomColorArgb = argb; prefs(c).edit().putLong(KEY_LYRICS_COLOR, argb).apply() }
               fun updateLyricsFontScale(c: Context, scale: Float) {
@@ -164,14 +304,33 @@ jobs:
                   prefs(c).edit().putFloat(KEY_LYRICS_FONT_SCALE, s).apply()
               }
 
-              fun openBlackLyricsFullscreen(act: Activity?) {
-                  isBlackFullscreenMode = true
+              fun openLyricsFullscreen(act: Activity?, onExpand: (() -> Unit)? = null) {
+                  lyricsFullscreenOpen = true
                   if (lyricsImmersiveEnabled) setSystemBarsHidden(act, true)
+                  onExpand?.invoke()
+                  onExternalOpenLyrics?.invoke()
               }
 
-              fun closeBlackLyricsFullscreen(act: Activity?) {
-                  isBlackFullscreenMode = false
+              fun closeLyricsFullscreen(act: Activity?, onCollapse: (() -> Unit)? = null) {
+                  lyricsFullscreenOpen = false
                   setSystemBarsHidden(act, false)
+                  onCollapse?.invoke()
+                  onExternalCloseLyrics?.invoke()
+              }
+
+              fun isSwipeToExpandLyricsEnabled(c: Context): Boolean {
+                  runCatching {
+                      File(c.applicationInfo.dataDir, "shared_prefs").listFiles()?.filter { it.name.endsWith(".xml") }?.forEach { f ->
+                          val all = c.applicationContext.getSharedPreferences(f.name.removeSuffix(".xml"), Context.MODE_PRIVATE).all
+                          for ((k, v) in all) {
+                              val kl = k.lowercase()
+                              if ((kl.contains("swipe") && kl.contains("lyric")) || (kl.contains("expand") && kl.contains("lyric"))) {
+                                  if (v is Boolean) return v
+                              }
+                          }
+                      }
+                  }
+                  return true
               }
 
               fun setSystemBarsHidden(act: Activity?, hidden: Boolean) {
@@ -233,6 +392,21 @@ jobs:
                               }
                               ed.commit()
                           }
+                      } else {
+                          File(c.applicationInfo.dataDir, "shared_prefs").listFiles()?.filter { it.name.endsWith(".xml") }?.forEach { f ->
+                              val sp = c.applicationContext.getSharedPreferences(f.name.removeSuffix(".xml"), Context.MODE_PRIVATE)
+                              val existing = sp.all; val ed = sp.edit(); var mod = false
+                              root.keys().forEach { k ->
+                                  when (val cur = existing[k]) {
+                                      is Boolean -> { ed.putBoolean(k, root.optBoolean(k, cur)); mod = true }
+                                      is Int -> { ed.putInt(k, root.optInt(k, cur)); mod = true }
+                                      is Long -> { ed.putLong(k, root.optLong(k, cur)); mod = true }
+                                      is Float -> { ed.putFloat(k, root.optDouble(k, cur.toDouble()).toFloat()); mod = true }
+                                      is String -> { ed.putString(k, root.optString(k, cur)); mod = true }
+                                  }
+                              }
+                              if (mod) ed.commit()
+                          }
                       }
                   } catch (_: Exception) {}
                   reload(c)
@@ -241,19 +415,13 @@ jobs:
               }
 
               fun recordBackupAndExtractExtensions(c: Context, raw: String) {
-                  val ext = extractExtensionsOnly(raw).also { cachedExtensionsText = it }
+                  val ext = extractExtensionsFromBackup(raw).also { cachedExtensionsText = it }
                   prefs(c).edit().putString(KEY_LAST_BACKUP_JSON, raw).putString(KEY_LAST_BACKUP_EXTENSIONS, ext).commit()
-              }
-
-              private fun isBlockedKey(key: String): Boolean {
-                  val kl = key.lowercase().trim()
-                  return blockedSettingPrefixes.any { kl.startsWith(it) || kl == it }
               }
 
               private fun formatExtEntry(name: String, url: String): String {
                   val cleanName = name.trim()
                   val cleanUrl = url.trim()
-                  if (cleanName.isNotEmpty() && isBlockedKey(cleanName)) return ""
                   return when {
                       cleanName.isNotEmpty() && cleanUrl.isNotEmpty() && !cleanName.equals(cleanUrl, true) -> "$cleanName - $cleanUrl"
                       cleanName.isNotEmpty() -> cleanName
@@ -265,11 +433,11 @@ jobs:
               private fun isRelevantExtUrl(u: String): Boolean {
                   val ul = u.lowercase()
                   if (!ul.startsWith("http://") && !ul.startsWith("https://")) return false
-                  if (ul.contains("vnsec2/vnera") || ul.contains("revera.caruno.wtf") || ul.contains("lrclib.net")) return false
+                  if (ul.contains("vnsec2/vnera") || ul.contains("revera.caruno.wtf")) return false
                   return true
               }
 
-              fun extractExtensionsOnly(raw: String): String {
+              fun extractExtensionsFromBackup(raw: String): String {
                   val trimmed = raw.trim()
                   if (trimmed.isEmpty()) return ""
                   val entries = LinkedHashMap<String, String>()
@@ -280,19 +448,25 @@ jobs:
                       if (formatted.isBlank()) return
                       val key = (url.ifBlank { name }).lowercase()
                       val existing = entries[key]
-                      if (existing == null || formatted.length > existing.length) entries[key] = formatted
+                      if (existing == null || formatted.length > existing.length) {
+                          entries[key] = formatted
+                      }
                   }
 
                   fun extractObjectEntry(obj: JSONObject): Boolean {
                       val nameKeys = listOf("name", "title", "label", "extensionName", "pluginName", "addonName", "repoName", "displayName")
                       val urlKeys = listOf("url", "repoUrl", "repositoryUrl", "sourceUrl", "link", "manifestUrl", "jsonUrl", "apkUrl", "downloadUrl", "uri", "href", "homepage", "repo")
-                      var foundName = nameKeys.firstNotNullOfOrNull { k -> obj.optString(k, "").trim().takeIf { it.isNotEmpty() && it != "null" && !isBlockedKey(it) } }.orEmpty()
+                      var foundName = nameKeys.firstNotNullOfOrNull { k -> obj.optString(k, "").trim().takeIf { it.isNotEmpty() && it != "null" } }.orEmpty()
                       if (foundName.isEmpty()) {
                           val idVal = obj.optString("id", "").trim()
-                          if (idVal.isNotEmpty() && idVal != "null" && !idVal.startsWith("http") && !isBlockedKey(idVal)) foundName = idVal
+                          if (idVal.isNotEmpty() && idVal != "null" && !idVal.startsWith("http")) foundName = idVal
                       }
-                      var foundUrl = urlKeys.firstNotNullOfOrNull { k -> obj.optString(k, "").trim().takeIf { isRelevantExtUrl(it) } }.orEmpty()
-                      if (foundUrl.isEmpty()) foundUrl = urlRegex.find(obj.toString())?.value?.takeIf(::isRelevantExtUrl).orEmpty()
+                      var foundUrl = urlKeys.firstNotNullOfOrNull { k ->
+                          obj.optString(k, "").trim().takeIf { isRelevantExtUrl(it) }
+                      }.orEmpty()
+                      if (foundUrl.isEmpty()) {
+                          foundUrl = urlRegex.find(obj.toString())?.value?.takeIf(::isRelevantExtUrl).orEmpty()
+                      }
                       if (foundName.isNotEmpty() || foundUrl.isNotEmpty()) {
                           addEntry(foundName, foundUrl)
                           return true
@@ -304,11 +478,9 @@ jobs:
                       when (node) {
                           is JSONObject -> {
                               val hl = hint.lowercase()
-                              if (hl == PREFS_NAME || isBlockedKey(hl)) return
-                              val isExtContext = listOf("extension", "addon", "plugin", "repo").any { hl.contains(it) }
+                              val isExtContext = listOf("extension", "addon", "plugin", "repo", "provider", "source").any { hl.contains(it) }
                               if (isExtContext && !node.has("t")) extractObjectEntry(node)
                               node.keys().forEach { k ->
-                                  if (k == PREFS_NAME || isBlockedKey(k)) return@forEach
                                   val v = node.opt(k)
                                   val kl = k.lowercase()
                                   val childIsExt = isExtContext || listOf("extension", "addon", "plugin", "repo").any { kl.contains(it) }
@@ -317,7 +489,8 @@ jobs:
                                           is JSONArray -> {
                                               for (i in 0 until v.length()) {
                                                   val el = v.opt(i)
-                                                  if (el is JSONObject) extractObjectEntry(el) else scan(el, k)
+                                                  if (el is JSONObject) extractObjectEntry(el)
+                                                  else scan(el, k)
                                               }
                                           }
                                           is JSONObject -> {
@@ -334,7 +507,9 @@ jobs:
                           is JSONArray -> {
                               for (i in 0 until node.length()) {
                                   val el = node.opt(i)
-                                  if (el is JSONObject && listOf("extension", "addon", "plugin", "repo").any { hint.lowercase().contains(it) }) extractObjectEntry(el)
+                                  if (el is JSONObject && listOf("extension", "addon", "plugin", "repo").any { hint.lowercase().contains(it) }) {
+                                      extractObjectEntry(el)
+                                  }
                                   scan(el, hint)
                               }
                           }
@@ -342,9 +517,10 @@ jobs:
                               val s = node.trim()
                               if ((s.startsWith("{") || s.startsWith("[")) && s.length > 2) {
                                   runCatching {
-                                      if (s.startsWith("{")) scan(JSONObject(s), hint) else scan(JSONArray(s), hint)
+                                      if (s.startsWith("{")) scan(JSONObject(s), hint)
+                                      else scan(JSONArray(s), hint)
                                   }
-                              } else if (listOf("extension", "addon", "plugin", "repo").any { hint.lowercase().contains(it) } && s.isNotEmpty() && s !in setOf("[]", "{}", "true", "false", "null") && !isBlockedKey(s)) {
+                              } else if (listOf("extension", "addon", "plugin", "repo").any { hint.lowercase().contains(it) } && s.isNotEmpty() && s !in setOf("[]", "{}", "true", "false", "null")) {
                                   val u = urlRegex.find(s)?.value.orEmpty()
                                   val n = if (u.isNotEmpty()) s.replace(u, "").trim(' ', '-', ':', '|', '"', '\'') else s
                                   addEntry(n, u)
@@ -354,17 +530,13 @@ jobs:
                   }
 
                   runCatching {
-                      when {
-                          trimmed.startsWith("{") -> scan(JSONObject(trimmed))
-                          trimmed.startsWith("[") -> scan(JSONArray(trimmed))
-                          else -> {
-                              trimmed.lines().map { it.trim() }.filter { it.isNotEmpty() }.forEach { line ->
-                                  val u = urlRegex.find(line)?.value.orEmpty()
-                                  val n = if (u.isNotEmpty()) line.replace(u, "").trim(' ', '-', ':', '|') else line
-                                  addEntry(n, u)
-                              }
-                          }
-                      }
+                      if (trimmed.startsWith("{")) scan(JSONObject(trimmed))
+                      else if (trimmed.startsWith("[")) scan(JSONArray(trimmed))
+                  }
+                  if (entries.isEmpty()) {
+                      urlRegex.findAll(trimmed).map { it.value }.filter {
+                          isRelevantExtUrl(it) && (it.contains("ext", true) || it.contains("repo", true) || listOf(".json", ".js", ".apk").any(it::endsWith))
+                      }.forEach { addEntry("", it) }
                   }
                   return entries.values.joinToString("\n")
               }
@@ -372,38 +544,22 @@ jobs:
               fun copyExtensionsToClipboard(c: Context) {
                   init(c)
                   val collected = LinkedHashSet<String>()
-                  // 1. Scan only extension-related SharedPreferences (never system settings)
                   runCatching {
-                      File(c.applicationInfo.dataDir, "shared_prefs").listFiles()
-                          ?.filter { it.name.endsWith(".xml") && it.name != "$PREFS_NAME.xml" }
-                          ?.forEach { f ->
-                              val sp = c.applicationContext.getSharedPreferences(f.name.removeSuffix(".xml"), Context.MODE_PRIVATE)
-                              val obj = JSONObject()
-                              sp.all.forEach { (k, v) ->
-                                  val kl = k.lowercase()
-                                  if (!isBlockedKey(kl) && listOf("extension", "addon", "plugin", "repo").any { kl.contains(it) }) {
-                                      when (v) {
-                                          is String -> obj.put(k, v)
-                                          is Set<*> -> obj.put(k, JSONArray(v.filterNotNull().toList()))
-                                      }
-                                  }
-                              }
-                              if (obj.length() > 0) {
-                                  extractExtensionsOnly(obj.toString()).lines().filter { it.isNotBlank() }.forEach(collected::add)
-                              }
-                          }
+                      val liveJson = exportAllPrefsJson(c).toString()
+                      extractExtensionsFromBackup(liveJson).lines().filter { it.isNotBlank() }.forEach(collected::add)
                   }
-                  // 2. Scan extension files/folders in filesDir
                   runCatching {
                       File(c.filesDir.path).walkTopDown().maxDepth(3)
                           .filter { it.isFile && (it.name.contains("ext", true) || it.name.contains("repo", true) || it.name.contains("plugin", true)) && it.length() in 2..500_000 }
                           .forEach { f ->
-                              extractExtensionsOnly(f.readText()).lines().filter { it.isNotBlank() }.forEach(collected::add)
+                              extractExtensionsFromBackup(f.readText()).lines().filter { it.isNotBlank() }.forEach(collected::add)
                           }
                   }
-                  // 3. Previously restored or backed up extensions
-                  prefs(c).getString(KEY_RESTORED_EXTENSIONS, "").orEmpty().lines().filter { it.isNotBlank() }.forEach(collected::add)
                   cachedExtensionsText.lines().filter { it.isNotBlank() }.forEach(collected::add)
+                  prefs(c).getString(KEY_LAST_BACKUP_JSON, "").orEmpty()
+                      .takeIf { it.isNotBlank() }
+                      ?.let(::extractExtensionsFromBackup)
+                      ?.lines()?.filter { it.isNotBlank() }?.forEach(collected::add)
 
                   val text = collected.joinToString("\n")
                   if (text.isBlank()) {
@@ -413,110 +569,24 @@ jobs:
                   (c.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("VNEra Extensions", text))
                   Toast.makeText(c, "Αντιγράφηκαν ${collected.size} extensions (όνομα & link) στο πρόχειρο", Toast.LENGTH_SHORT).show()
               }
-
-              fun restoreExtensionsOnly(c: Context, rawInput: String): Int {
-                  val extracted = extractExtensionsOnly(rawInput)
-                  val lines = extracted.lines().map { it.trim() }.filter { it.isNotEmpty() }
-                  if (lines.isEmpty()) return 0
-
-                  val urlRegex = Regex("""https?://[^\s"'<>\]\)]+""")
-                  val urls = lines.mapNotNull { urlRegex.find(it)?.value }.distinct()
-                  val names = lines.map { line ->
-                      val u = urlRegex.find(line)?.value.orEmpty()
-                      if (u.isNotEmpty()) line.replace(u, "").trim(' ', '-', ':', '|') else line
-                  }.filter { it.isNotEmpty() }.distinct()
-
-                  // Save in VNEra restored extensions list
-                  val existingSaved = prefs(c).getString(KEY_RESTORED_EXTENSIONS, "").orEmpty().lines().filter { it.isNotBlank() }
-                  val merged = (existingSaved + lines).distinct().joinToString("\n")
-                  prefs(c).edit()
-                      .putString(KEY_RESTORED_EXTENSIONS, merged)
-                      .putString(KEY_LAST_BACKUP_EXTENSIONS, merged)
-                      .commit()
-                  cachedExtensionsText = merged
-
-                  // Restore ONLY into extension/repo keys in app SharedPreferences (never touching system settings)
-                  runCatching {
-                      File(c.applicationInfo.dataDir, "shared_prefs").listFiles()
-                          ?.filter { it.name.endsWith(".xml") && it.name != "$PREFS_NAME.xml" }
-                          ?.forEach { f ->
-                              val sp = c.applicationContext.getSharedPreferences(f.name.removeSuffix(".xml"), Context.MODE_PRIVATE)
-                              val ed = sp.edit()
-                              var changed = false
-                              sp.all.forEach { (k, v) ->
-                                  val kl = k.lowercase()
-                                  if (isBlockedKey(kl)) return@forEach
-                                  val isRepoKey = listOf("repo", "repository").any { kl.contains(it) }
-                                  val isExtKey = listOf("extension", "plugin", "addon").any { kl.contains(it) }
-                                  if (isRepoKey && urls.isNotEmpty()) {
-                                      when (v) {
-                                          is Set<*> -> {
-                                              val next = LinkedHashSet<String>(v.filterIsInstance<String>())
-                                              next.addAll(urls)
-                                              ed.putStringSet(k, next); changed = true
-                                          }
-                                          is String -> if (v.trim().startsWith("[")) {
-                                              runCatching {
-                                                  val arr = JSONArray(v)
-                                                  val existingSet = (0 until arr.length()).map { arr.optString(it) }.toSet()
-                                                  urls.filter { it !in existingSet }.forEach { arr.put(it) }
-                                                  ed.putString(k, arr.toString()); changed = true
-                                              }
-                                          }
-                                      }
-                                  } else if (isExtKey && (names.isNotEmpty() || urls.isNotEmpty())) {
-                                      when (v) {
-                                          is Set<*> -> {
-                                              val next = LinkedHashSet<String>(v.filterIsInstance<String>())
-                                              next.addAll(names.ifEmpty { urls })
-                                              ed.putStringSet(k, next); changed = true
-                                          }
-                                      }
-                                  }
-                              }
-                              if (changed) ed.commit()
-                          }
-                  }
-                  return lines.size
-              }
           }
 
           object VnShuffleGuard {
-              var bannerMessage by mutableStateOf<String?>(null)
-              var userWantsShuffle by mutableStateOf(false)
-              var lastUserToggleAtMs by mutableLongStateOf(0L)
-              var onReenableShuffleAction: (() -> Unit)? = null
-              private var lastPopupAtMs = 0L
+              var userLockedShuffleState by mutableStateOf(false)
+              var lastUserToggleMs by mutableLongStateOf(0L)
 
-              fun reset() {
-                  userWantsShuffle = false
-                  bannerMessage = null
+              fun onUserExplicitShuffleToggle(targetEnabled: Boolean) {
+                  userLockedShuffleState = targetEnabled
+                  lastUserToggleMs = SystemClock.elapsedRealtime()
               }
 
-              fun onUserExplicitShuffleToggle(newShuffleState: Boolean) {
-                  lastUserToggleAtMs = SystemClock.elapsedRealtime()
-                  userWantsShuffle = newShuffleState
-              }
-
-              fun onObservedShuffleState(isShuffleOn: Boolean, reenableKeepingQueue: (() -> Unit)? = null) {
-                  if (reenableKeepingQueue != null) onReenableShuffleAction = reenableKeepingQueue
-                  if (!VnFpsPref.shuffleGuardEnabled) {
-                      userWantsShuffle = isShuffleOn
-                      return
+              fun shouldAllowShuffleChange(requestedEnabled: Boolean): Boolean {
+                  if (!VnFpsPref.shuffleGuardEnabled) return true
+                  if (SystemClock.elapsedRealtime() - lastUserToggleMs < 1200L) {
+                      userLockedShuffleState = requestedEnabled
+                      return true
                   }
-                  if (isShuffleOn) {
-                      userWantsShuffle = true
-                      return
-                  }
-                  val now = SystemClock.elapsedRealtime()
-                  // If shuffle turned OFF automatically (not by a direct user tap within 1.2s)
-                  if (userWantsShuffle && (now - lastUserToggleAtMs) > 1200L) {
-                      (reenableKeepingQueue ?: onReenableShuffleAction)?.invoke()
-                      if (now - lastPopupAtMs > 1800L) {
-                          lastPopupAtMs = now
-                          bannerMessage = "Η τυχαία σειρά επανενεργοποιήθηκε αυτόματα (διατηρήθηκε η ουρά σου)"
-                      }
-                  }
+                  return requestedEnabled == userLockedShuffleState
               }
           }
 
@@ -528,50 +598,6 @@ jobs:
                   return rawText
               }
               return VnFpsPref.savedPlayerLyricText.ifBlank { rawText }
-          }
-
-          @Composable
-          fun vnPlayerInlineLyricText(rawText: AnnotatedString): AnnotatedString {
-              val plain = rawText.text
-              val t = plain.trim()
-              val generic = setOf("", "στίχοι", "lyrics", "no lyrics", "δεν υπάρχουν στίχοι", "...")
-              if (t.lowercase() !in generic && t.length >= 2) {
-                  VnFpsPref.savedPlayerLyricText = plain
-              }
-              val enabled = VnFpsPref.lyricsBeautifulEnabled
-              val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
-              if (!enabled && abs(scale - 1.0f) < 0.01f) return rawText
-              val baseUserColor = vnPlayerInlineLyricColor(Color.White)
-              return buildAnnotatedString {
-                  append(rawText.text)
-                  rawText.spanStyles.forEach { range ->
-                      val s = range.item
-                      val origAlpha = if (s.color.isSpecified) s.color.alpha else 1.0f
-                      val mappedColor = if (enabled) {
-                          val targetAlpha = when {
-                              origAlpha < 0.35f -> 0.40f
-                              origAlpha < 0.85f -> 0.54f
-                              else -> 1.0f
-                          }
-                          baseUserColor.copy(alpha = targetAlpha)
-                      } else s.color
-                      val mappedSize = if (s.fontSize.isSpecified && abs(scale - 1.0f) >= 0.01f) {
-                          (s.fontSize.value * scale).sp
-                      } else s.fontSize
-                      addStyle(s.copy(color = mappedColor, fontSize = mappedSize), range.start, range.end)
-                  }
-                  if (enabled && rawText.spanStyles.isEmpty()) {
-                      addStyle(SpanStyle(color = baseUserColor), 0, rawText.length)
-                  }
-              }
-          }
-
-          @Composable
-          fun vnKaraokeWordColor(original: Color): Color {
-              if (!VnFpsPref.lyricsBeautifulEnabled) return original
-              val userColor = vnPlayerInlineLyricColor(original)
-              val alpha = if (original.isSpecified && original.alpha in 0.08f..0.92f) original.alpha else 0.96f
-              return userColor.copy(alpha = alpha)
           }
 
           @Composable
@@ -607,7 +633,7 @@ jobs:
                   VnFpsPref.staticAppPrimaryArgb != 0L -> VnFpsPref.staticAppPrimaryArgb
                   else -> 0xFF7C4DFFL
               }
-              return Color(argb).copy(alpha = 0.96f)
+              return Color(argb).copy(alpha = 0.95f)
           }
 
           @Composable
@@ -646,49 +672,33 @@ jobs:
           }
 
           @Composable
-          fun VnTrackLyricsScreenPresence() {
-              val c = LocalContext.current
-              val act = remember(c) { c.findActivity() }
-              DisposableEffect(Unit) {
-                  VnFpsPref.lyricsViewVisibleCount += 1
-                  onDispose {
-                      VnFpsPref.lyricsViewVisibleCount = (VnFpsPref.lyricsViewVisibleCount - 1).coerceAtLeast(0)
-                      if (VnFpsPref.lyricsViewVisibleCount == 0 && VnFpsPref.isBlackFullscreenMode) {
-                          VnFpsPref.closeBlackLyricsFullscreen(act)
-                      }
-                  }
-              }
-          }
-
-          @Composable
-          fun VnGlobalLyricsFullscreenButton() {
-              if (VnFpsPref.lyricsViewVisibleCount <= 0) return
-              val c = LocalContext.current
-              val act = remember(c) { c.findActivity() }
-              val isFs = VnFpsPref.isBlackFullscreenMode
-              Box(
-                  modifier = Modifier
-                      .fillMaxSize()
-                      .statusBarsPadding()
-                      .padding(top = 78.dp, end = 16.dp),
-                  contentAlignment = Alignment.TopEnd
+          fun VnLyricsFullscreenButton(
+              isFullscreen: Boolean,
+              onClick: () -> Unit
+          ) {
+              Popup(
+                  alignment = Alignment.TopEnd,
+                  offset = IntOffset(-36, 108),
+                  properties = PopupProperties(
+                      focusable = false,
+                      dismissOnBackPress = false,
+                      dismissOnClickOutside = false,
+                      clippingEnabled = false
+                  )
               ) {
                   Surface(
-                      onClick = {
-                          if (isFs) VnFpsPref.closeBlackLyricsFullscreen(act)
-                          else VnFpsPref.openBlackLyricsFullscreen(act)
-                      },
-                      modifier = Modifier.size(34.dp),
+                      onClick = onClick,
+                      modifier = Modifier.size(42.dp),
                       shape = CircleShape,
-                      color = Color.Black.copy(alpha = 0.62f),
-                      border = BorderStroke(1.dp, Color.White.copy(alpha = 0.26f))
+                      color = Color.Black.copy(alpha = 0.68f),
+                      border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
                   ) {
                       Box(contentAlignment = Alignment.Center) {
                           Icon(
-                              imageVector = if (isFs) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                              contentDescription = if (isFs) "Έξοδος από πλήρη οθόνη" else "Πλήρης οθόνη στίχων",
+                              imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                              contentDescription = if (isFullscreen) "Κλείσιμο πλήρους οθόνης" else "Πλήρης οθόνη στίχων",
                               tint = Color.White,
-                              modifier = Modifier.size(17.dp)
+                              modifier = Modifier.size(21.dp)
                           )
                       }
                   }
@@ -704,21 +714,35 @@ jobs:
               }
           }
 
+          fun Modifier.vnFullscreenSlideContainer(isClosing: Boolean): Modifier = composed {
+              val screenHeightPx = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+              val slideOffsetY by animateFloatAsState(
+                  targetValue = if (isClosing) screenHeightPx else 0f,
+                  animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                  label = "vn_lyrics_slide_down"
+              )
+              this
+                  .graphicsLayer { translationY = slideOffsetY }
+                  .background(Color.Black)
+          }
+
           fun Modifier.vnSmartLyricsSwipe(
               act: Activity?,
               isExpanded: Boolean,
               onExpandToFullscreen: (() -> Unit)? = null,
               onCollapseToPlayer: (() -> Unit)? = null
           ): Modifier = composed {
+              val c = LocalContext.current
               val density = LocalDensity.current
               val thresholdPx = with(density) { 64.dp.toPx() }
               var accumDown by remember { mutableFloatStateOf(0f) }
               var accumUp by remember { mutableFloatStateOf(0f) }
 
-              val nested = remember(act, thresholdPx) {
+              val nested = remember(act, isExpanded, thresholdPx) {
                   object : NestedScrollConnection {
                       override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                           if (source != NestedScrollSource.UserInput) return Offset.Zero
+                          if (!VnFpsPref.isSwipeToExpandLyricsEnabled(c)) return Offset.Zero
                           if (available.y < 0f && accumDown > 0f) accumDown = (accumDown + available.y).coerceAtLeast(0f)
                           if (available.y > 0f && accumUp > 0f) accumUp = (accumUp - available.y).coerceAtLeast(0f)
                           return Offset.Zero
@@ -726,23 +750,25 @@ jobs:
 
                       override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
                           if (source != NestedScrollSource.UserInput) return Offset.Zero
+                          if (!VnFpsPref.isSwipeToExpandLyricsEnabled(c)) return Offset.Zero
                           val listState = VnFpsPref.activeLyricsScrollState as? LazyListState
                           val atTop = listState == null || (!listState.canScrollBackward)
                           val atBottom = listState == null || (!listState.canScrollForward)
 
-                          if (available.y > 0f && atTop && !VnFpsPref.isBlackFullscreenMode) {
+                          if (available.y > 0f && atTop) {
                               accumDown += available.y
                               if (accumDown >= thresholdPx) {
                                   accumDown = 0f
-                                  VnFpsPref.openBlackLyricsFullscreen(act)
+                                  VnFpsPref.openLyricsFullscreen(act, onExpandToFullscreen)
                               }
                               return Offset(0f, available.y)
                           }
-                          if (available.y < 0f && atBottom && VnFpsPref.isBlackFullscreenMode) {
+
+                          if (available.y < 0f && atBottom) {
                               accumUp += -available.y
                               if (accumUp >= thresholdPx) {
                                   accumUp = 0f
-                                  VnFpsPref.closeBlackLyricsFullscreen(act)
+                                  VnFpsPref.closeLyricsFullscreen(act, onCollapseToPlayer)
                               }
                               return Offset(0f, available.y)
                           }
@@ -756,7 +782,7 @@ jobs:
                   .pointerInput(act) {
                       detectTapGestures { offset ->
                           val w = size.width.toFloat()
-                          if (w > 0f && offset.x in (w * 0.25f)..(w * 0.75f) && VnFpsPref.isBlackFullscreenMode) {
+                          if (w > 0f && offset.x in (w * 0.25f)..(w * 0.75f)) {
                               VnFpsPref.toggleSystemBars(act)
                           }
                       }
@@ -837,55 +863,6 @@ jobs:
               )
           }
 
-          @Composable
-          fun VnShuffleRestoredBanner() {
-              val msg = VnShuffleGuard.bannerMessage
-              LaunchedEffect(msg) {
-                  if (msg != null) {
-                      delay(3200L)
-                      VnShuffleGuard.bannerMessage = null
-                  }
-              }
-              AnimatedVisibility(
-                  visible = msg != null,
-                  enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
-                  exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut()
-              ) {
-                  Box(
-                      modifier = Modifier
-                          .fillMaxWidth()
-                          .statusBarsPadding()
-                          .padding(horizontal = 16.dp, vertical = 10.dp),
-                      contentAlignment = Alignment.TopCenter
-                  ) {
-                      Surface(
-                          shape = RoundedCornerShape(16.dp),
-                          color = MaterialTheme.colorScheme.inverseSurface,
-                          shadowElevation = 6.dp
-                      ) {
-                          Row(
-                              modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                              verticalAlignment = Alignment.CenterVertically,
-                              horizontalArrangement = Arrangement.spacedBy(10.dp)
-                          ) {
-                              Icon(
-                                  imageVector = Icons.Rounded.Shuffle,
-                                  contentDescription = null,
-                                  tint = MaterialTheme.colorScheme.inversePrimary,
-                                  modifier = Modifier.size(18.dp)
-                              )
-                              Text(
-                                  text = msg.orEmpty(),
-                                  style = MaterialTheme.typography.bodySmall,
-                                  fontWeight = FontWeight.SemiBold,
-                                  color = MaterialTheme.colorScheme.inverseOnSurface
-                              )
-                          }
-                      }
-                  }
-              }
-          }
-
           tailrec fun Context.findActivity(): Activity? = when (this) { is Activity -> this; is ContextWrapper -> baseContext.findActivity(); else -> null }
           @Suppress("DEPRECATION") private fun Activity.currentDisplay(): Display? = if (Build.VERSION.SDK_INT >= 30) display ?: windowManager?.defaultDisplay else windowManager?.defaultDisplay
 
@@ -910,13 +887,12 @@ jobs:
 
           @Composable
           fun VnLyricsFullscreenEffect() {
-              val c = LocalContext.current; val act = remember(c) { c.findActivity() }
+              val c = LocalContext.current; val act = remember(c) { c.findActivity() }; val imm = VnFpsPref.lyricsImmersiveEnabled
               LaunchedEffect(c) { VnFpsPref.init(c) }
-              DisposableEffect(act, VnFpsPref.isBlackFullscreenMode, VnFpsPref.lyricsImmersiveEnabled) {
-                  val hide = VnFpsPref.isBlackFullscreenMode && VnFpsPref.lyricsImmersiveEnabled
-                  VnFpsPref.setSystemBarsHidden(act, hide)
+              DisposableEffect(act, imm) {
+                  VnFpsPref.setSystemBarsHidden(act, imm)
                   onDispose {
-                      if (!VnFpsPref.isBlackFullscreenMode) VnFpsPref.setSystemBarsHidden(act, false)
+                      VnFpsPref.setSystemBarsHidden(act, false)
                   }
               }
           }
@@ -986,6 +962,54 @@ jobs:
                       if (am != null) VnFpsPref.isPlaybackPlaying = am.isMusicActive
                   }
               }
+              DisposableEffect(c, VnFpsPref.audioFocusPauseEnabled) {
+                  val am = c.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                  if (am == null || !VnFpsPref.audioFocusPauseEnabled) return@DisposableEffect onDispose {}
+                  var pausedByFocus = false
+                  val focusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+                      when (focusChange) {
+                          AudioManager.AUDIOFOCUS_LOSS,
+                          AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                          AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                              if (am.isMusicActive) {
+                                  pausedByFocus = true
+                                  am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE))
+                                  am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE))
+                              }
+                          }
+                          AudioManager.AUDIOFOCUS_GAIN -> {
+                              if (pausedByFocus) {
+                                  pausedByFocus = false
+                                  am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY))
+                                  am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY))
+                              }
+                          }
+                      }
+                  }
+                  val focusReq = if (Build.VERSION.SDK_INT >= 26) {
+                      AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                          .setAudioAttributes(
+                              AudioAttributes.Builder()
+                                  .setUsage(AudioAttributes.USAGE_MEDIA)
+                                  .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                                  .build()
+                          )
+                          .setOnAudioFocusChangeListener(focusListener)
+                          .build().also { am.requestAudioFocus(it) }
+                  } else {
+                      @Suppress("DEPRECATION")
+                      am.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN)
+                      null
+                  }
+                  onDispose {
+                      if (Build.VERSION.SDK_INT >= 26 && focusReq != null) {
+                          am.abandonAudioFocusRequest(focusReq)
+                      } else {
+                          @Suppress("DEPRECATION")
+                          am.abandonAudioFocus(focusListener)
+                      }
+                  }
+              }
               DisposableEffect(act) {
                   val a = act ?: return@DisposableEffect onDispose {}
                   val cb = object : Application.ActivityLifecycleCallbacks {
@@ -1015,8 +1039,6 @@ jobs:
                   }
               }
               VnPlaybackMonitorDialog()
-              VnGlobalLyricsFullscreenButton()
-              VnShuffleRestoredBanner()
           }
 
           @Composable
@@ -1099,7 +1121,7 @@ jobs:
 
                   VnNativeSwitchRow(
                       title = "Κάνε όμορφους τους στίχους",
-                      subtitle = "Οι στίχοι του Player (και σε καραόκε λέξη-λέξη) διατηρούν το χρώμα σου",
+                      subtitle = "Οι στίχοι του Player διατηρούν σταθερά το χρώμα που επέλεξες",
                       checked = VnFpsPref.lyricsBeautifulEnabled,
                       onCheckedChange = { VnFpsPref.updateLyricsBeautiful(c, it) }
                   )
@@ -1290,9 +1312,12 @@ jobs:
                               )
                           }
                       }
+
+                      VnCardDivider()
+
                       VnNativeSwitchRow(
-                          title = "Παύση κίνησης στην παύση τραγουδιού",
-                          subtitle = "Σταματά η κίνηση όταν κάνεις παύση στην αναπαραγωγή",
+                          title = "Παύση κίνησης στην παύση μουσικής",
+                          subtitle = "Σταματάει την κίνηση όταν η μουσική είναι σε παύση και συνεχίζει στο resume",
                           checked = VnFpsPref.elementAnimPauseOnPause,
                           onCheckedChange = { VnFpsPref.updateElementAnimPauseOnPause(c, it) }
                       )
@@ -1304,11 +1329,10 @@ jobs:
           fun VnPlaybackSettingsCard(modifier: Modifier = Modifier) {
               val c = LocalContext.current
               LaunchedEffect(c) { VnFpsPref.init(c) }
-
               VnNativeSettingsCard(modifier) {
                   VnNativeSwitchRow(
-                      title = "Ειδοποιήσεις Ποιότητας & Σειράς Πηγών",
-                      subtitle = "Ειδοποίηση όταν πέφτει η ποιότητα ή αλλάζει η σειρά πηγών",
+                      title = "Ειδοποίηση Ποιότητας & Σειράς Επεκτάσεων",
+                      subtitle = "Αναδυόμενο παράθυρο αν παίξει λάθος σειρά επέκτασης ή χαμηλότερη ποιότητα ήχου",
                       checked = VnFpsPref.playbackAlertsEnabled,
                       onCheckedChange = { VnFpsPref.updatePlaybackAlerts(c, it) }
                   )
@@ -1316,327 +1340,560 @@ jobs:
                   VnCardDivider()
 
                   VnNativeSwitchRow(
-                      title = "Διατήρηση Τυχαίας Σειράς (Shuffle Guard)",
-                      subtitle = "Κρατά ενεργό το shuffle αν βγει μόνο του, χωρίς να χαλάει η δική σου ουρά",
+                      title = "Προστασία Shuffle & Ουράς Αναπαραγωγής",
+                      subtitle = "Διατηρεί την επιλογή Shuffle και την ουρά αναπαραγωγής χωρίς αυτόματες αλλαγές",
                       checked = VnFpsPref.shuffleGuardEnabled,
                       onCheckedChange = { VnFpsPref.updateShuffleGuard(c, it) }
+                  )
+
+                  VnCardDivider()
+
+                  VnNativeSwitchRow(
+                      title = "Αυτόματη Παύση σε Κλήση / Άλλο Ήχο",
+                      subtitle = "Σταματάει τη μουσική όταν παίζει ήχος από άλλη εφαρμογή ή κλήση και συνεχίζει μετά",
+                      checked = VnFpsPref.audioFocusPauseEnabled,
+                      onCheckedChange = { VnFpsPref.updateAudioFocusPause(c, it) }
                   )
               }
           }
 
           @Composable
+          fun VnFpsSelectorCard(
+              modifier: Modifier = Modifier,
+              includeLyrics: Boolean = true,
+              includeAppearance: Boolean = true,
+              includePlayback: Boolean = true
+          ) {
+              Column(modifier = modifier.fillMaxWidth()) {
+                  if (includeLyrics) VnLyricsSettingsCard()
+                  if (includeAppearance) VnAppearanceSettingsCard()
+                  if (includePlayback) VnPlaybackSettingsCard()
+              }
+          }
+
+          @Composable
           fun VnCopyBackupExtensionsButton(modifier: Modifier = Modifier) {
-              val c = LocalContext.current
-              LaunchedEffect(c) { VnFpsPref.init(c) }
-              var showRestoreDialog by remember { mutableStateOf(false) }
-              var restoreInput by remember { mutableStateOf("") }
-
+              val c = LocalContext.current; LaunchedEffect(c) { VnFpsPref.init(c) }
               VnNativeSettingsCard(modifier) {
-                  Column(
-                      modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                      verticalArrangement = Arrangement.spacedBy(10.dp)
+                  Row(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .clickable { VnFpsPref.copyExtensionsToClipboard(c) }
+                          .padding(vertical = 12.dp),
+                      verticalAlignment = Alignment.CenterVertically
                   ) {
-                      Row(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .clickable { VnFpsPref.copyExtensionsToClipboard(c) }
-                              .padding(vertical = 6.dp),
-                          verticalAlignment = Alignment.CenterVertically,
-                          horizontalArrangement = Arrangement.SpaceBetween
-                      ) {
-                          Column(Modifier.weight(1f)) {
-                              Text(
-                                  text = "Αντιγραφή Extensions στο Clipboard",
-                                  style = MaterialTheme.typography.titleMedium,
-                                  fontWeight = FontWeight.SemiBold,
-                                  color = MaterialTheme.colorScheme.onSurface
-                              )
-                              Spacer(Modifier.height(2.dp))
-                              Text(
-                                  text = "Αντιγράφει μόνο τα ονόματα & links των επεκτάσεων (όχι ρυθμίσεις)",
-                                  style = MaterialTheme.typography.bodySmall,
-                                  color = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
-                          }
+                      Column(Modifier.weight(1f)) {
                           Text(
-                              text = "Αντιγραφή",
-                              style = MaterialTheme.typography.labelLarge,
-                              fontWeight = FontWeight.Bold,
-                              color = MaterialTheme.colorScheme.primary
+                              text = "Αντιγραφή Extensions στο Clipboard",
+                              style = MaterialTheme.typography.titleMedium,
+                              fontWeight = FontWeight.SemiBold,
+                              color = MaterialTheme.colorScheme.onSurface
                           )
-                      }
-
-                      VnCardDivider()
-
-                      Row(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .clickable {
-                                  val clip = (c.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)
-                                      ?.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-                                  restoreInput = clip
-                                  showRestoreDialog = true
-                              }
-                              .padding(vertical = 6.dp),
-                          verticalAlignment = Alignment.CenterVertically,
-                          horizontalArrangement = Arrangement.SpaceBetween
-                      ) {
-                          Column(Modifier.weight(1f)) {
-                              Text(
-                                  text = "Επαναφορά Extensions (Μόνο Επεκτάσεις)",
-                                  style = MaterialTheme.typography.titleMedium,
-                                  fontWeight = FontWeight.SemiBold,
-                                  color = MaterialTheme.colorScheme.onSurface
-                              )
-                              Spacer(Modifier.height(2.dp))
-                              Text(
-                                  text = "Επαναφέρει μόνο τις επεκτάσεις από το πρόχειρο, χωρίς ρυθμίσεις συστήματος",
-                                  style = MaterialTheme.typography.bodySmall,
-                                  color = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
-                          }
+                          Spacer(Modifier.height(2.dp))
                           Text(
-                              text = "Επαναφορά",
-                              style = MaterialTheme.typography.labelLarge,
-                              fontWeight = FontWeight.Bold,
-                              color = MaterialTheme.colorScheme.primary
+                              text = "Αντιγράφει τα ονόματα και τα links των επεκτάσεων ώστε να ξαναμπούν",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
                           )
                       }
                   }
               }
-
-              if (showRestoreDialog) {
-                  AlertDialog(
-                      onDismissRequest = { showRestoreDialog = false },
-                      title = { Text("Επαναφορά Extensions", fontWeight = FontWeight.Bold) },
-                      text = {
-                          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                              Text(
-                                  "Επικόλλησε τα ονόματα / links των επεκτάσεων (ή backup JSON). Θα επαναφερθούν ΜΟΝΟ οι επεκτάσεις:",
-                                  style = MaterialTheme.typography.bodySmall
-                              )
-                              OutlinedTextField(
-                                  value = restoreInput,
-                                  onValueChange = { restoreInput = it },
-                                  modifier = Modifier.fillMaxWidth().heightIn(min = 110.dp, max = 220.dp),
-                                  placeholder = { Text("Όνομα Extension - https://...") }
-                              )
-                          }
-                      },
-                      confirmButton = {
-                          TextButton(onClick = {
-                              val count = VnFpsPref.restoreExtensionsOnly(c, restoreInput)
-                              showRestoreDialog = false
-                              if (count > 0) {
-                                  Toast.makeText(c, "Επαναφέρθηκαν $count extensions!", Toast.LENGTH_SHORT).show()
-                                  c.findActivity()?.let { act ->
-                                      Handler(Looper.getMainLooper()).postDelayed({
-                                          if (!act.isFinishing && !act.isDestroyed) act.recreate()
-                                      }, 350L)
-                                  }
-                              } else {
-                                  Toast.makeText(c, "Δεν βρέθηκαν έγκυρα extensions", Toast.LENGTH_SHORT).show()
-                              }
-                          }) { Text("Επαναφορά") }
-                      },
-                      dismissButton = {
-                          TextButton(onClick = { showRestoreDialog = false }) { Text("Ακύρωση") }
-                      }
-                  )
-              }
           }
           EOF
 
-          python3 - <<'PY'
-          import os, re, glob
+          python3 <<'PY'
+          import os, re
+          from pathlib import Path
 
-          # 1. Inject VnFrameRateGuard into MainActivity
-          for p in glob.glob("app/src/main/java/**/MainActivity.kt", recursive=True):
-              with open(p, "r", encoding="utf-8") as f: s = f.read()
-              if "VnFrameRateGuard()" not in s:
-                  s = re.sub(r'(setContent\s*\{)', r'\1\n        com.music.spotui.ui.screens.VnFrameRateGuard()', s, count=1)
-                  with open(p, "w", encoding="utf-8") as f: f.write(s)
+          has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
+          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "214001"))
+          target_agp = "9.1.0" if has_sdk_37 else "8.7.2"
 
-          # 2. Hook Backup Export / Import (rich JSON export + restore)
-          for p in glob.glob("app/src/main/java/**/*.kt", recursive=True):
-              if "VnFrameRateManager.kt" in p: continue
-              with open(p, "r", encoding="utf-8") as f: s = f.read()
-              orig = s
-              if "VnSettingsBackup" in s and "VnCopyBackupExtensionsButton" not in s:
-                  s = re.sub(
-                      r'(\bVnSettingsBackup\s*\([^\n]*\))',
-                      r'\1\n    com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()',
-                      s,
-                      count=1
+          for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
+              if p.exists():
+                  t = p.read_text().replace("2.4.10", "2.2.20").replace("2.4.21", "2.2.20").replace("9.4.1", target_agp)
+                  if not has_sdk_37:
+                      t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', r'\g<1> = "35"', t)
+                  p.write_text(t)
+
+          if not has_sdk_37:
+              for gf in Path(".").rglob("*.gradle.kts"):
+                  t = gf.read_text()
+                  tn = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', r'\g<1>.set(35)', re.sub(r'(compileSdk|targetSdk)\s*=\s*37', r'\g<1> = 35', t))
+                  if t != tn: gf.write_text(tn)
+
+          for sp in Path("app/src/main/res").rglob("strings.xml"):
+              sx = sp.read_text()
+              sxn = re.sub(r'<string name="app_name"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', sx)
+              if sx != sxn: sp.write_text(sxn)
+
+          gradle = Path("app/build.gradle.kts")
+          if gradle.exists():
+              t = gradle.read_text()
+              t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.4"', t)
+              t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
+              if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
+                  t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
+              if "vnera-debug.keystore" not in t:
+                  t += '\nandroid {\n    signingConfigs { getByName("debug") { storeFile = file("vnera-debug.keystore"); storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android" } }\n    buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("debug") } }\n}\n'
+              if "META-INF/versions/9/OSGI-INF/MANIFEST.MF" not in t:
+                  t += '\nandroid { packaging { resources { excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"; excludes += "META-INF/versions/9/module-info.class" } } }\n'
+              gradle.write_text(t)
+
+          upd = Path("app/src/main/java/com/music/spotui/data/api/UpdateChecker.kt")
+          if upd.exists():
+              ut = upd.read_text()
+              mc = []
+              if re.search(r'(?<![.\w])UPDATE_BASE_URL\b', ut) and not re.search(r'\bval\s+UPDATE_BASE_URL\b', ut):
+                  mc.append('private const val UPDATE_BASE_URL = "https://api.github.com/repos/vnsec2/VNEra"')
+              if re.search(r'(?<![.\w])PROJECT_URL\b', ut) and not re.search(r'\bval\s+PROJECT_URL\b', ut):
+                  mc.append('private const val PROJECT_URL = "https://github.com/vnsec2/VNEra"')
+              if mc:
+                  lines = ut.splitlines()
+                  idx = max((i for i, l in enumerate(lines) if l.startswith("import ")), default=0)
+                  lines.insert(idx + 1, "\n" + "\n".join(mc))
+                  upd.write_text("\n".join(lines) + "\n")
+
+          cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
+          if cast_msg.exists():
+              lines = cast_msg.read_text().splitlines()
+              ti = min(36, len(lines) - 1)
+              if "return" in lines[ti]:
+                  fi = next((i for i in range(ti, -1, -1) if re.search(r'\bfun\b', lines[i])), None)
+                  if fi is not None:
+                      paren = 0; eq_l = eq_c = None
+                      for i in range(fi, ti + 1):
+                          for ci, ch in enumerate(lines[i]):
+                              if ch == '(': paren += 1
+                              elif ch == ')': paren -= 1
+                              elif ch == '=' and paren == 0 and (lines[i][ci-1:ci] not in ('=','!','<','>')) and (lines[i][ci+1:ci+2] not in ('=','>')):
+                                  eq_l, eq_c = i, ci; break
+                          if eq_l is not None: break
+                      if eq_l is not None:
+                          ind = re.match(r'^(\s*)', lines[fi]).group(1)
+                          b = p = br = 0; hb = False; el = eq_l
+                          for i in range(eq_l, len(lines)):
+                              cp = (lines[i][eq_c+1:] if i == eq_l else lines[i]).split('//')[0]
+                              if cp.strip(): hb = True
+                              for ch in cp:
+                                  if ch == '{': b += 1
+                                  elif ch == '}': b -= 1
+                                  elif ch == '(': p += 1
+                                  elif ch == ')': p -= 1
+                                  elif ch == '[': br += 1
+                                  elif ch == ']': br -= 1
+                              if hb and b <= 0 and p <= 0 and br <= 0 and i >= ti and not (lines[i+1].lstrip() if i+1 < len(lines) else '').startswith(('.', '?.', '?:', '&&', '||')):
+                                  el = i; break
+                          beq, aeq = lines[eq_l][:eq_c].rstrip(), lines[eq_l][eq_c+1:].lstrip()
+                          if aeq: lines[eq_l] = f"{beq} {{\n{ind}    return {aeq}"
+                          else: lines[eq_l] = f"{beq} {{"; lines[eq_l+1] = f"{ind}    return " + lines[eq_l+1].lstrip()
+                          lines[el] += f"\n{ind}}}"
+                          cast_msg.write_text("\n".join(lines) + "\n")
+
+          def hook_lazy_cols(src, register_fn="VnRegisterLyricsScrollState"):
+              if register_fn in src: return src
+              lines, out, i = src.splitlines(keepends=True), [], 0
+              while i < len(lines):
+                  m = re.match(r'^(\s*)LazyColumn\s*\(', lines[i])
+                  if m:
+                      block, paren = [lines[i]], lines[i].count("(") - lines[i].count(")")
+                      while paren > 0 and i + 1 < len(lines):
+                          i += 1; block.append(lines[i]); paren += lines[i].count("(") - lines[i].count(")")
+                      ms = re.search(r'\bstate\s*=\s*([A-Za-z0-9_.]+)', "".join(block))
+                      if ms: out.append(f"{m.group(1)}com.music.spotui.ui.screens.{register_fn}({ms.group(1)})\n")
+                      out.extend(block)
+                  else: out.append(lines[i])
+                  i += 1
+              return "".join(out)
+
+          # 1. ImmersivePlayer lyrics state hook
+          p2 = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
+          if p2.exists():
+              ps = p2.read_text()
+              ps = hook_lazy_cols(ps, "VnRememberPlayerPreviewListState")
+              m_state = re.search(r'(?m)^([ \t]*)var\s+(showLyrics|isLyricsExpanded|showFullLyrics|lyricsExpanded)\s+by\s+remember[^\n]*\n', ps)
+              if m_state and "onExternalOpenLyrics" not in ps:
+                  ind = m_state.group(1)
+                  vname = m_state.group(2)
+                  hook_code = (
+                      f"{m_state.group(0)}"
+                      f"{ind}androidx.compose.runtime.SideEffect {{\n"
+                      f"{ind}    com.music.spotui.ui.screens.VnFpsPref.onExternalOpenLyrics = {{ {vname} = true }}\n"
+                      f"{ind}    com.music.spotui.ui.screens.VnFpsPref.onExternalCloseLyrics = {{ {vname} = false }}\n"
+                      f"{ind}    com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen = {vname}\n"
+                      f"{ind}}}\n"
                   )
-              if s != orig:
-                  with open(p, "w", encoding="utf-8") as f: f.write(s)
+                  ps = ps.replace(m_state.group(0), hook_code, 1)
+              p2.write_text(ps)
 
-          # 3. Track Lyrics Screen presence & wrap black fullscreen background cleanly
-          for target in ["LyricsScreen.kt", "ImmersiveLyricsPanel.kt"]:
-              for p in glob.glob(f"app/src/main/java/**/{target}", recursive=True):
-                  with open(p, "r", encoding="utf-8") as f: s = f.read()
-                  orig = s
-                  # Remove any duplicate VnLyricsFullscreenButton calls (now rendered once globally)
-                  s = re.sub(r'^\s*(?:com\.music\.spotui\.ui\.screens\.)?VnLyricsFullscreenButton\s*\([^)]*\)\s*\n', '', s, flags=re.M)
-                  s = re.sub(r'\.vnFullscreenSlideContainer\([^)]*\)', '', s)
-                  # Track presence when lyrics screen/panel is composed
-                  m_fn = re.search(r'(@Composable\s+(?:public\s+|internal\s+)?fun\s+(?:LyricsScreen|ImmersiveLyricsPanel)\s*\([^{]*\{)', s)
-                  if m_fn and "VnTrackLyricsScreenPresence()" not in s:
-                      s = s[:m_fn.end()] + "\n    com.music.spotui.ui.screens.VnTrackLyricsScreenPresence()\n    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()" + s[m_fn.end():]
-                  if s != orig:
-                      with open(p, "w", encoding="utf-8") as f: f.write(s)
-                      print(f"Patched lyrics presence in {p}")
-
-          # 4. Patch inline player lyrics (both plain String and Karaoke AnnotatedString / word-by-word)
-          for target in ["PlayerControls.kt", "ImmersivePlayer.kt"]:
-              for p in glob.glob(f"app/src/main/java/**/{target}", recursive=True):
-                  with open(p, "r", encoding="utf-8") as f: s = f.read()
-                  orig = s
-                  # Patch Text(...) inside lyric preview blocks to support both String and AnnotatedString karaoke
-                  def patch_lyric_text_call(m):
-                      call = m.group(0)
-                      if "vnPlayerInlineLyricText" in call:
-                          return call
-                      # Wrap first text argument
-                      call = re.sub(
-                          r'(\bText\s*\(\s*(?:text\s*=\s*)?)([^,\n)]+)',
-                          r'\1com.music.spotui.ui.screens.vnPlayerInlineLyricText(\2)',
-                          call,
-                          count=1
-                      )
-                      return call
-
-                  # Target lyric-related composables/blocks
-                  lines = s.splitlines()
-                  in_lyric_ctx = 0
-                  for idx, line in enumerate(lines):
-                      if re.search(r'(lyric|karaoke|syncedLine|currentLine)', line, re.I):
-                          in_lyric_ctx = 18
-                      if in_lyric_ctx > 0:
-                          in_lyric_ctx -= 1
-                          if re.search(r'\bText\s*\(', line) and "vnPlayerInlineLyricText" not in line:
-                              lines[idx] = re.sub(
-                                  r'(\bText\s*\(\s*(?:text\s*=\s*)?)([^,\n)]+)',
-                                  r'\1com.music.spotui.ui.screens.vnPlayerInlineLyricText(\2)',
-                                  line,
-                                  count=1
-                              )
-                          if "color =" in line and "vnKaraokeWordColor" not in line and "vnPlayerInlineLyricColor" not in line:
-                              lines[idx] = re.sub(
-                                  r'(\bcolor\s*=\s*)([^,\n)]+)',
-                                  r'\1com.music.spotui.ui.screens.vnKaraokeWordColor(\2)',
-                                  lines[idx],
-                                  count=1
-                              )
-                  s = "\n".join(lines)
-                  if s != orig:
-                      with open(p, "w", encoding="utf-8") as f: f.write(s)
-                      print(f"Patched inline & karaoke lyrics in {p}")
-
-          # 5. Inject VNEra settings strictly into the exact category sections of Settings screens
-          settings_files = [
-              p for p in glob.glob("app/src/main/java/**/*.kt", recursive=True)
-              if os.path.basename(p) in ("ImmersiveSettingsScreen.kt", "SettingsScreen.kt")
-          ]
-
-          cat_specs = [
-              ("lyrics", ["lyrics", "στίχοι", "lrclib", "synced"], "com.music.spotui.ui.screens.VnLyricsSettingsCard()"),
-              ("appearance", ["appearance", "εμφάνιση", "accent", "dynamic", "oled"], "com.music.spotui.ui.screens.VnAppearanceSettingsCard()"),
-              ("playback", ["playback", "αναπαραγωγή", "gapless", "crossfade", "normalization", "audio_quality"], "com.music.spotui.ui.screens.VnPlaybackSettingsCard()"),
-          ]
-
-          for sp_file in settings_files:
-              with open(sp_file, "r", encoding="utf-8") as f:
-                  src = f.read()
-              orig_src = src
-
-              for cat_name, keywords, card_call in cat_specs:
-                  if card_call in src:
-                      continue
-                  lines = src.splitlines()
-                  best_insert_idx = None
-                  best_is_lazy = False
-
-                  # Search composable functions or when-branches for each category
-                  for i, line in enumerate(lines):
-                      ll = line.lower()
-                      # Match category header, function declaration, or route/enum branch
-                      if any(kw in ll for kw in keywords) and not any(b in ll for b in ["vnsettingsbackup", "vnera", "import", "export"]):
-                          # Look forward up to 60 lines for the enclosing LazyColumn or scrollable Column
-                          for j in range(i, min(len(lines), i + 60)):
-                              lj = lines[j]
-                              if re.search(r'\bLazyColumn\s*\(', lj):
-                                  # Find matching closing brace of LazyColumn
-                                  depth = 0
-                                  started = False
-                                  for k in range(j, len(lines)):
-                                      depth += lines[k].count("{") - lines[k].count("}")
-                                      if "{" in lines[k]: started = True
-                                      if started and depth <= 0:
-                                          best_insert_idx = k
-                                          best_is_lazy = True
+          # 2. LyricsScreen.kt fullscreen & slide-down
+          lf = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
+          if lf.exists():
+              s0 = lf.read_text()
+              s1 = hook_lazy_cols(s0, "VnRegisterLyricsScrollState")
+              if "vnSmartLyricsSwipe" not in s1:
+                  lines = s1.splitlines(keepends=True)
+                  for i in range(len(lines)):
+                      if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', lines[i]):
+                          paren = 0; se = None
+                          for j in range(i, min(i + 25, len(lines))):
+                              paren += lines[j].count("(") - lines[j].count(")")
+                              if paren <= 0 and "{" in lines[j]: se = j; break
+                          if se is not None and re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit', "".join(lines[i:se+1])):
+                              d = 0; be = None
+                              for k in range(se, len(lines)):
+                                  d += lines[k].count("{") - lines[k].count("}")
+                                  if d <= 0: be = k; break
+                              if be is not None and ".fillMaxSize()" in "".join(lines[se:be+1]):
+                                  lines[se] += (
+                                      "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
+                                      "    val vnLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
+                                      "    var vnClosingDown by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }\n"
+                                      "    val vnCloseScope = androidx.compose.runtime.rememberCoroutineScope()\n"
+                                      "    val vnTriggerClose: () -> Unit = {\n"
+                                      "        if (!vnClosingDown) {\n"
+                                      "            vnClosingDown = true\n"
+                                      "            vnCloseScope.launch {\n"
+                                      "                kotlinx.coroutines.delay(220L)\n"
+                                      "                com.music.spotui.ui.screens.VnFpsPref.closeLyricsFullscreen(vnLyricsActivity) { onClose() }\n"
+                                      "            }\n"
+                                      "        }\n"
+                                      "    }\n"
+                                      "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, onClick = vnTriggerClose)\n"
+                                  )
+                                  for k in range(se + 1, be + 1):
+                                      if ".fillMaxSize()" in lines[k]:
+                                          lines[k] = lines[k].replace(
+                                              ".fillMaxSize()",
+                                              ".fillMaxSize().then(Modifier.vnFullscreenSlideContainer(vnClosingDown)).then(Modifier.vnSmartLyricsSwipe(vnLyricsActivity, isExpanded = true, onCollapseToPlayer = vnTriggerClose))",
+                                              1
+                                          )
                                           break
+                                  s1 = "".join(lines)
+                                  s1 = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnFullscreenSlideContainer\nimport com.music.spotui.ui.screens.vnSmartLyricsSwipe\nimport kotlinx.coroutines.launch', s1, count=1)
                                   break
-                              elif re.search(r'\bColumn\s*\(', lj) and ("verticalScroll" in lj or "Modifier" in lj):
-                                  depth = 0
-                                  started = False
-                                  for k in range(j, len(lines)):
-                                      depth += lines[k].count("{") - lines[k].count("}")
-                                      if "{" in lines[k]: started = True
-                                      if started and depth <= 0:
-                                          best_insert_idx = k
-                                          best_is_lazy = False
-                                          break
-                                  break
-                          if best_insert_idx is not None:
+              if s1 != s0: lf.write_text(s1)
+
+          # 3. ImmersiveLyricsPanel.kt fullscreen & slide-down
+          il = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
+          if il.exists():
+              t0 = il.read_text()
+              t1 = hook_lazy_cols(t0, "VnRegisterLyricsScrollState")
+              if "vnSmartLyricsSwipe" not in t1 and ".fillMaxSize()" in t1:
+                  lines = t1.splitlines(keepends=True)
+                  for i in range(len(lines)):
+                      if re.search(r'\bfun\s+ImmersiveLyricsPanel\b', lines[i]):
+                          paren = 0; se = None
+                          for j in range(i, min(i + 25, len(lines))):
+                              paren += lines[j].count("(") - lines[j].count(")")
+                              if paren <= 0 and "{" in lines[j]: se = j; break
+                          if se is not None:
+                              sig = "".join(lines[i:se+1])
+                              has_expand = bool(re.search(r'\bonExpand\s*:', sig))
+                              has_collapse = bool(re.search(r'\bonCollapse\s*:', sig))
+                              has_close = bool(re.search(r'\bonClose\s*:', sig))
+                              has_is_exp = re.search(r'\b(isExpanded|expanded|isFullscreen)\s*:', sig)
+                              expand_expr = "onExpand()" if has_expand else ""
+                              collapse_expr = "onCollapse()" if has_collapse else ("onClose()" if has_close else "")
+                              is_fs_expr = f"({has_is_exp.group(1)} || com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen)" if has_is_exp else "com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen"
+                              lines[se] += (
+                                  "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
+                                  "    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
+                                  "    var vnImmClosingDown by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }\n"
+                                  "    val vnImmScope = androidx.compose.runtime.rememberCoroutineScope()\n"
+                                  f"    val vnIsFullscreen = {is_fs_expr}\n"
+                                  "    val vnOnOpenFs: () -> Unit = {\n"
+                                  "        vnImmClosingDown = false\n"
+                                  f"        com.music.spotui.ui.screens.VnFpsPref.openLyricsFullscreen(vnImmLyricsActivity) {{ {expand_expr} }}\n"
+                                  "    }\n"
+                                  "    val vnOnCloseFs: () -> Unit = {\n"
+                                  "        if (!vnImmClosingDown) {\n"
+                                  "            vnImmClosingDown = true\n"
+                                  "            vnImmScope.launch {\n"
+                                  "                kotlinx.coroutines.delay(220L)\n"
+                                  f"                com.music.spotui.ui.screens.VnFpsPref.closeLyricsFullscreen(vnImmLyricsActivity) {{ {collapse_expr} }}\n"
+                                  "                vnImmClosingDown = false\n"
+                                  "            }\n"
+                                  "        }\n"
+                                  "    }\n"
+                                  "    com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, onClick = { if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() })\n"
+                              )
+                              for k in range(se + 1, len(lines)):
+                                  if ".fillMaxSize()" in lines[k]:
+                                      lines[k] = lines[k].replace(
+                                          ".fillMaxSize()",
+                                          ".fillMaxSize().then(if (vnIsFullscreen) Modifier.vnFullscreenSlideContainer(vnImmClosingDown) else Modifier).then(Modifier.vnSmartLyricsSwipe(vnImmLyricsActivity, isExpanded = vnIsFullscreen, onExpandToFullscreen = vnOnOpenFs, onCollapseToPlayer = vnOnCloseFs))",
+                                          1
+                                      )
+                                      break
+                              t1 = "".join(lines)
+                              t1 = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnFullscreenSlideContainer\nimport com.music.spotui.ui.screens.vnSmartLyricsSwipe\nimport kotlinx.coroutines.launch', t1, count=1)
                               break
+              if t1 != t0: il.write_text(t1)
 
-                  if best_insert_idx is not None:
-                      indent = re.match(r'^(\s*)', lines[best_insert_idx]).group(1) + "    "
-                      injection = f"{indent}item {{ {card_call} }}" if best_is_lazy else f"{indent}{card_call}"
-                      lines.insert(best_insert_idx, injection)
-                      src = "\n".join(lines)
-                      print(f"Injected {card_call} into {cat_name} category of {sp_file}")
+          # 4. Inline Player Lyrics preservation, color & font size
+          def wrap_arg_call(call_src: str, param_name: str, wrapper_fn: str, default_expr: str | None = None) -> tuple[str, bool]:
+              m = re.search(rf'\b{param_name}\s*=\s*', call_src)
+              if not m:
+                  if default_expr is not None:
+                      close_idx = call_src.rfind(")")
+                      if close_idx != -1:
+                          before = call_src[:close_idx].rstrip()
+                          comma = "" if before.endswith("(") or before.endswith(",") else ", "
+                          return f"{before}{comma}{param_name} = {wrapper_fn}({default_expr}){call_src[close_idx:]}", True
+                  return call_src, False
+              start_val = m.end()
+              if wrapper_fn in call_src[start_val:start_val + len(wrapper_fn) + 45]:
+                  return call_src, False
+              depth_p = depth_b = depth_c = 0
+              end_val = len(call_src)
+              for idx_c in range(start_val, len(call_src)):
+                  ch = call_src[idx_c]
+                  if ch == '(': depth_p += 1
+                  elif ch == ')':
+                      if depth_p == 0 and depth_b == 0 and depth_c == 0:
+                          end_val = idx_c
+                          break
+                      depth_p -= 1
+                  elif ch == '[': depth_b += 1
+                  elif ch == ']': depth_b -= 1
+                  elif ch == '{': depth_c += 1
+                  elif ch == '}': depth_c -= 1
+                  elif ch == ',' and depth_p == 0 and depth_b == 0 and depth_c == 0:
+                      end_val = idx_c
+                      break
+              expr = call_src[start_val:end_val].strip()
+              if not expr:
+                  return call_src, False
+              return f"{call_src[:start_val]}{wrapper_fn}({expr}){call_src[end_val:]}", True
 
-              if src != orig_src:
-                  with open(sp_file, "w", encoding="utf-8") as f:
-                      f.write(src)
+          def patch_inline_player_lyrics(path: Path):
+              if not path.exists() or path.name in ("VnFrameRateManager.kt", "LyricsScreen.kt", "ImmersiveLyricsPanel.kt"):
+                  return
+              src = path.read_text()
+              if "vnPlayerInlineLyricColor" in src:
+                  return
+              lines = src.splitlines(keepends=True)
+              changed = False
+              for idx, line in enumerate(lines):
+                  if re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›")', line):
+                      win_start = max(0, idx - 22)
+                      win_end = min(len(lines), idx + 15)
+                      win_txt = "".join(lines[win_start:win_end])
+                      if re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', win_txt, re.IGNORECASE):
+                          k = win_start
+                          while k < win_end:
+                              if re.search(r'\bText\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
+                                  p_cnt = 0
+                                  t_end = k
+                                  for j in range(k, min(len(lines), k + 18)):
+                                      p_cnt += lines[j].count("(") - lines[j].count(")")
+                                      if p_cnt <= 0:
+                                          t_end = j
+                                          break
+                                  call_block = "".join(lines[k:t_end + 1])
+                                  new_block, c0 = wrap_arg_call(call_block, "text", "com.music.spotui.ui.screens.vnPlayerInlineLyricText")
+                                  new_block, c1 = wrap_arg_call(new_block, "color", "com.music.spotui.ui.screens.vnPlayerInlineLyricColor", "androidx.compose.material3.LocalContentColor.current")
+                                  if "fontSize" in new_block:
+                                      new_block, c2 = wrap_arg_call(new_block, "fontSize", "com.music.spotui.ui.screens.vnScaleLyricFontSize")
+                                  elif "style" in new_block:
+                                      new_block, c2 = wrap_arg_call(new_block, "style", "com.music.spotui.ui.screens.vnScaleLyricTextStyle")
+                                  else:
+                                      new_block, c2 = wrap_arg_call(new_block, "fontSize", "com.music.spotui.ui.screens.vnScaleLyricFontSize", "androidx.compose.ui.unit.TextUnit.Unspecified")
+                                  if c0 or c1 or c2:
+                                      lines[k:t_end + 1] = [new_block]
+                                      changed = True
+                                      break
+                              k += 1
+                          if changed:
+                              break
+              if changed:
+                  path.write_text("".join(lines))
+                  print(f"Patched inline player lyrics in {path}")
 
-          # 6. Hook Shuffle Guard into Player / Queue controllers without altering custom user queue
-          for p in glob.glob("app/src/main/java/**/*.kt", recursive=True):
-              if "VnFrameRateManager.kt" in p: continue
-              with open(p, "r", encoding="utf-8") as f: s = f.read()
-              orig = s
-              if re.search(r'\btoggleShuffle\s*\(', s):
-                  s = re.sub(
-                      r'(fun\s+toggleShuffle\s*\([^{]*\{)',
-                      r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!shuffleEnabled)',
-                      s,
+          for ui_kt in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
+              patch_inline_player_lyrics(ui_kt)
+
+          # Track isPlaying state & hook Shuffle Guard
+          for ctrl_kt in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
+              if ctrl_kt.name == "VnFrameRateManager.kt":
+                  continue
+              ct = ctrl_kt.read_text()
+              orig_ct = ct
+              if "isPlaying" in ct and "VnFpsPref.isPlaybackPlaying" not in ct and "@Composable" in ct:
+                  ct, _ = re.subn(
+                      r'(?m)^([ \t]*)(if\s*\(\s*isPlaying\s*\))',
+                      r'\1com.music.spotui.ui.screens.VnFpsPref.isPlaybackPlaying = isPlaying\n\1\2',
+                      ct,
                       count=1
                   )
-              if s != orig:
-                  with open(p, "w", encoding="utf-8") as f: f.write(s)
-                  print(f"Hooked Shuffle Guard in {p}")
+              if re.search(r'\bfun\s+toggleShuffle\s*\(', ct) and "VnShuffleGuard" not in ct:
+                  ct, _ = re.subn(
+                      r'(fun\s+toggleShuffle\s*\([^{]*\{)',
+                      r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(true)',
+                      ct,
+                      count=1
+                  )
+              if ct != orig_ct:
+                  ctrl_kt.write_text(ct)
+
+          extra_c = ", ".join(f"Color(0xFF{c})" for c in ["E53935","FF5722","FF9800","FFC107","00BFA5","00BCD4","3F51B5","7C4DFF","E040FB","FF4081","64FFDA","FFAB91","B388FF","ECEFF1"])
+          for kf in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
+              if kf.name == "VnFrameRateManager.kt": continue
+              o = kf.read_text()
+              u = re.sub(r'listOf\(((?:\s*Color\([^)]+\)\s*,?)+)\s*\)', lambda m: f"listOf({m.group(1).rstrip()}{'' if m.group(1).rstrip().endswith(',') else ','} {extra_c}\n)" if m.group(1).count("Color(") >= 3 and "0xFFE53935" not in m.group(1) else m.group(0), o)
+              if u != o: kf.write_text(u)
+
+          for tf in sorted(Path("app/src/main/java/com/music/spotui/ui/theme").rglob("*.kt")):
+              tt = tf.read_text()
+              if "MaterialTheme(" in tt and "customAccentColorArgb" not in tt:
+                  tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
+                  if n > 0: tf.write_text(tn)
+
+          # 5. Inject VNEra settings cards ONLY into actual Settings screens
+          res_map: dict[str, set[str]] = {"lyrics": set(), "appearance": set(), "playback": set()}
+          for xml_f in Path("app/src/main/res").rglob("*.xml"):
+              xt = xml_f.read_text(errors="ignore")
+              for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', xt):
+                  k, val = m.group(1), m.group(2)
+                  if re.search(r'(?:Lyrics preview lines|Swipe to expand lyrics|Προεπισκόπηση στίχων|Λέξη προς λέξη)', val, re.I):
+                      res_map["lyrics"].add(k)
+                  if re.search(r'(?:Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Εμφάνιση|Appearance)', val, re.I):
+                      res_map["appearance"].add(k)
+                  if re.search(r'(?:Audio quality|Ποιότητα ήχου|Gapless|Normalization|Κανονικοποίηση|Αναπαραγωγή|Playback)', val, re.I):
+                      res_map["playback"].add(k)
+
+          def build_cat_regex(literals: str, keys: set[str]) -> str:
+              parts = [rf'"[^"]*(?:{literals})[^"]*"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in keys]
+              return "|".join(parts)
+
+          cat_configs = [
+              ("lyrics", "VnLyricsSettingsCard", build_cat_regex(r'Lyrics preview lines|Swipe to expand lyrics|Προεπισκόπηση στίχων|Λέξη προς λέξη', res_map["lyrics"]), "com.music.spotui.ui.screens.VnLyricsSettingsCard()"),
+              ("appearance", "VnAppearanceSettingsCard", build_cat_regex(r'Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Εμφάνιση|Appearance', res_map["appearance"]), "com.music.spotui.ui.screens.VnAppearanceSettingsCard()"),
+              ("playback", "VnPlaybackSettingsCard", build_cat_regex(r'Audio quality|Ποιότητα ήχου|Gapless|Normalization|Κανονικοποίηση|Αναπαραγωγή|Playback', res_map["playback"]), "com.music.spotui.ui.screens.VnPlaybackSettingsCard()"),
+          ]
+
+          settings_files = [
+              p for p in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt"))
+              if "Settings" in p.name and p.name not in ("VnSettingsBackup.kt",)
+          ]
+          injected_cats = {"lyrics": False, "appearance": False, "playback": False}
+
+          for cat_name, marker, anchor_rx, comp_call in cat_configs:
+              for sp_file in settings_files:
+                  st = sp_file.read_text()
+                  if marker in st:
+                      injected_cats[cat_name] = True
+                      break
+                  lines = st.splitlines(keepends=True)
+                  for idx, line in enumerate(lines):
+                      if line.lstrip().startswith(("//", "/*", "*", "import ", "package ")):
+                          continue
+                      if re.search(anchor_rx, line, re.IGNORECASE):
+                          for k in range(idx + 1, min(idx + 45, len(lines))):
+                              ind_m = re.match(r'^(\s*)', lines[k])
+                              ind = ind_m.group(1) if ind_m else "    "
+                              if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', lines[k]):
+                                  lines.insert(k, f"{ind}item {{ {comp_call} }}\n")
+                                  sp_file.write_text("".join(lines))
+                                  injected_cats[cat_name] = True
+                                  print(f"Injected {marker} into {cat_name} section of {sp_file}")
+                                  break
+                              if re.match(r'^\s*(?:Spacer|HorizontalDivider)\s*\(', lines[k]) and k + 1 < len(lines) and re.match(r'^\s*(?:Text|Settings|Immersive|Surface|Card|Column|Row)\b', lines[k + 1]):
+                                  lines.insert(k + 1, f"{ind}{comp_call}\n")
+                                  sp_file.write_text("".join(lines))
+                                  injected_cats[cat_name] = True
+                                  print(f"Injected {marker} into {cat_name} column of {sp_file}")
+                                  break
+                          if injected_cats[cat_name]:
+                              break
+                  if injected_cats[cat_name]:
+                      break
+
+          for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
+              if ap.exists() and "vnAnimatedElement" not in ap.read_text():
+                  c = [0]
+                  an = re.sub(r'\bModifier\s*\.\s*fillMaxWidth\s*\(\s*\)', lambda m: (c.__setitem__(0, c[0]+1) or f"{m.group(0)}.vnAnimatedElement({c[0]})"), ap.read_text())
+                  ap.write_text(re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.vnAnimatedElement', an, count=1))
+
+          for sf in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
+              ft = sf.read_text()
+              if sf.name != "VnFrameRateManager.kt" and "onTrackPlaybackObserved" not in ft and '"Lossless"' in ft and "LocalContext.current" in ft and "@Composable" in ft:
+                  lines = ft.splitlines(keepends=True)
+                  for idx, l in enumerate(lines):
+                      if '"Lossless"' in l:
+                          w = "".join(lines[max(0, idx-25):min(len(lines), idx+15)])
+                          mc = re.search(r'\bval\s+([A-Za-z0-9_]+)\s*=\s*LocalContext\.current\b', w)
+                          mq = re.search(r'\bval\s+([A-Za-z0-9_]*(?:quality|Quality|format|Format|badge|Badge)[A-Za-z0-9_]*)\b', w)
+                          mt = re.search(r'\b([A-Za-z0-9_]+)\.(?:title|name)\b', w)
+                          ms = re.search(r'\b([A-Za-z0-9_]+)\.(?:source|provider|extension|sourceName|providerName)\b', w)
+                          if mc and mq and mt:
+                              for k in range(max(0, idx-25), idx+1):
+                                  if re.search(rf'\bval\s+{re.escape(mq.group(1))}\b', lines[k]) and "=" in lines[k]:
+                                      ind = re.match(r'^(\s*)', lines[k]).group(1)
+                                      lines.insert(k+1, f'{ind}androidx.compose.runtime.LaunchedEffect({mt.group(1)}.id, {mq.group(1)}) {{ com.music.spotui.ui.screens.VnPlaybackMonitor.onTrackPlaybackObserved({mc.group(1)}, {mt.group(1)}.id.toString(), {mt.group(1)}.title.toString(), {f"{ms.group(1)}.source.orEmpty()" if ms else "\"\""}, {mq.group(1)}.toString()) }}\n')
+                                      sf.write_text("".join(lines)); break
+                          break
+
+          bf = Path("app/src/main/java/com/music/spotui/ui/screens/VnSettingsBackup.kt")
+          if bf.exists():
+              bt = bf.read_text()
+              cv = next((x for x in ["context", "ctx", "localContext", "appContext"] if re.search(rf'\b{x}\b', bt)), "context")
+              if "onBackupImported" not in bt: bt = re.sub(r'\bJSONObject\(\s*([A-Za-z0-9_]+)\s*\)', rf'JSONObject(com.music.spotui.ui.screens.VnFpsPref.onBackupImported({cv}, \1))', bt, count=1)
+              if "enrichBackupJson" not in bt: bt = re.sub(r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)?\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1)
+              if "VnCopyBackupExtensionsButton" not in bt:
+                  lines = bt.splitlines(keepends=True)
+                  cs = next((i for i, l in enumerate(lines) if "@Composable" in l), None)
+                  col = next((i for i in range(cs, len(lines)) if re.search(r'\bColumn\b', lines[i])), None) if cs is not None else None
+                  if col is not None:
+                      d = 0; op = False
+                      for i in range(col, len(lines)):
+                          d += lines[i].count("{") - lines[i].count("}")
+                          if "{" in lines[i]: op = True
+                          if op and d <= 0:
+                              lines.insert(i, re.match(r'^(\s*)', lines[i]).group(1) + "    com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
+                              bt = "".join(lines); break
+              bf.write_text(bt)
+
+          # Fallback only for any category not yet injected into Settings screens
+          inc_lyr = "false" if injected_cats["lyrics"] else "true"
+          inc_app = "false" if injected_cats["appearance"] else "true"
+          inc_ply = "false" if injected_cats["playback"] else "true"
+          if any(v == "true" for v in (inc_lyr, inc_app, inc_ply)):
+              for uf in settings_files:
+                  if "VnFpsSelectorCard" in uf.read_text(): continue
+                  lines, ch = uf.read_text().splitlines(keepends=True), False
+                  for i, l in enumerate(lines):
+                      st = l.lstrip(); ind = l[:len(l)-len(st)]
+                      if st.startswith(("import ", "package ", "//", "/*", "*", "fun ", "object ", "class ")): continue
+                      if re.match(r'^item\b.*\{.*\bVn(?:Settings)?Backup\w*', st):
+                          lines.insert(i, f"{ind}item {{ com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyrics = {inc_lyr}, includeAppearance = {inc_app}, includePlayback = {inc_ply}) }}\n"); ch = True; break
+                      if re.match(r'^(?:com\.music\.spotui\.ui\.screens\.)?Vn(?:Settings)?Backup(?:\.[A-Za-z0-9_]+|\w*)\s*\(', st):
+                          lines.insert(i, f"{ind}com.music.spotui.ui.screens.VnFpsSelectorCard(includeLyrics = {inc_lyr}, includeAppearance = {inc_app}, includePlayback = {inc_ply})\n"); ch = True; break
+                  if ch: uf.write_text("".join(lines))
+
+          gh = False
+          for ap in sorted(Path("app/src/main/java").rglob("*Activity.kt")):
+              at = ap.read_text()
+              if "setContent" in at and "VnFrameRateGuard" not in at:
+                  an, n = re.subn(r'(?m)^([ \t]*)(setContent(?:\([^)]*\))?\s*\{)\s*$', r'\1\2\n\1    com.music.spotui.ui.screens.VnFrameRateGuard()', at, count=1)
+                  if n > 0: ap.write_text(an); gh = True; break
+          if not gh and p2.exists() and "VnFrameRateGuard" not in p2.read_text():
+              p2.write_text(re.sub(r'(?m)^([ \t]*fun\s+ImmersivePlayer\b[^{]*\{)\s*$', r'\1\n    com.music.spotui.ui.screens.VnFrameRateGuard()', p2.read_text(), count=1))
           PY
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Build APK
+      - name: Build Debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+          EXTRA_FLAGS=""
+          [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.4" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
-      - name: Upload APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-${{ env.BUILD_VERSION_CODE }}
-          path: app/build/outputs/apk/**/*.apk
+          name: VNEra-2.1.4-Debug
+          path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
+          retention-days: 14
