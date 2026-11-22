@@ -1,4 +1,18 @@
-        name: Link SDK 37 & Fix Versions & Apply Patches
+name: Build Vnera
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Link SDK 37 & Fix Versions & Apply Patches- name: Link SDK 37 & Fix Versions & Apply Patches
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
