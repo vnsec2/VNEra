@@ -779,10 +779,7 @@ jobs:
               }
           }
 
-          @Composable
           fun vnResolveSelectedLyricColor(): Color {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
               val customArgb = VnFpsPref.lyricsCustomColorArgb
               val accentArgb = VnFpsPref.customAccentColorArgb
               val argb = when {
@@ -794,30 +791,21 @@ jobs:
               return Color(argb)
           }
 
-          @Composable
           fun vnPlayerInlineLyricColor(original: Color): Color {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
               if (!VnFpsPref.lyricsBeautifulEnabled) return original
               val chosen = vnResolveSelectedLyricColor()
               val alpha = if (original.isSpecified && original.alpha in 0.05f..0.75f) original.alpha.coerceAtLeast(0.50f) else 0.96f
               return chosen.copy(alpha = alpha)
           }
 
-          @Composable
           fun vnKaraokeWordColor(original: Color, isSung: Boolean = true): Color {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
               if (!VnFpsPref.lyricsBeautifulEnabled) return original
               val chosen = vnResolveSelectedLyricColor()
               val alpha = if (isSung) 0.98f else 0.52f
               return chosen.copy(alpha = alpha)
           }
 
-          @Composable
           fun vnScaleLyricTextStyle(base: TextStyle): TextStyle {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
               val styled = if (VnFpsPref.lyricsBeautifulEnabled) {
                   base.copy(color = vnPlayerInlineLyricColor(base.color))
@@ -829,19 +817,13 @@ jobs:
               return styled.copy(fontSize = scaledSize, lineHeight = scaledLineHeight)
           }
 
-          @Composable
           fun vnScaleLyricFontSize(base: TextUnit): TextUnit {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
               val resolved = if (base.isSpecified) base else 15.sp
               return (resolved.value * scale).sp
           }
 
-          @Composable
           fun vnStyleKaraokeSpan(span: SpanStyle): SpanStyle {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
               val beautiful = VnFpsPref.lyricsBeautifulEnabled
               val newFontSize = if (abs(scale - 1.0f) >= 0.01f && span.fontSize.isSpecified) {
@@ -855,10 +837,7 @@ jobs:
               return span.copy(color = newColor, fontSize = newFontSize)
           }
 
-          @Composable
           fun vnStyleKaraokeText(text: AnnotatedString): AnnotatedString {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
               val beautiful = VnFpsPref.lyricsBeautifulEnabled
               if (!beautiful && abs(scale - 1.0f) < 0.01f) return text
@@ -886,7 +865,6 @@ jobs:
               )
           }
 
-          @Composable
           fun vnStyleKaraokeText(text: String): String = vnPlayerInlineLyricText(text)
 
           @Composable
@@ -1260,7 +1238,12 @@ jobs:
                   preferredDisplayModeId = if (best != null && abs(best.refreshRate - hz) <= 2f) best.modeId else 0
                   preferredRefreshRate = hz
               }
-              if (Build.VERSION.SDK_INT >= 35) w.decorView.requestedFrameRate = hz
+              if (Build.VERSION.SDK_INT >= 35) {
+                  runCatching {
+                      View::class.java.getMethod("setRequestedFrameRate", Float::class.javaPrimitiveType)
+                          .invoke(w.decorView, hz)
+                  }
+              }
               w.decorView.postInvalidateOnAnimation()
           }
 
@@ -1903,6 +1886,13 @@ jobs:
                           lines[el] += f"\n{ind}}}"
                           cast_msg.write_text("\n".join(lines) + "\n")
 
+          def ensure_imports(src: str, imports: list[str]) -> str:
+              missing = [imp for imp in imports if imp not in src]
+              if not missing:
+                  return src
+              block = "\n".join(f"import {imp}" for imp in missing)
+              return re.sub(r'(?m)^(package\s+[^\r\n]+)', rf'\1\n{block}', src, count=1)
+
           def hook_lazy_cols(src, register_fn="VnRegisterLyricsScrollState"):
               if register_fn in src: return src
               lines, out, i = src.splitlines(keepends=True), [], 0
@@ -1943,8 +1933,14 @@ jobs:
               return "".join(out)
 
           def find_composable_body_open(lines: list[str], call_line_idx: int, limit_idx: int) -> int | None:
+              # Walk backwards to find the opening Composable container call (e.g. Box(, Surface(, Scaffold(, Column()
+              start_idx = call_line_idx
+              for back in range(call_line_idx, max(-1, call_line_idx - 12), -1):
+                  if re.search(r'\b(?:Box|Surface|Scaffold|Column|Row)\s*\(', lines[back]):
+                      start_idx = back
+                      break
               paren = 0
-              for j in range(max(0, call_line_idx - 6), min(limit_idx + 1, call_line_idx + 12)):
+              for j in range(start_idx, min(limit_idx + 1, start_idx + 18)):
                   stripped = lines[j].split("//")[0]
                   for ch in stripped:
                       if ch == '(':
@@ -1952,6 +1948,9 @@ jobs:
                       elif ch == ')':
                           paren -= 1
                   if paren <= 0 and "{" in stripped and j >= call_line_idx:
+                      # Ignore modifier trailing lambdas like .graphicsLayer { or .drawBehind {
+                      if re.search(r'\.\s*(?:graphicsLayer|drawBehind|drawWithContent|drawWithCache|pointerInput|clickable|combinedClickable)\s*(?:\([^)]*\))?\s*\{', stripped):
+                          continue
                       return j
               return None
 
@@ -1976,7 +1975,7 @@ jobs:
                       f"{ind}}}\n"
                   )
                   ps = ps.replace(m_state.group(0), hook_code, 1)
-                  ps = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport androidx.compose.ui.graphics.toArgb', ps, count=1)
+                  ps = ensure_imports(ps, ["androidx.compose.ui.graphics.toArgb"])
               p2.write_text(ps)
 
           # 2. LyricsScreen.kt: single exit-fullscreen button inside content Box below artwork + slide-down close
@@ -1993,7 +1992,10 @@ jobs:
                           for j in range(i, min(i + 25, len(lines))):
                               paren += lines[j].count("(") - lines[j].count(")")
                               if paren <= 0 and "{" in lines[j]: se = j; break
-                          if se is not None and re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit', "".join(lines[i:se+1])):
+                          sig_str = "".join(lines[i:se+1]) if se is not None else ""
+                          m_close_p = re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit(\?)?', sig_str)
+                          if se is not None and m_close_p:
+                              close_call = "onClose?.invoke()" if m_close_p.group(1) else "onClose()"
                               d = 0; be = None
                               for k in range(se, len(lines)):
                                   d += lines[k].count("{") - lines[k].count("}")
@@ -2009,7 +2011,7 @@ jobs:
                                       "            vnClosingDown = true\n"
                                       "            vnCloseScope.launch {\n"
                                       "                kotlinx.coroutines.delay(200L)\n"
-                                      "                com.music.spotui.ui.screens.VnFpsPref.closeLyricsFullscreen(vnLyricsActivity) { onClose() }\n"
+                                      f"                com.music.spotui.ui.screens.VnFpsPref.closeLyricsFullscreen(vnLyricsActivity) {{ {close_call} }}\n"
                                       "            }\n"
                                       "        }\n"
                                       "    }\n"
@@ -2031,8 +2033,15 @@ jobs:
                                                   f"com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, ownerId = \"lyrics_screen\", onClick = vnTriggerClose) }}\n"
                                               )
                                           break
-                                  s1 = "".join(lines)
-                                  s1 = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnFullscreenSlideContainer\nimport com.music.spotui.ui.screens.vnSmartLyricsSwipe\nimport kotlinx.coroutines.launch', s1, count=1)
+                                  s1 = ensure_imports("".join(lines), [
+                                      "androidx.compose.foundation.layout.fillMaxWidth",
+                                      "androidx.compose.foundation.layout.padding",
+                                      "androidx.compose.ui.unit.dp",
+                                      "com.music.spotui.ui.screens.findActivity",
+                                      "com.music.spotui.ui.screens.vnFullscreenSlideContainer",
+                                      "com.music.spotui.ui.screens.vnSmartLyricsSwipe",
+                                      "kotlinx.coroutines.launch",
+                                  ])
                                   break
               if s1 != s0: lf.write_text(s1)
 
@@ -2052,12 +2061,17 @@ jobs:
                               if paren <= 0 and "{" in lines[j]: se = j; break
                           if se is not None:
                               sig = "".join(lines[i:se+1])
-                              has_expand = bool(re.search(r'\bonExpand\s*:', sig))
-                              has_collapse = bool(re.search(r'\bonCollapse\s*:', sig))
-                              has_close = bool(re.search(r'\bonClose\s*:', sig))
+                              m_exp = re.search(r'\bonExpand\s*:\s*\(\)\s*->\s*Unit(\?)?', sig)
+                              m_col = re.search(r'\bonCollapse\s*:\s*\(\)\s*->\s*Unit(\?)?', sig)
+                              m_cls = re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit(\?)?', sig)
                               has_is_exp = re.search(r'\b(isExpanded|expanded|isFullscreen)\s*:', sig)
-                              expand_expr = "onExpand()" if has_expand else ""
-                              collapse_expr = "onCollapse()" if has_collapse else ("onClose()" if has_close else "")
+                              expand_expr = ("onExpand?.invoke()" if m_exp.group(1) else "onExpand()") if m_exp else ""
+                              if m_col:
+                                  collapse_expr = "onCollapse?.invoke()" if m_col.group(1) else "onCollapse()"
+                              elif m_cls:
+                                  collapse_expr = "onClose?.invoke()" if m_cls.group(1) else "onClose()"
+                              else:
+                                  collapse_expr = ""
                               is_fs_expr = f"({has_is_exp.group(1)} || com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen)" if has_is_exp else "com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen"
                               lines[se] += (
                                   "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
@@ -2097,12 +2111,19 @@ jobs:
                                               f"com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, ownerId = \"immersive_panel\", onClick = {{ if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() }}) }}\n"
                                           )
                                       break
-                              t1 = "".join(lines)
-                              t1 = re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.findActivity\nimport com.music.spotui.ui.screens.vnFullscreenSlideContainer\nimport com.music.spotui.ui.screens.vnSmartLyricsSwipe\nimport kotlinx.coroutines.launch', t1, count=1)
+                              t1 = ensure_imports("".join(lines), [
+                                  "androidx.compose.foundation.layout.fillMaxWidth",
+                                  "androidx.compose.foundation.layout.padding",
+                                  "androidx.compose.ui.unit.dp",
+                                  "com.music.spotui.ui.screens.findActivity",
+                                  "com.music.spotui.ui.screens.vnFullscreenSlideContainer",
+                                  "com.music.spotui.ui.screens.vnSmartLyricsSwipe",
+                                  "kotlinx.coroutines.launch",
+                              ])
                               break
               if t1 != t0: il.write_text(t1)
 
-          # 4. Inline & Word-by-Word Karaoke Player Lyrics ONLY
+          # 4. Inline & Word-by-Word Karaoke Player Lyrics ONLY (Text only, never BasicText)
           def wrap_arg_call(call_src: str, param_name: str, wrapper_fn: str, default_expr: str | None = None) -> tuple[str, bool]:
               m = re.search(rf'\b{param_name}\s*=\s*', call_src)
               if not m:
@@ -2139,6 +2160,8 @@ jobs:
               return f"{call_src[:start_val]}{wrapper_fn}({expr}){call_src[end_val:]}", True
 
           def patch_lyric_text_call(call_block: str, is_karaoke_file: bool) -> tuple[str, bool]:
+              if not re.match(r'^\s*Text\s*\(', call_block):
+                  return call_block, False
               new_block = call_block
               c0 = c1 = c2 = False
               m_txt = re.search(r'\btext\s*=\s*([^,\)\n]+)', new_block)
@@ -2216,7 +2239,7 @@ jobs:
               lines = src.splitlines(keepends=True)
               for idx, line in enumerate(lines):
                   near_chevron = is_player_ctrl and bool(re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›")', line))
-                  near_karaoke = is_karaoke_or_lyric_comp and bool(re.search(r'\b(?:Text|BasicText)\s*\(', line))
+                  near_karaoke = is_karaoke_or_lyric_comp and bool(re.search(r'(?<![.\w])Text\s*\(', line))
                   if near_chevron or near_karaoke:
                       win_start = max(0, idx - 26) if near_chevron else idx
                       win_end = min(len(lines), idx + 16) if near_chevron else min(len(lines), idx + 1)
@@ -2224,7 +2247,7 @@ jobs:
                       if near_karaoke or (re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', win_txt, re.IGNORECASE)):
                           k = win_start
                           while k < win_end:
-                              if re.search(r'\b(?:Text|BasicText)\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
+                              if re.search(r'(?<![.\w])Text\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
                                   p_cnt = 0
                                   t_end = k
                                   for j in range(k, min(len(lines), k + 18)):
@@ -2337,8 +2360,6 @@ jobs:
           ]
 
           def is_inside_lazy_list_scope(lines: list[str], target_idx: int) -> bool:
-              # Parenthesis-aware scope stack so nested calls like PaddingValues(...) inside LazyColumn(...)
-              # never overwrite the enclosing LazyColumn / LazyListScope owner.
               scope_stack: list[str] = []
               pending_word = ""
               paren_depth = 0
@@ -2364,7 +2385,6 @@ jobs:
 
                   clean = re.sub(r'"(?:\\.|[^"\\])*"', '""', raw.split("//")[0])
 
-                  # Detect LazyListScope extension functions (e.g. fun LazyListScope.appearanceSection() {)
                   if paren_depth == 0 and re.search(r'\bfun\s+LazyListScope\s*\.', clean):
                       pending_word = "LazyListScope"
 
@@ -2400,22 +2420,13 @@ jobs:
                               pending_word = ""
                       i_c += 1
 
-              if scope_stack and scope_stack[-1] in ("LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid", "LazyListScope"):
-                  return True
-
-              # Fallback check: inspect sibling lines at the same indentation inside the same block
-              target_indent = len(lines[target_idx]) - len(lines[target_idx].lstrip())
-              for back in range(target_idx - 1, max(-1, target_idx - 40), -1):
-                  s_b = lines[back].lstrip()
-                  if not s_b or s_b.startswith("//"):
+              for owner in reversed(scope_stack):
+                  if not owner:
                       continue
-                  ind_b = len(lines[back]) - len(s_b)
-                  if ind_b < target_indent and "{" in s_b:
-                      if re.search(r'\b(?:LazyColumn|LazyRow|LazyVerticalGrid|LazyListScope)\b', s_b):
-                          return True
-                      break
-                  if ind_b == target_indent and re.match(r'^(?:item|items|stickyHeader)\s*(?:\(|\{)', s_b):
+                  if owner in ("LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid", "LazyListScope"):
                       return True
+                  if owner in ("item", "items", "stickyHeader", "Column", "Row", "Box", "Surface", "Card", "Scaffold"):
+                      return False
               return False
 
           for sp_file in all_settings_files:
@@ -2431,6 +2442,10 @@ jobs:
                   for idx, line in enumerate(lines):
                       s_strip = line.lstrip()
                       if s_strip.startswith(("//", "/*", "*", "import ", "package ", "fun ", "object ", "class ")):
+                          continue
+                      # Skip TopAppBar title matches
+                      near_before = "".join(lines[max(0, idx - 4):idx + 1])
+                      if re.search(r'\b(?:CenterAligned|Large|Medium)?TopAppBar\b', near_before):
                           continue
                       if re.search(anchor_rx, line, re.IGNORECASE):
                           for k in range(idx + 1, min(idx + 55, len(lines))):
@@ -2469,7 +2484,7 @@ jobs:
               if ap.exists() and "vnAnimatedElement" not in ap.read_text():
                   c = [0]
                   an = re.sub(r'\bModifier\s*\.\s*fillMaxWidth\s*\(\s*\)', lambda m: (c.__setitem__(0, c[0]+1) or f"{m.group(0)}.vnAnimatedElement({c[0]})"), ap.read_text())
-                  ap.write_text(re.sub(r'(?m)^(package\s+[^\r\n]+)', r'\1\nimport com.music.spotui.ui.screens.vnAnimatedElement', an, count=1))
+                  ap.write_text(ensure_imports(an, ["com.music.spotui.ui.screens.vnAnimatedElement"]))
 
           for sf in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
               ft = sf.read_text()
@@ -2481,21 +2496,25 @@ jobs:
                           mc = re.search(r'\bval\s+([A-Za-z0-9_]+)\s*=\s*LocalContext\.current\b', w)
                           mq = re.search(r'\bval\s+([A-Za-z0-9_]*(?:quality|Quality|format|Format|badge|Badge)[A-Za-z0-9_]*)\b', w)
                           mt = re.search(r'\b([A-Za-z0-9_]+)\.(?:title|name)\b', w)
-                          ms = re.search(r'\b([A-Za-z0-9_]+)\.(?:source|provider|extension|sourceName|providerName)\b', w)
+                          ms = re.search(r'\b([A-Za-z0-9_]+)\.(source|provider|extension|sourceName|providerName)\b', w)
                           if mc and mq and mt:
+                              src_expr = f"({ms.group(1)}.{ms.group(2)}?.toString().orEmpty())" if ms else '""'
                               for k in range(max(0, idx-25), idx+1):
                                   if re.search(rf'\bval\s+{re.escape(mq.group(1))}\b', lines[k]) and "=" in lines[k]:
                                       ind = re.match(r'^(\s*)', lines[k]).group(1)
-                                      lines.insert(k+1, f'{ind}androidx.compose.runtime.LaunchedEffect({mt.group(1)}.id, {mq.group(1)}) {{ com.music.spotui.ui.screens.VnPlaybackMonitor.onTrackPlaybackObserved({mc.group(1)}, {mt.group(1)}.id.toString(), {mt.group(1)}.title.toString(), {f"{ms.group(1)}.source.orEmpty()" if ms else "\"\""}, {mq.group(1)}.toString()) }}\n')
+                                      lines.insert(k+1, f'{ind}androidx.compose.runtime.LaunchedEffect({mt.group(1)}.id, {mq.group(1)}) {{ com.music.spotui.ui.screens.VnPlaybackMonitor.onTrackPlaybackObserved({mc.group(1)}, {mt.group(1)}.id.toString(), {mt.group(1)}.title.toString(), {src_expr}, {mq.group(1)}.toString()) }}\n')
                                       sf.write_text("".join(lines)); break
                           break
 
           bf = Path("app/src/main/java/com/music/spotui/ui/screens/VnSettingsBackup.kt")
           if bf.exists():
               bt = bf.read_text()
-              cv = next((x for x in ["context", "ctx", "localContext", "appContext"] if re.search(rf'\b{x}\b', bt)), "context")
-              if "onBackupImported" not in bt: bt = re.sub(r'\bJSONObject\(\s*([A-Za-z0-9_]+)\s*\)', rf'JSONObject(com.music.spotui.ui.screens.VnFpsPref.onBackupImported({cv}, \1))', bt, count=1)
-              if "enrichBackupJson" not in bt: bt = re.sub(r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)?\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1)
+              cv = next((x for x in ["context", "ctx", "localContext", "appContext"] if re.search(rf'\b(?:val|var)\s+{x}\b|\b{x}\s*:\s*Context\b', bt)), None)
+              if cv:
+                  if "onBackupImported" not in bt:
+                      bt = re.sub(r'\bJSONObject\(\s*([A-Za-z0-9_]+)\s*\)', rf'JSONObject(com.music.spotui.ui.screens.VnFpsPref.onBackupImported({cv}, \1))', bt, count=1)
+                  if "enrichBackupJson" not in bt:
+                      bt = re.sub(r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)?\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1)
               if "VnCopyBackupExtensionsButton" not in bt:
                   lines = bt.splitlines(keepends=True)
                   cs = next((i for i, l in enumerate(lines) if "@Composable" in l), None)
