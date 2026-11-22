@@ -1,11 +1,11 @@
-name: Build VNEra Debug APK
+name: Build VNEra 2.1.4 Debug APK
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - work/source-review
       - main
+      - work/source-review
 
 permissions:
   contents: write
@@ -317,11 +317,13 @@ jobs:
               }
               fun toggleSystemBars(act: Activity?) = setSystemBarsHidden(act, !lyricsBarsHidden)
 
-              fun exportAllPrefsJson(c: Context): JSONObject = JSONObject().also { all ->
-                  File(c.applicationInfo.dataDir, "shared_prefs").listFiles()?.filter { it.name.endsWith(".xml") }?.forEach { f ->
-                      val spName = f.name.removeSuffix(".xml")
+              fun exportAllPrefsJson(c: Context): JSONObject = JSONObject().apply {
+                  val spDir = File(c.applicationContext.applicationInfo.dataDir, "shared_prefs")
+                  spDir.listFiles { f -> f.extension == "xml" }?.forEach { file ->
+                      val spName = file.nameWithoutExtension
+                      val sp = c.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE)
                       val entries = JSONObject()
-                      c.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE).all.forEach { (k, v) ->
+                      sp.all.forEach { (k, v) ->
                           when (v) {
                               is Boolean -> entries.put(k, JSONObject().put("t", "b").put("v", v))
                               is Int -> entries.put(k, JSONObject().put("t", "i").put("v", v))
@@ -331,7 +333,7 @@ jobs:
                               is Set<*> -> entries.put(k, JSONObject().put("t", "set").put("v", JSONArray().apply { v.filterNotNull().forEach { put(it.toString()) } }))
                           }
                       }
-                      all.put(spName, entries)
+                      put(spName, entries)
                   }
               }
 
@@ -349,7 +351,6 @@ jobs:
                               val entries = allPrefs.optJSONObject(spName) ?: return@forEach
                               val ed = c.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE).edit()
                               entries.keys().forEach { k ->
-                                  if (k == KEY_LAST_BACKUP_JSON || k == KEY_LAST_BACKUP_EXTENSIONS) return@forEach
                                   val item = entries.optJSONObject(k) ?: return@forEach
                                   when (item.optString("t")) {
                                       "b" -> ed.putBoolean(k, item.optBoolean("v"))
@@ -650,17 +651,75 @@ jobs:
           import os, re
           from pathlib import Path
 
-          # 1. Fix app/build.gradle.kts (SDK, VersionCode, Signing)
+          has_sdk_37 = os.environ.get("HAS_SDK_37", "false") == "true"
+          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "214001"))
+          target_agp = "9.1.0" if has_sdk_37 else "8.7.2"
+
+          # 1. Fix versions & SDK in root Gradle / TOML files
+          for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
+              if p.exists():
+                  t = p.read_text(encoding="utf-8").replace("2.4.10", "2.2.20").replace("2.4.21", "2.2.20").replace("9.4.1", target_agp)
+                  if not has_sdk_37:
+                      t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', r'\g<1> = "35"', t)
+                  p.write_text(t, encoding="utf-8")
+
+          if not has_sdk_37:
+              for gf in Path(".").rglob("*.gradle.kts"):
+                  t = gf.read_text(encoding="utf-8")
+                  tn = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', r'\g<1>.set(35)', re.sub(r'(compileSdk|targetSdk)\s*=\s*37', r'\g<1> = 35', t))
+                  if t != tn:
+                      gf.write_text(tn, encoding="utf-8")
+
+          # 2. Ensure app_name is VNEra
+          for sp in Path("app/src/main/res").rglob("strings.xml"):
+              sx = sp.read_text(encoding="utf-8")
+              sxn = re.sub(r'<string name="app_name"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', sx)
+              if sx != sxn:
+                  sp.write_text(sxn, encoding="utf-8")
+
+          # 3. Fix app/build.gradle.kts (applicationId, versionName, versionCode, projectUrl, signingConfigs, packaging)
           gradle_file = Path("app/build.gradle.kts")
           if gradle_file.exists():
-              txt = gradle_file.read_text(encoding="utf-8")
-              has_37 = os.environ.get("HAS_SDK_37", "false") == "true"
-              vcode = os.environ.get("BUILD_VERSION_CODE", "214001")
-              if has_37:
-                  txt = re.sub(r"compileSdk\s*=\s*\d+", "compileSdk = 37", txt)
-              txt = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {vcode}", txt)
-              txt = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "2.1.4"', txt)
-              gradle_file.write_text(txt, encoding="utf-8")
+              t = gradle_file.read_text(encoding="utf-8")
+              if has_sdk_37:
+                  t = re.sub(r"compileSdk\s*=\s*\d+", "compileSdk = 37", t)
+              t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.4"', t)
+              t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
+
+              if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
+                  decl = 'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n'
+                  if re.search(r'(?m)^(\s*android\s*\{)', t):
+                      t = re.sub(r'(?m)^(\s*android\s*\{)', decl + r'\1', t, count=1)
+                  else:
+                      t = decl + t
+
+              if "vnera-debug.keystore" not in t:
+                  t += (
+                      '\nandroid {\n'
+                      '    signingConfigs { getByName("debug") { storeFile = file("vnera-debug.keystore"); storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android" } }\n'
+                      '    buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("debug") } }\n'
+                      '}\n'
+                  )
+              if "META-INF/versions/9/OSGI-INF/MANIFEST.MF" not in t:
+                  t += '\nandroid { packaging { resources { excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"; excludes += "META-INF/versions/9/module-info.class" } } }\n'
+
+              gradle_file.write_text(t, encoding="utf-8")
+
+          # 4. Ensure UpdateChecker.kt constants exist if referenced
+          upd = Path("app/src/main/java/com/music/spotui/data/api/UpdateChecker.kt")
+          if upd.exists():
+              ut = upd.read_text(encoding="utf-8")
+              mc = []
+              if re.search(r'(?<![.\w])UPDATE_BASE_URL\b', ut) and not re.search(r'\bval\s+UPDATE_BASE_URL\b', ut):
+                  mc.append('private const val UPDATE_BASE_URL = "https://api.github.com/repos/vnsec2/VNEra"')
+              if re.search(r'(?<![.\w])PROJECT_URL\b', ut) and not re.search(r'\bval\s+PROJECT_URL\b', ut):
+                  mc.append('private const val PROJECT_URL = "https://github.com/vnsec2/VNEra"')
+              if mc:
+                  lines = ut.splitlines()
+                  idx = max((i for i, l in enumerate(lines) if l.startswith("import ")), default=0)
+                  lines.insert(idx + 1, "\n" + "\n".join(mc))
+                  upd.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
           src_root = Path("app/src/main/java/com/music/spotui")
 
@@ -690,7 +749,7 @@ jobs:
                   return text[:m.end()] + imp + "\n" + text[m.end():]
               return imp + "\n" + text
 
-          # 2. Deduplicate Shuffle icons in PlayerControls.kt / ImmersivePlayer.kt (keep strictly 1 icon)
+          # 5. Deduplicate Shuffle icons in PlayerControls.kt / ImmersivePlayer.kt (keep strictly 1 icon)
           for player_rel in [
               "ui/immersive/player/PlayerControls.kt",
               "ui/immersive/player/ImmersivePlayer.kt",
@@ -701,15 +760,12 @@ jobs:
               content = pf.read_text(encoding="utf-8")
               content = ensure_import(content, "import com.music.spotui.ui.screens.*")
 
-              # Find all IconButton blocks that contain Shuffle
               shuffle_blocks = []
               for m in re.finditer(r"\b(?:IconButton|VnShuffleActionButton)\s*\(", content):
                   start = m.start()
-                  # Find the body '{ ... }' of this composable call
                   brace_open = content.find("{", m.end())
                   if brace_open == -1:
                       continue
-                  # Check if there's an inner lambda vs trailing lambda
                   paren_depth = 1
                   j = m.end()
                   while j < len(content) and paren_depth > 0:
@@ -728,14 +784,13 @@ jobs:
                       if re.search(r"\bShuffle\b|shuffle", block):
                           shuffle_blocks.append((start, end + 1, block))
 
-              # Remove any duplicate shuffle blocks after the first one
               if len(shuffle_blocks) > 1:
                   for start, end, _ in reversed(shuffle_blocks[1:]):
                       content = content[:start] + content[end:]
 
               pf.write_text(content, encoding="utf-8")
 
-          # 3. Distribute VNEra Settings into proper native categories (and remove old dump above Import/Export)
+          # 6. Distribute VNEra Settings into proper native categories (and remove old dump above Import/Export)
           for settings_rel in [
               "ui/screens/SettingsScreen.kt",
               "ui/immersive/pages/ImmersiveSettingsScreen.kt",
@@ -746,10 +801,8 @@ jobs:
               stext = sf.read_text(encoding="utf-8")
               stext = ensure_import(stext, "import com.music.spotui.ui.screens.*")
 
-              # Remove any legacy monolithic VNEra block placed above Import/Export
               stext = re.sub(r"\n\s*Vn(?:AllSettings|ExtraSettings|CustomSettings)\w*\s*\([^)]*\)\s*\n", "\n", stext)
 
-              # Inject each VNEra group right after the matching native category header/section
               category_injections = [
                   (r'("Appearance"|"Display"|"Theme"|"Εμφάνιση"|R\.string\.appearance|R\.string\.display|R\.string\.theme)', "VnDisplayCategorySettings()"),
                   (r'("Playback"|"Audio"|"Player"|"Αναπαραγωγή"|R\.string\.playback|R\.string\.audio)', "VnPlaybackCategorySettings()"),
@@ -761,21 +814,19 @@ jobs:
                       continue
                   m = re.search(pat, stext, flags=re.IGNORECASE)
                   if m:
-                      # Find the enclosing section card/column closing brace after the category title
                       brace_after = stext.find("{", m.end())
                       if brace_after != -1 and brace_after - m.end() < 300:
                           close_idx = find_matching_brace(stext, brace_after)
                           if close_idx != -1:
                               stext = stext[:close_idx+1] + f"\n        {call_code}\n" + stext[close_idx+1:]
                               continue
-                      # Fallback: insert right after the line containing the category header
                       line_end = stext.find("\n", m.end())
                       if line_end != -1:
                           stext = stext[:line_end+1] + f"        {call_code}\n" + stext[line_end+1:]
 
               sf.write_text(stext, encoding="utf-8")
 
-          # 4. Fix Karaoke / Lyrics color, font scale & glow in Player Lyrics composables
+          # 7. Fix Karaoke / Lyrics color & font scale in Player Lyrics composables
           for kt in src_root.rglob("*.kt"):
               if not re.search(r"lyric|karaoke|player", kt.name, flags=re.IGNORECASE):
                   continue
@@ -785,7 +836,6 @@ jobs:
                   ktxt = ensure_import(ktxt, "import com.music.spotui.ui.screens.*")
                   ktxt = ensure_import(ktxt, "import androidx.compose.ui.graphics.Shadow")
                   ktxt = ensure_import(ktxt, "import androidx.compose.ui.geometry.Offset")
-                  # Replace active white lyric color with user's VNEra lyrics/accent color
                   ktxt = re.sub(
                       r"\bColor\.White\.copy\(\s*alpha\s*=\s*([0-9.]+f?)\s*\)",
                       r"vnResolvedLyricsColor(Color.White).copy(alpha = \1)",
@@ -796,7 +846,6 @@ jobs:
                       r"\1vnResolvedLyricsColor(Color.White)",
                       ktxt
                   )
-                  # Apply VnFpsPref.lyricsFontScale to lyric Text fontSize if not already scaled
                   if "lyricsFontScale" not in ktxt:
                       ktxt = re.sub(
                           r"(fontSize\s*=\s*)(\d+(?:\.\d+)?\.sp)",
@@ -808,7 +857,9 @@ jobs:
           PY
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
