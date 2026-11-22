@@ -7,6 +7,7 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -119,7 +120,7 @@ jobs:
           cp -a /tmp/vnera_custom/. .
           git add -A && git commit -q -m "VNEra custom changes"
 
-          git checkout -q -b revera-108 master
+          git checkout -q -b revera-108
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
           cp -a "$NEW_BASE_ROOT"/. .
           git add -A && git commit -q -m "Revera 1.0.8 base"
@@ -239,6 +240,23 @@ jobs:
               var activeFullscreenBtnIsFull by mutableStateOf(false)
               var onExternalOpenLyrics: (() -> Unit)? = null
               var onExternalCloseLyrics: (() -> Unit)? = null
+
+              fun claimFullscreenBtn(token: Any, isFull: Boolean): Boolean {
+                  val cur = activeFullscreenBtnOwner
+                  if (cur == null || cur === token || (isFull && !activeFullscreenBtnIsFull)) {
+                      activeFullscreenBtnOwner = token
+                      activeFullscreenBtnIsFull = isFull
+                      return true
+                  }
+                  return false
+              }
+
+              fun releaseFullscreenBtn(token: Any) {
+                  if (activeFullscreenBtnOwner === token) {
+                      activeFullscreenBtnOwner = null
+                      activeFullscreenBtnIsFull = false
+                  }
+              }
 
               var activeLyricsScrollState: ScrollableState? = null
               var savedPlayerLyricText by mutableStateOf("")
@@ -682,19 +700,11 @@ jobs:
           ) {
               val ownerToken = remember { Any() }
               SideEffect {
-                  if (VnFpsPref.activeFullscreenBtnOwner == null || (isFullscreen && !VnFpsPref.activeFullscreenBtnIsFull)) {
-                      VnFpsPref.activeFullscreenBtnOwner = ownerToken
-                      VnFpsPref.activeFullscreenBtnIsFull = isFullscreen
-                  } else if (VnFpsPref.activeFullscreenBtnOwner === ownerToken) {
-                      VnFpsPref.activeFullscreenBtnIsFull = isFullscreen
-                  }
+                  VnFpsPref.claimFullscreenBtn(ownerToken, isFullscreen)
               }
               DisposableEffect(ownerToken) {
                   onDispose {
-                      if (VnFpsPref.activeFullscreenBtnOwner === ownerToken) {
-                          VnFpsPref.activeFullscreenBtnOwner = null
-                          VnFpsPref.activeFullscreenBtnIsFull = false
-                      }
+                      VnFpsPref.releaseFullscreenBtn(ownerToken)
                   }
               }
               if (VnFpsPref.activeFullscreenBtnOwner !== ownerToken) return
@@ -1619,7 +1629,7 @@ jobs:
                               has_is_exp = re.search(r'\b(isExpanded|expanded|isFullscreen)\s*:', sig)
                               expand_expr = "onExpand()" if has_expand else ""
                               collapse_expr = "onCollapse()" if has_collapse else ("onClose()" if has_close else "")
-                              is_fs_expr = f"({has_is_exp.group(1)} || com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen)" if has_is_exp else "com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen"
+                              is_fs_expr = f"{has_is_exp.group(1)}" if has_is_exp else "false"
                               lines[se] += (
                                   "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
                                   "    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
@@ -1737,7 +1747,7 @@ jobs:
           for ui_kt in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt")):
               patch_inline_player_lyrics(ui_kt)
 
-          # Track isPlaying state & hook Shuffle Guard
+          # Track isPlaying state & hook Shuffle Guard (preserving strictly 1 Shuffle icon)
           for ctrl_kt in sorted(Path("app/src/main/java/com/music/spotui").rglob("*.kt")):
               if ctrl_kt.name == "VnFrameRateManager.kt":
                   continue
@@ -1753,7 +1763,7 @@ jobs:
               if re.search(r'\bfun\s+toggleShuffle\s*\(', ct) and "VnShuffleGuard" not in ct:
                   ct, _ = re.subn(
                       r'(fun\s+toggleShuffle\s*\([^{]*\{)',
-                      r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(true)',
+                      r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!com.music.spotui.ui.screens.VnShuffleGuard.userLockedShuffleState)',
                       ct,
                       count=1
                   )
