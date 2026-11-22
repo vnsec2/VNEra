@@ -7,7 +7,6 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -47,7 +46,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
-            if git rev-parse --verify origin/work/source-review >/dev/null 2>&1; then
+            LATEST_WORK=$(git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/remotes/origin/work/ | head -n 1)
+            if [ -n "$LATEST_WORK" ]; then
+              git checkout -f "$LATEST_WORK"
+            elif git rev-parse --verify origin/work/source-review >/dev/null 2>&1; then
               git checkout -f origin/work/source-review
             elif git rev-parse --verify origin/work/vnera-2.2.0 >/dev/null 2>&1; then
               git checkout -f origin/work/vnera-2.2.0
@@ -126,6 +128,7 @@ jobs:
           git add -A && git commit -q -m "Revera 1.0.8 base"
 
           git cherry-pick -X theirs vnera-custom || {
+            git status --porcelain | awk '$1 == "DU" {print $2}' | xargs -r git rm -f --
             git diff --name-only --diff-filter=U | xargs -r git checkout --theirs --
             git add -A
             git commit -q --no-edit
@@ -158,6 +161,9 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Link SDK 37 & Fix Versions & Apply Patches
         run: |
@@ -709,9 +715,20 @@ jobs:
               }
               if (VnFpsPref.activeFullscreenBtnOwner !== ownerToken) return
 
+              val density = LocalDensity.current
+              val statusBarTopPx = WindowInsets.statusBars.getTop(density)
+              val popupOffset = remember(density, statusBarTopPx) {
+                  with(density) {
+                      IntOffset(
+                          x = -14.dp.roundToPx(),
+                          y = statusBarTopPx + 12.dp.roundToPx()
+                      )
+                  }
+              }
+
               Popup(
                   alignment = Alignment.TopEnd,
-                  offset = IntOffset(-36, 108),
+                  offset = popupOffset,
                   properties = PopupProperties(
                       focusable = false,
                       dismissOnBackPress = false,
@@ -995,9 +1012,11 @@ jobs:
                       if (am != null) VnFpsPref.isPlaybackPlaying = am.isMusicActive
                   }
               }
-              DisposableEffect(c, VnFpsPref.audioFocusPauseEnabled) {
+              DisposableEffect(c, VnFpsPref.audioFocusPauseEnabled, VnFpsPref.isPlaybackPlaying) {
                   val am = c.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-                  if (am == null || !VnFpsPref.audioFocusPauseEnabled) return@DisposableEffect onDispose {}
+                  if (am == null || !VnFpsPref.audioFocusPauseEnabled || !VnFpsPref.isPlaybackPlaying) {
+                      return@DisposableEffect onDispose {}
+                  }
                   var pausedByFocus = false
                   val focusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
                       when (focusChange) {
@@ -1449,7 +1468,12 @@ jobs:
                       t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', r'\g<1> = "35"', t)
                   p.write_text(t)
 
-          if not has_sdk_37:
+          if has_sdk_37:
+              gp = Path("gradle.properties")
+              gpt = gp.read_text() if gp.exists() else ""
+              if "android.builtInKotlin" not in gpt:
+                  gp.write_text(gpt.rstrip() + "\nandroid.builtInKotlin=false\n")
+          else:
               for gf in Path(".").rglob("*.gradle.kts"):
                   t = gf.read_text()
                   tn = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', r'\g<1>.set(35)', re.sub(r'(compileSdk|targetSdk)\s*=\s*37', r'\g<1> = 35', t))
@@ -1763,7 +1787,7 @@ jobs:
               if re.search(r'\bfun\s+toggleShuffle\s*\(', ct) and "VnShuffleGuard" not in ct:
                   ct, _ = re.subn(
                       r'(fun\s+toggleShuffle\s*\([^{]*\{)',
-                      r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!com.music.spotui.ui.screens.VnShuffleGuard.userLockedShuffleState)',
+                      r'\1\n        val vnNextShuffle = !(runCatching { shuffleModeEnabled.value }.getOrDefault(com.music.spotui.ui.screens.VnFpsPref.shuffleGuardEnabled && com.music.spotui.ui.screens.VnShuffleGuard.userLockedShuffleState))\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(vnNextShuffle)',
                       ct,
                       count=1
                   )
@@ -1826,7 +1850,9 @@ jobs:
                           for k in range(idx + 1, min(idx + 45, len(lines))):
                               ind_m = re.match(r'^(\s*)', lines[k])
                               ind = ind_m.group(1) if ind_m else "    "
-                              if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', lines[k]):
+                              prior_block = "".join(lines[max(0, idx - 30):k])
+                              in_lazy_col = prior_block.count("LazyColumn") > 0 and prior_block.count("{") > prior_block.count("}")
+                              if in_lazy_col and re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', lines[k]):
                                   lines.insert(k, f"{ind}item {{ {comp_call} }}\n")
                                   sp_file.write_text("".join(lines))
                                   injected_cats[cat_name] = True
@@ -1875,7 +1901,7 @@ jobs:
               if "VnCopyBackupExtensionsButton" not in bt:
                   lines = bt.splitlines(keepends=True)
                   cs = next((i for i, l in enumerate(lines) if "@Composable" in l), None)
-                  col = next((i for i in range(cs, len(lines)) if re.search(r'\bColumn\b', lines[i])), None) if cs is not None else None
+                  col = next((i for i in range(cs, len(lines)) if re.search(r'\b(?:Lazy)?Column\b', lines[i])), None) if cs is not None else None
                   if col is not None:
                       d = 0; op = False
                       for i in range(col, len(lines)):
