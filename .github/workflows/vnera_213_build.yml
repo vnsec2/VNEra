@@ -1548,11 +1548,7 @@ jobs:
                   Surface(
                       modifier = Modifier.fillMaxWidth(),
                       shape = RoundedCornerShape(22.dp),
-                      color = MaterialTheme.colorScheme.surfaceContainer,
-                      border = BorderStroke(
-                          width = 0.5.dp,
-                          color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)
-                      )
+                      color = MaterialTheme.colorScheme.surfaceContainerHigh
                   ) {
                       Column(
                           modifier = Modifier.fillMaxWidth(),
@@ -1566,7 +1562,7 @@ jobs:
           private fun VnCardDivider() {
               HorizontalDivider(
                   thickness = 0.5.dp,
-                  color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f),
+                  color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.16f),
                   modifier = Modifier.padding(horizontal = 16.dp)
               )
           }
@@ -1618,11 +1614,7 @@ jobs:
               Surface(
                   onClick = onClick,
                   shape = RoundedCornerShape(12.dp),
-                  color = if (selected) primary.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.55f),
-                  border = BorderStroke(
-                      width = if (selected) 1.dp else 0.5.dp,
-                      color = if (selected) primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)
-                  )
+                  color = if (selected) primary.copy(alpha = 0.20f) else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.65f)
               ) {
                   Text(
                       text = label,
@@ -1661,8 +1653,8 @@ jobs:
                                   .clip(CircleShape)
                                   .background(Color(argb))
                                   .border(
-                                      width = if (sel) 2.5.dp else 0.5.dp,
-                                      color = if (sel) Color.White else Color.White.copy(alpha = 0.22f),
+                                      width = if (sel) 2.5.dp else 0.dp,
+                                      color = if (sel) Color.White else Color.Transparent,
                                       shape = CircleShape
                                   )
                                   .clickable { onSelect(argb) },
@@ -1892,11 +1884,7 @@ jobs:
                       .fillMaxWidth()
                       .padding(vertical = 8.dp),
                   shape = RoundedCornerShape(22.dp),
-                  color = MaterialTheme.colorScheme.surfaceContainer,
-                  border = BorderStroke(
-                      width = 0.5.dp,
-                      color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)
-                  )
+                  color = MaterialTheme.colorScheme.surfaceContainerHigh
               ) {
                   Column(Modifier.fillMaxWidth()) {
                       Row(
@@ -2530,14 +2518,9 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # 5. Inject VNEra settings cards ONLY into scrollable containers (LazyColumn items or verticalScroll Column)
-          #    NEVER into Box, Surface, Scaffold, or floating overlays!
-          all_settings_files = [
-              p for p in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt"))
-              if "Settings" in p.name and p.name not in ("VnSettingsBackup.kt", "VnFrameRateManager.kt")
-          ]
-
-          res_map: dict[str, set[str]] = {"appearance": set(), "playback": set(), "lyrics": set()}
+          # 5. Inject VNEra settings cards into the exact scrollable containers (LazyColumn / verticalScroll Column)
+          #    of Appearance, Playback, and Lyrics sub-pages (with fallback to App/Backup scrollable container).
+          res_map: dict[str, set[str]] = {"appearance": set(), "playback": set(), "lyrics": set(), "app": set()}
           for xml_f in Path("app/src/main/res").rglob("*.xml"):
               xt = xml_f.read_text(errors="ignore")
               for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', xt):
@@ -2549,6 +2532,8 @@ jobs:
                       res_map["playback"].add(k)
                   if "lyric" in kl or re.search(r'(?:Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke)', val, re.I):
                       res_map["lyrics"].add(k)
+                  if any(w in kl for w in ("backup", "export", "import", "check_updates", "restart_player")) or re.search(r'(?:Import / Export|Export settings|Έλεγχος για ενημερώσεις|Επανεκκίνηση του player)', val, re.I):
+                      res_map["app"].add(k)
 
           def build_cat_regex(literals: str, keys: set[str]) -> str:
               parts = [rf'"[^"]*(?:{literals})[^"]*"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in sorted(keys)]
@@ -2558,13 +2543,13 @@ jobs:
               (
                   "appearance",
                   "VnAppearanceSettingsCard",
-                  build_cat_regex(r'Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme', res_map["appearance"]),
+                  build_cat_regex(r'Εμφάνιση και γλώσσα|Appearance and language|Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme', res_map["appearance"]),
                   "com.music.spotui.ui.screens.VnAppearanceSettingsCard()"
               ),
               (
                   "playback",
                   "VnPlaybackSettingsCard",
-                  build_cat_regex(r'Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση', res_map["playback"]),
+                  build_cat_regex(r'Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση|AutoMix|Μεταβάσεις', res_map["playback"]),
                   "com.music.spotui.ui.screens.VnPlaybackSettingsCard()"
               ),
               (
@@ -2574,36 +2559,30 @@ jobs:
                   "com.music.spotui.ui.screens.VnLyricsSettingsCard()"
               ),
           ]
+          app_fallback_rx = build_cat_regex(r'Import / Export|Export settings|Έλεγχος για ενημερώσεις|Επανεκκίνηση του player|VnSettingsBackup', res_map["app"])
 
-          COMPOSABLE_CONTAINERS = {
-              "Column", "Row", "Box", "BoxWithConstraints", "Surface", "Card",
-              "ElevatedCard", "OutlinedCard", "Scaffold", "ModalBottomSheet",
-              "DropdownMenu", "AnimatedVisibility", "AnimatedContent", "Crossfade",
-              "CompositionLocalProvider", "ProvideTextStyle", "NavHost", "composable",
-              "HorizontalPager", "VerticalPager", "FlowRow", "FlowColumn",
-              "SelectionContainer", "BadgedBox", "PullToRefreshBox",
-              "if", "else", "when", "for", "forEach", "forEachIndexed"
+          NON_LAYOUT_CALLS = {
+              "LaunchedEffect", "DisposableEffect", "SideEffect", "remember", "rememberSaveable",
+              "derivedStateOf", "mutableStateOf", "mutableIntStateOf", "mutableFloatStateOf",
+              "mutableLongStateOf", "graphicsLayer", "drawBehind", "drawWithContent", "drawWithCache",
+              "pointerInput", "clickable", "combinedClickable", "semantics", "testTag"
           }
-          LAZY_ITEM_CONTAINERS = {"item", "items", "itemsIndexed", "stickyHeader"}
-          LAZY_CONTAINERS = {"LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid"}
+          NON_LAYOUT_PARAMS = {
+              "onClick", "onCheckedChange", "onValueChange", "onValueChangeFinished",
+              "onDismissRequest", "confirmValueChange", "onLongClick", "onDoubleClick",
+              "onScroll", "onFocusChanged", "onGloballyPositioned", "onSizeChanged"
+          }
+          LAZY_ITEM_CALLS = {"item", "items", "itemsIndexed", "stickyHeader"}
 
-          def find_scrollable_insertion_targets(lines: list[str]) -> tuple[dict[int, str], list[tuple[int, int, str]]]:
-              """
-              Returns:
-                - line_to_scroll_scope: maps line index -> 'LAZY_LIST' (direct child of LazyColumn)
-                  or 'SCROLL_COLUMN' (direct child of Column with verticalScroll).
-                  Never maps Box, Surface, Card, or nested children!
-                - top_lazy_items: list of (start_line, end_line, indent) for top-level item { ... } blocks inside LazyColumn.
-              """
-              n = len(lines)
-              clean_lines = []
+          def strip_comments_and_strings(lines: list[str]) -> list[str]:
+              clean = []
               in_bc = False
               for raw in lines:
                   s = raw
                   if in_bc:
                       end_bc = s.find("*/")
                       if end_bc == -1:
-                          clean_lines.append("")
+                          clean.append("")
                           continue
                       s = s[end_bc + 2:]
                       in_bc = False
@@ -2619,245 +2598,312 @@ jobs:
                   s = s.split("//")[0]
                   s = re.sub(r'"(?:\\.|[^"\\])*"', '""', s)
                   s = re.sub(r"'(?:\\.|[^'\\])'", "''", s)
-                  clean_lines.append(s)
+                  clean.append(s)
+              return clean
 
-              line_to_scroll_scope: dict[int, str] = {}
-              top_lazy_items: list[tuple[int, int, str]] = []
+          def extract_scroll_containers(lines: list[str]) -> list[dict]:
+              """
+              Finds every LazyColumn { ... } and every Column(...verticalScroll...) { ... }
+              together with its enclosing @Composable fun name, exact start/end lines, indent,
+              and direct LazyColumn item { ... } ranges.
+              """
+              n = len(lines)
+              clean = strip_comments_and_strings(lines)
+              containers: list[dict] = []
 
+              # Map each line to its enclosing @Composable function name & range
+              fun_spans: list[tuple[int, int, str]] = []
               i = 0
               while i < n:
-                  m_fun = re.search(r'\bfun\s+(?:<[^>]+>\s*)?(?:[A-Za-z0-9_.]+\.)?([A-Za-z0-9_]+)\s*\(', clean_lines[i])
+                  m_fun = re.search(r'\bfun\s+(?:<[^>]+>\s*)?(?:[A-Za-z0-9_.]+\.)?([A-Za-z0-9_]+)\s*\(', clean[i])
                   if not m_fun:
                       i += 1
                       continue
-
-                  has_composable_ann = "@Composable" in clean_lines[i]
-                  if not has_composable_ann:
-                      checked = 0
-                      for back in range(i - 1, -1, -1):
-                          bt = clean_lines[back].strip()
-                          if not bt:
-                              continue
-                          if "@Composable" in bt:
-                              has_composable_ann = True
-                              break
-                          if any(tok in bt for tok in ("}", "{", ";")) or re.match(r'^(?:fun|class|object|interface|val|var|package|import)\b', bt):
-                              break
-                          checked += 1
-                          if checked >= 6:
-                              break
-
+                  fun_name = m_fun.group(1)
                   p_depth = 0
-                  saw_open_p = False
-                  sig_end_line = i
-                  body_open_line = None
-                  body_open_col = None
-                  is_expr_body = False
+                  saw_p = False
+                  body_line = None
+                  is_expr = False
                   for li in range(i, n):
-                      line_s = clean_lines[li]
-                      for ci, ch in enumerate(line_s):
-                          if not saw_open_p:
+                      for ch in clean[li]:
+                          if not saw_p:
                               if ch == '(':
-                                  saw_open_p = True
+                                  saw_p = True
                                   p_depth = 1
                               continue
                           if p_depth > 0:
+                              if ch == '(': p_depth += 1
+                              elif ch == ')': p_depth -= 1
+                          else:
+                              if ch == '=': is_expr = True; break
+                              if ch == '{': body_line = li; break
+                      if is_expr or body_line is not None:
+                          break
+                  if is_expr or body_line is None:
+                      i += 1
+                      continue
+                  b_depth = 0
+                  end_line = body_line
+                  for li in range(body_line, n):
+                      b_depth += clean[li].count('{') - clean[li].count('}')
+                      if b_depth <= 0:
+                          end_line = li
+                          break
+                  fun_spans.append((i, end_line, fun_name))
+                  i = end_line + 1
+
+              def enclosing_fun(line_idx: int) -> str:
+                  best = ""
+                  for fs, fe, fn in fun_spans:
+                      if fs <= line_idx <= fe:
+                          best = fn
+                  return best
+
+              # Scan for LazyColumn(...) { ... } and Column(...verticalScroll...) { ... }
+              for start_li in range(n):
+                  m_call = re.search(r'(?<![.\w])(LazyColumn|Column)\s*\(', clean[start_li])
+                  if not m_call:
+                      continue
+                  kind = m_call.group(1)
+                  call_col = m_call.start(1)
+                  p_depth = 0
+                  saw_p = False
+                  header_end_li = None
+                  open_brace_li = None
+                  open_brace_col = None
+
+                  for li in range(start_li, min(n, start_li + 35)):
+                      s = clean[li]
+                      c0 = call_col if li == start_li else 0
+                      for ci in range(c0, len(s)):
+                          ch = s[ci]
+                          if not saw_p:
                               if ch == '(':
-                                  p_depth += 1
+                                  saw_p = True
+                                  p_depth = 1
+                              continue
+                          if p_depth > 0:
+                              if ch == '(': p_depth += 1
                               elif ch == ')':
                                   p_depth -= 1
+                                  if p_depth == 0:
+                                      header_end_li = li
                           else:
-                              if ch == '=':
-                                  is_expr_body = True
-                                  break
+                              if ch.isspace():
+                                  continue
                               if ch == '{':
-                                  body_open_line = li
-                                  body_open_col = ci
+                                  open_brace_li = li
+                                  open_brace_col = ci
                                   break
-                      if is_expr_body or body_open_line is not None:
-                          sig_end_line = li
+                              else:
+                                  # Call without trailing lambda (e.g., Column(...) with no body)
+                                  open_brace_li = -1
+                                  break
+                      if open_brace_li is not None:
                           break
 
-                  if not has_composable_ann or is_expr_body or body_open_line is None:
-                      i = sig_end_line + 1
+                  if open_brace_li is None or open_brace_li < 0 or header_end_li is None:
                       continue
 
-                  # Stack entries: (scope_type, open_line, indent_str)
-                  scope_stack: list[tuple[str, int, str]] = [("COMPOSABLE", body_open_line, "")]
-                  paren_depth = 0
-                  bracket_depth = 0
-                  last_ident = ""
-                  last_ident_line = body_open_line
-                  saw_equals_at_zero = False
-                  saw_arrow_at_zero = False
+                  header_text = "".join(clean[start_li:header_end_li + 1])
+                  if kind == "Column" and "verticalScroll" not in header_text:
+                      continue
 
-                  for li in range(body_open_line, n):
-                      if paren_depth == 0 and bracket_depth == 0 and scope_stack:
-                          top_kind = scope_stack[-1][0]
-                          if top_kind in ("LAZY_LIST", "SCROLL_COLUMN"):
-                              line_to_scroll_scope[li] = top_kind
+                  # Find matching closing brace of this LazyColumn / Column body
+                  # Also track direct item { ... } children inside LazyColumn
+                  b_depth = 0
+                  close_brace_li = None
+                  lazy_items: list[tuple[int, int, str]] = []
+                  cur_item_start: int | None = None
+                  cur_item_indent: str = ""
+                  p_inner = 0
+                  last_word = ""
+                  last_word_li = open_brace_li
 
-                      line_s = clean_lines[li]
-                      start_col = (body_open_col + 1) if li == body_open_line else 0
-                      idx_c = start_col
-                      L = len(line_s)
+                  for li in range(open_brace_li, n):
+                      s = clean[li]
+                      c0 = open_brace_col if li == open_brace_li else 0
+                      idx_c = c0
+                      L = len(s)
                       while idx_c < L:
-                          ch = line_s[idx_c]
+                          ch = s[idx_c]
                           if ch.isalpha() or ch == '_':
                               j_c = idx_c + 1
-                              while j_c < L and (line_s[j_c].isalnum() or line_s[j_c] in ('_', '.')):
+                              while j_c < L and (s[j_c].isalnum() or s[j_c] == '_'):
                                   j_c += 1
-                              ident = line_s[idx_c:j_c].split('.')[-1]
-                              if paren_depth == 0 and bracket_depth == 0:
-                                  if ident not in ("val", "var", "private", "internal", "public", "fun", "return"):
-                                      last_ident = ident
-                                      last_ident_line = li
+                              if b_depth == 1 and p_inner == 0:
+                                  last_word = s[idx_c:j_c]
+                                  last_word_li = li
                               idx_c = j_c
                               continue
-                          if ch == '-' and idx_c + 1 < L and line_s[idx_c + 1] == '>':
-                              if paren_depth == 0 and bracket_depth == 0:
-                                  saw_arrow_at_zero = True
-                              idx_c += 2
-                              continue
-                          if ch == '=':
-                              prev_ch = line_s[idx_c - 1] if idx_c > 0 else ''
-                              next_ch = line_s[idx_c + 1] if idx_c + 1 < L else ''
-                              if prev_ch not in ('=', '!', '<', '>') and next_ch not in ('=', '>'):
-                                  if paren_depth == 0 and bracket_depth == 0:
-                                      saw_equals_at_zero = True
-                              idx_c += 1
-                              continue
-                          if ch == ';':
-                              if paren_depth == 0 and bracket_depth == 0:
-                                  last_ident = ""
-                                  saw_equals_at_zero = False
-                                  saw_arrow_at_zero = False
-                              idx_c += 1
-                              continue
                           if ch == '(':
-                              paren_depth += 1
+                              if b_depth >= 1:
+                                  p_inner += 1
                           elif ch == ')':
-                              paren_depth = max(0, paren_depth - 1)
-                          elif ch == '[':
-                              bracket_depth += 1
-                          elif ch == ']':
-                              bracket_depth = max(0, bracket_depth - 1)
+                              if b_depth >= 1:
+                                  p_inner = max(0, p_inner - 1)
                           elif ch == '{':
-                              parent_kind = scope_stack[-1][0] if scope_stack else "NON_COMPOSABLE"
-                              call_header = "".join(clean_lines[last_ident_line:li + 1])
-                              ind_str = re.match(r'^(\s*)', lines[last_ident_line]).group(1)
-                              if paren_depth != 0 or bracket_depth != 0:
-                                  scope_stack.append(("NON_COMPOSABLE", li, ind_str))
-                              elif saw_equals_at_zero:
-                                  scope_stack.append(("COMPOSABLE" if (last_ident == "content" and parent_kind != "NON_COMPOSABLE") else "NON_COMPOSABLE", li, ind_str))
-                              elif last_ident == "LazyColumn" and parent_kind != "NON_COMPOSABLE":
-                                  scope_stack.append(("LAZY_LIST", last_ident_line, ind_str))
-                              elif last_ident == "Column" and "verticalScroll" in call_header and parent_kind != "NON_COMPOSABLE":
-                                  scope_stack.append(("SCROLL_COLUMN", last_ident_line, ind_str))
-                              elif last_ident in LAZY_ITEM_CONTAINERS and parent_kind == "LAZY_LIST":
-                                  scope_stack.append(("LAZY_ITEM", last_ident_line, ind_str))
-                              elif last_ident in COMPOSABLE_CONTAINERS and parent_kind != "NON_COMPOSABLE":
-                                  scope_stack.append(("COMPOSABLE", last_ident_line, ind_str))
-                              elif saw_arrow_at_zero and parent_kind != "NON_COMPOSABLE":
-                                  scope_stack.append((parent_kind, li, ind_str))
-                              else:
-                                  scope_stack.append(("NON_COMPOSABLE", li, ind_str))
-                              last_ident = ""
-                              saw_equals_at_zero = False
-                              saw_arrow_at_zero = False
+                              if b_depth == 1 and p_inner == 0 and kind == "LazyColumn" and last_word in LAZY_ITEM_CALLS:
+                                  cur_item_start = last_word_li
+                                  cur_item_indent = re.match(r'^(\s*)', lines[last_word_li]).group(1)
+                              b_depth += 1
+                              if b_depth == 1:
+                                  last_word = ""
                           elif ch == '}':
-                              if scope_stack:
-                                  popped_kind, popped_start, popped_ind = scope_stack.pop()
-                                  if popped_kind == "LAZY_ITEM" and scope_stack and scope_stack[-1][0] == "LAZY_LIST":
-                                      top_lazy_items.append((popped_start, li, popped_ind))
-                              if paren_depth == 0 and bracket_depth == 0:
-                                  last_ident = ""
-                                  saw_equals_at_zero = False
-                                  saw_arrow_at_zero = False
-                              if not scope_stack:
+                              b_depth -= 1
+                              if b_depth == 1 and cur_item_start is not None:
+                                  lazy_items.append((cur_item_start, li, cur_item_indent))
+                                  cur_item_start = None
+                              if b_depth == 0:
+                                  close_brace_li = li
                                   break
                           idx_c += 1
-
-                      if not scope_stack:
-                          i = li + 1
+                      if close_brace_li is not None:
                           break
-                  else:
-                      i = n
 
-              return line_to_scroll_scope, top_lazy_items
+                  if close_brace_li is None or close_brace_li <= open_brace_li:
+                      continue
 
-          for sp_file in all_settings_files:
-              # Determine which VNEra cards belong in this file
-              fname_low = sp_file.name.lower()
-              if "appearance" in fname_low or "theme" in fname_low:
-                  target_cats = [c for c in cat_configs if c[0] == "appearance"]
-              elif "playback" in fname_low or "audio" in fname_low:
-                  target_cats = [c for c in cat_configs if c[0] == "playback"]
-              elif "lyric" in fname_low:
-                  target_cats = [c for c in cat_configs if c[0] == "lyrics"]
+                  base_ind = re.match(r'^(\s*)', lines[start_li]).group(1)
+                  containers.append({
+                      "kind": kind,
+                      "fun_name": enclosing_fun(start_li),
+                      "start_li": start_li,
+                      "open_li": open_brace_li,
+                      "close_li": close_brace_li,
+                      "base_indent": base_ind,
+                      "lazy_items": lazy_items,
+                  })
+
+              return containers
+
+          def insert_into_container(lines: list[str], cont: dict, comp_call: str, before_backup: bool = False) -> list[str]:
+              new_lines = list(lines)
+              if cont["kind"] == "LazyColumn":
+                  items = cont["lazy_items"]
+                  if before_backup and items:
+                      backup_item = next(((s, e, ind) for (s, e, ind) in items if "VnSettingsBackup" in "".join(new_lines[s:e+1])), None)
+                      if backup_item is not None:
+                          s_idx, _, item_ind = backup_item
+                          new_lines.insert(s_idx, f"{item_ind}item {{ {comp_call} }}\n")
+                          return new_lines
+                  if items:
+                      _, last_end, item_ind = items[-1]
+                      new_lines.insert(last_end + 1, f"{item_ind}item {{ {comp_call} }}\n")
+                      return new_lines
+                  child_ind = cont["base_indent"] + "    "
+                  new_lines.insert(cont["close_li"], f"{child_ind}item {{ {comp_call} }}\n")
+                  return new_lines
               else:
-                  target_cats = cat_configs
+                  # Column with verticalScroll
+                  if before_backup:
+                      for li in range(cont["open_li"] + 1, cont["close_li"]):
+                          if "VnSettingsBackup(" in new_lines[li]:
+                              ind = re.match(r'^(\s*)', new_lines[li]).group(1)
+                              new_lines.insert(li, f"{ind}{comp_call}\n")
+                              return new_lines
+                  child_ind = cont["base_indent"] + "    "
+                  new_lines.insert(cont["close_li"], f"{child_ind}{comp_call}\n")
+                  return new_lines
 
-              for cat_name, marker, anchor_rx, comp_call in target_cats:
-                  st = sp_file.read_text()
-                  if marker in st:
+          ui_kt_files = [
+              p for p in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt"))
+              if p.name not in ("VnFrameRateManager.kt", "VnSettingsBackup.kt")
+          ]
+
+          # Prioritize SettingsScreen.kt and ImmersiveSettingsScreen.kt first, then any other UI screens
+          def file_priority(p: Path) -> tuple[int, str]:
+              if p.name == "SettingsScreen.kt":
+                  return (0, str(p))
+              if p.name == "ImmersiveSettingsScreen.kt":
+                  return (1, str(p))
+              if "Setting" in p.name:
+                  return (2, str(p))
+              return (3, str(p))
+
+          ui_kt_files.sort(key=file_priority)
+
+          # Track which categories have been placed in standard UI and Immersive UI
+          placed_standard: set[str] = set()
+          placed_immersive: set[str] = set()
+
+          # Pass 1: Match dedicated sub-page scrollable containers
+          for kt_file in ui_kt_files:
+              is_imm_file = "immersive" in str(kt_file).lower()
+              placed_set = placed_immersive if is_imm_file else placed_standard
+
+              for cat_name, marker, anchor_rx, comp_call in cat_configs:
+                  if cat_name in placed_set:
                       continue
-                  lines = st.splitlines(keepends=True)
-                  scroll_scopes, top_items = find_scrollable_insertion_targets(lines)
-                  if not scroll_scopes:
+                  src_text = kt_file.read_text()
+                  if marker in src_text:
+                      placed_set.add(cat_name)
+                      continue
+                  lines = src_text.splitlines(keepends=True)
+                  containers = extract_scroll_containers(lines)
+                  if not containers:
                       continue
 
-                  placed = False
-                  # 1. If the file has top-level LazyColumn items, check if one matches this category's anchor
-                  for item_start, item_end, item_ind in top_items:
-                      item_body = "".join(lines[item_start:item_end + 1])
-                      if re.search(anchor_rx, item_body, re.IGNORECASE):
-                          # Skip if this item is just a single navigation card with onClick (opens a sub-screen)
-                          has_inline_controls = bool(re.search(r'\b(?:Switch|Slider|RadioButton|Checkbox|VnSettingsBackup)\b', item_body))
-                          has_nav_click = bool(re.search(r'\b(?:onClick|clickable)\b', item_body))
-                          if has_inline_controls or not has_nav_click:
-                              lines.insert(item_end + 1, f"{item_ind}item {{ {comp_call} }}\n")
-                              sp_file.write_text("".join(lines))
-                              placed = True
-                              print(f"Injected {marker} after {cat_name} LazyColumn item in {sp_file}")
-                              break
-                  if placed:
-                      continue
-
-                  # 2. Otherwise, place inside the scrollable list right before VnSettingsBackup's item (or at the end of LazyColumn / verticalScroll Column)
-                  backup_line = next((idx for idx, l in enumerate(lines) if "VnSettingsBackup(" in l), None)
-                  if backup_line is not None and top_items:
-                      containing_item = next(((s, e, ind) for (s, e, ind) in top_items if s <= backup_line <= e), None)
-                      if containing_item is not None:
-                          s_idx, _, item_ind = containing_item
-                          lines.insert(s_idx, f"{item_ind}item {{ {comp_call} }}\n")
-                          sp_file.write_text("".join(lines))
-                          print(f"Injected {marker} before VnSettingsBackup LazyColumn item in {sp_file}")
+                  best_cont = None
+                  best_score = 0
+                  for cont in containers:
+                      body_txt = "".join(lines[cont["start_li"]:cont["close_li"] + 1])
+                      # Skip the root Settings overview menu (contains Accounts + Storage + App together)
+                      is_root_menu = (
+                          bool(re.search(r'(?:Λογαριασμοί|Accounts)', body_txt, re.I)) and
+                          bool(re.search(r'(?:Αποθηκευτικός χώρος|Storage)', body_txt, re.I)) and
+                          bool(re.search(r'(?:Εφαρμογή|App)', body_txt, re.I))
+                      )
+                      if is_root_menu:
                           continue
+                      score = 0
+                      if re.search(cat_name, cont["fun_name"], re.I):
+                          score += 10
+                      matches = len(re.findall(anchor_rx, body_txt, re.I))
+                      score += matches * 3
+                      # Prefer leaf scrollable containers (not outer wrappers)
+                      is_outer = any(
+                          other is not cont and other["start_li"] > cont["start_li"] and other["close_li"] < cont["close_li"]
+                          for other in containers
+                      )
+                      if not is_outer:
+                          score += 2
+                      if score > best_score and matches > 0:
+                          best_score = score
+                          best_cont = cont
 
-                  if top_items:
-                      _, last_item_end, last_item_ind = top_items[-1]
-                      lines.insert(last_item_end + 1, f"{last_item_ind}item {{ {comp_call} }}\n")
-                      sp_file.write_text("".join(lines))
-                      print(f"Injected {marker} at end of LazyColumn in {sp_file}")
+                  if best_cont is not None:
+                      updated_lines = insert_into_container(lines, best_cont, comp_call, before_backup=False)
+                      kt_file.write_text("".join(updated_lines))
+                      placed_set.add(cat_name)
+                      print(f"INJECTED {marker} into {kt_file} (fun={best_cont['fun_name']}, kind={best_cont['kind']}, lines={best_cont['start_li']+1}..{best_cont['close_li']+1})")
+
+          # Pass 2: Any category not yet placed in Standard or Immersive UI goes cleanly into the App (Εφαρμογή) scrollable list right above VnSettingsBackup()
+          for target_group, placed_set in [("standard", placed_standard), ("immersive", placed_immersive)]:
+              missing_cats = [c for c in cat_configs if c[0] not in placed_set]
+              if not missing_cats:
+                  continue
+              for kt_file in ui_kt_files:
+                  is_imm_file = "immersive" in str(kt_file).lower()
+                  if (target_group == "immersive") != is_imm_file:
                       continue
-
-                  # 3. Fallback for verticalScroll Column
-                  best_k = None
-                  best_kind = None
-                  for k in range(len(lines) - 1, -1, -1):
-                      if k in scroll_scopes and re.match(r'^\s*\}\s*$', lines[k].split("//")[0]):
-                          best_k = k
-                          best_kind = scroll_scopes[k]
+                  src_text = kt_file.read_text()
+                  lines = src_text.splitlines(keepends=True)
+                  containers = extract_scroll_containers(lines)
+                  app_cont = None
+                  for cont in containers:
+                      body_txt = "".join(lines[cont["start_li"]:cont["close_li"] + 1])
+                      if re.search(app_fallback_rx, body_txt, re.I):
+                          app_cont = cont
                           break
-                  if best_k is not None:
-                      ind = re.match(r'^(\s*)', lines[best_k]).group(1)
-                      if best_kind == "LAZY_LIST":
-                          lines.insert(best_k, f"{ind}    item {{ {comp_call} }}\n")
-                      else:
-                          lines.insert(best_k, f"{ind}    {comp_call}\n")
-                      sp_file.write_text("".join(lines))
-                      print(f"Injected {marker} into {best_kind} of {sp_file}")
+                  if app_cont is not None:
+                      for cat_name, marker, _, comp_call in missing_cats:
+                          if marker not in "".join(lines):
+                              lines = insert_into_container(lines, app_cont, comp_call, before_backup=True)
+                              placed_set.add(cat_name)
+                              print(f"FALLBACK INJECTED {marker} into App sub-page of {kt_file} (fun={app_cont['fun_name']}, kind={app_cont['kind']})")
+                      kt_file.write_text("".join(lines))
+                      break
 
           for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
               if ap.exists() and "vnAnimatedElement" not in ap.read_text():
