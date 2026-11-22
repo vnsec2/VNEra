@@ -758,6 +758,8 @@ jobs:
               return VnFpsPref.savedPlayerLyricText.ifBlank { rawText }
           }
 
+          fun vnPlayerInlineLyricText(rawText: AnnotatedString): AnnotatedString = vnStyleKaraokeText(rawText)
+
           @Composable
           fun VnRememberPlayerPreviewListState(state: Any?) {
               val listState = state as? LazyListState ?: return
@@ -1932,8 +1934,7 @@ jobs:
                   i += 1
               return "".join(out)
 
-          def find_composable_body_open(lines: list[str], call_line_idx: int, limit_idx: int) -> int | None:
-              # Walk backwards to find the opening Composable container call (e.g. Box(, Surface(, Scaffold(, Column()
+          def find_composable_body_insert_idx(lines: list[str], call_line_idx: int, limit_idx: int) -> int | None:
               start_idx = call_line_idx
               for back in range(call_line_idx, max(-1, call_line_idx - 12), -1):
                   if re.search(r'\b(?:Box|Surface|Scaffold|Column|Row)\s*\(', lines[back]):
@@ -1948,10 +1949,18 @@ jobs:
                       elif ch == ')':
                           paren -= 1
                   if paren <= 0 and "{" in stripped and j >= call_line_idx:
-                      # Ignore modifier trailing lambdas like .graphicsLayer { or .drawBehind {
                       if re.search(r'\.\s*(?:graphicsLayer|drawBehind|drawWithContent|drawWithCache|pointerInput|clickable|combinedClickable)\s*(?:\([^)]*\))?\s*\{', stripped):
                           continue
-                      return j
+                      # If the next line has lambda parameters (e.g. `innerPadding ->`), insert AFTER that line
+                      insert_idx = j
+                      for look in range(j + 1, min(limit_idx + 1, j + 4)):
+                          nxt = lines[look].split("//")[0].strip()
+                          if not nxt:
+                              continue
+                          if "->" in nxt and "(" not in nxt and "{" not in nxt:
+                              insert_idx = look
+                          break
+                      return insert_idx
               return None
 
           # 1. Connect ImmersivePlayer's lyrics-open boolean state + capture player background color
@@ -2023,10 +2032,10 @@ jobs:
                                               ".fillMaxSize().then(Modifier.vnFullscreenSlideContainer(vnClosingDown, matchPlayerBackground = false)).then(Modifier.vnSmartLyricsSwipe(vnLyricsActivity, isExpanded = true, onCollapseToPlayer = vnTriggerClose))",
                                               1
                                           )
-                                          body_open = find_composable_body_open(lines, k, be)
-                                          if body_open is not None:
-                                              b_ind = re.match(r'^(\s*)', lines[body_open]).group(1) + "    "
-                                              lines[body_open] += (
+                                          ins_idx = find_composable_body_insert_idx(lines, k, be)
+                                          if ins_idx is not None:
+                                              b_ind = re.match(r'^(\s*)', lines[ins_idx]).group(1) + "    "
+                                              lines[ins_idx] += (
                                                   f"{b_ind}androidx.compose.foundation.layout.Box("
                                                   f"modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(top = 180.dp, end = 14.dp), "
                                                   f"contentAlignment = androidx.compose.ui.Alignment.CenterEnd) {{ "
@@ -2101,10 +2110,10 @@ jobs:
                                           ".fillMaxSize().then(if (vnIsFullscreen) Modifier.vnFullscreenSlideContainer(vnImmClosingDown, matchPlayerBackground = true) else Modifier).then(Modifier.vnSmartLyricsSwipe(vnImmLyricsActivity, isExpanded = vnIsFullscreen, onExpandToFullscreen = vnOnOpenFs, onCollapseToPlayer = vnOnCloseFs))",
                                           1
                                       )
-                                      body_open = find_composable_body_open(lines, k, len(lines) - 1)
-                                      if body_open is not None:
-                                          b_ind = re.match(r'^(\s*)', lines[body_open]).group(1) + "    "
-                                          lines[body_open] += (
+                                      ins_idx = find_composable_body_insert_idx(lines, k, len(lines) - 1)
+                                      if ins_idx is not None:
+                                          b_ind = re.match(r'^(\s*)', lines[ins_idx]).group(1) + "    "
+                                          lines[ins_idx] += (
                                               f"{b_ind}androidx.compose.foundation.layout.Box("
                                               f"modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(top = 12.dp, end = 10.dp), "
                                               f"contentAlignment = androidx.compose.ui.Alignment.CenterEnd) {{ "
@@ -2286,9 +2295,12 @@ jobs:
                       count=1
                   )
               if re.search(r'\bfun\s+toggleShuffle\s*\(', ct) and "VnShuffleGuard" not in ct:
+                  has_shuf_state = bool(re.search(r'\b(?:val|var)\s+shuffleModeEnabled\b', ct))
+                  fallback_expr = "com.music.spotui.ui.screens.VnFpsPref.shuffleLockEnabled && com.music.spotui.ui.screens.VnShuffleGuard.shuffleLockedByUser"
+                  cur_shuf_expr = f"runCatching {{ shuffleModeEnabled.value }}.getOrDefault({fallback_expr})" if has_shuf_state else fallback_expr
                   ct, _ = re.subn(
                       r'(fun\s+toggleShuffle\s*\([^{]*\{)',
-                      r'\1\n        val vnNextShuffle = !(runCatching { shuffleModeEnabled.value }.getOrDefault(com.music.spotui.ui.screens.VnFpsPref.shuffleLockEnabled && com.music.spotui.ui.screens.VnShuffleGuard.shuffleLockedByUser))\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(vnNextShuffle)',
+                      rf'\1\n        val vnNextShuffle = !({cur_shuf_expr})\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(vnNextShuffle)',
                       ct,
                       count=1
                   )
@@ -2443,39 +2455,41 @@ jobs:
                       s_strip = line.lstrip()
                       if s_strip.startswith(("//", "/*", "*", "import ", "package ", "fun ", "object ", "class ")):
                           continue
-                      # Skip TopAppBar title matches
                       near_before = "".join(lines[max(0, idx - 4):idx + 1])
                       if re.search(r'\b(?:CenterAligned|Large|Medium)?TopAppBar\b', near_before):
                           continue
                       if re.search(anchor_rx, line, re.IGNORECASE):
-                          for k in range(idx + 1, min(idx + 55, len(lines))):
-                              ind_m = re.match(r'^(\s*)', lines[k])
+                          anchor_indent = len(line) - len(s_strip)
+                          callback_brace_depth = 0
+                          for k in range(idx + 1, min(idx + 60, len(lines))):
+                              raw_k = lines[k]
+                              clean_k = re.sub(r'"(?:\\.|[^"\\])*"', '""', raw_k.split("//")[0])
+                              ind_m = re.match(r'^(\s*)', raw_k)
                               ind = ind_m.group(1) if ind_m else "    "
-                              if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', lines[k]):
+                              ind_len = len(ind)
+
+                              # Track callback lambdas like onClick = { ... } so we never inject inside them
+                              if callback_brace_depth > 0:
+                                  callback_brace_depth += clean_k.count("{") - clean_k.count("}")
+                                  continue
+                              if re.search(r'=\s*\{', clean_k) and clean_k.count("{") > clean_k.count("}"):
+                                  callback_brace_depth = clean_k.count("{") - clean_k.count("}")
+                                  continue
+
+                              if re.match(r'^\s*item\s*(?:\([^)]*\))?\s*\{', clean_k) and ind_len <= anchor_indent:
                                   lines.insert(k, f"{ind}item {{ {comp_call} }}\n")
                                   sp_file.write_text("".join(lines))
                                   placed = True
                                   print(f"Injected {marker} into {cat_name} LazyColumn of {sp_file}")
                                   break
-                              if re.match(r'^\s*\}\s*$', lines[k]):
-                                  block_slice = "".join(lines[max(0, idx - 8):k + 1])
-                                  if block_slice.count("{") <= block_slice.count("}"):
-                                      if is_inside_lazy_list_scope(lines, k):
-                                          lines.insert(k, f"{ind}    item {{ {comp_call} }}\n")
-                                      else:
-                                          lines.insert(k, f"{ind}    {comp_call}\n")
-                                      sp_file.write_text("".join(lines))
-                                      placed = True
-                                      print(f"Injected {marker} into {cat_name} section of {sp_file}")
-                                      break
-                              if re.match(r'^\s*(?:Spacer|HorizontalDivider)\s*\(', lines[k]) and k + 1 < len(lines) and re.match(r'^\s*(?:Text|Settings|Immersive|Surface|Card|Column|Row)\b', lines[k + 1]):
-                                  if is_inside_lazy_list_scope(lines, k + 1):
-                                      lines.insert(k + 1, f"{ind}item {{ {comp_call} }}\n")
+                              if re.match(r'^\s*\}\s*$', clean_k) and ind_len < anchor_indent:
+                                  if is_inside_lazy_list_scope(lines, k):
+                                      lines.insert(k, f"{ind}    item {{ {comp_call} }}\n")
                                   else:
-                                      lines.insert(k + 1, f"{ind}{comp_call}\n")
+                                      lines.insert(k, f"{ind}    {comp_call}\n")
                                   sp_file.write_text("".join(lines))
                                   placed = True
-                                  print(f"Injected {marker} after divider in {cat_name} of {sp_file}")
+                                  print(f"Injected {marker} into {cat_name} section of {sp_file}")
                                   break
                           if placed:
                               break
