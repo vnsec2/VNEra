@@ -179,6 +179,7 @@ jobs:
           import android.os.*
           import android.view.*
           import android.widget.Toast
+          import androidx.activity.compose.BackHandler
           import androidx.compose.animation.AnimatedVisibility
           import androidx.compose.animation.core.*
           import androidx.compose.animation.fadeIn
@@ -188,7 +189,10 @@ jobs:
           import androidx.compose.foundation.*
           import androidx.compose.foundation.gestures.*
           import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyColumn
           import androidx.compose.foundation.lazy.LazyListState
+          import androidx.compose.foundation.lazy.itemsIndexed
+          import androidx.compose.foundation.lazy.rememberLazyListState
           import androidx.compose.foundation.shape.*
           import androidx.compose.material.icons.Icons
           import androidx.compose.material.icons.rounded.Fullscreen
@@ -208,7 +212,10 @@ jobs:
           import androidx.compose.ui.text.SpanStyle
           import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.style.TextAlign
           import androidx.compose.ui.unit.*
+          import androidx.compose.ui.window.Dialog
+          import androidx.compose.ui.window.DialogProperties
           import androidx.compose.ui.window.Popup
           import androidx.compose.ui.window.PopupProperties
           import androidx.core.view.*
@@ -242,7 +249,7 @@ jobs:
               var lyricsImmersiveEnabled by mutableStateOf(true); private set
               var lyricsBarsHidden by mutableStateOf(false)
               var lyricsFullscreenOpen by mutableStateOf(false)
-              var activeFullscreenButtonOwner by mutableStateOf<String?>(null)
+              var nativeLyricsScreenActive by mutableStateOf(false)
               var onExternalOpenLyrics: (() -> Unit)? = null
               var onExternalCloseLyrics: (() -> Unit)? = null
 
@@ -340,18 +347,41 @@ jobs:
                   prefs(c).edit().putFloat(KEY_LYRICS_FONT_SCALE, s).apply()
               }
 
+              fun captureLyricLine(rawText: String) {
+                  val t = rawText.trim()
+                  val generic = setOf(
+                      "", "στίχοι", "lyrics", "no lyrics", "δεν υπάρχουν στίχοι", "...",
+                      "εμφάνιση", "αναπαραγωγή", "εφαρμογή", "αυτόματη"
+                  )
+                  if (t.lowercase() !in generic && t.length >= 2) {
+                      savedPlayerLyricText = rawText
+                      val lines = rawText.lines().map { it.trim() }.filter { it.isNotEmpty() }
+                      if (lines.size > 1) {
+                          savedPlayerLyricLines = lines
+                      } else if (lines.size == 1) {
+                          val single = lines.first()
+                          val cur = savedPlayerLyricLines.toMutableList()
+                          if (cur.lastOrNull() != single) {
+                              if (single !in cur) cur.add(single)
+                              if (cur.size > 120) cur.removeAt(0)
+                              savedPlayerLyricLines = cur
+                          }
+                      }
+                  }
+              }
+
               fun openLyricsFullscreen(act: Activity?, onExpand: (() -> Unit)? = null) {
                   lyricsFullscreenOpen = true
                   if (lyricsImmersiveEnabled) setSystemBarsHidden(act, true)
-                  onExpand?.invoke()
-                  onExternalOpenLyrics?.invoke()
+                  runCatching { onExpand?.invoke() }
+                  runCatching { onExternalOpenLyrics?.invoke() }
               }
 
               fun closeLyricsFullscreen(act: Activity?, onCollapse: (() -> Unit)? = null) {
                   lyricsFullscreenOpen = false
                   setSystemBarsHidden(act, false)
-                  onCollapse?.invoke()
-                  onExternalCloseLyrics?.invoke()
+                  runCatching { onCollapse?.invoke() }
+                  runCatching { onExternalCloseLyrics?.invoke() }
               }
 
               fun isSwipeToExpandLyricsEnabled(c: Context): Boolean {
@@ -747,18 +777,19 @@ jobs:
           }
 
           fun vnPlayerInlineLyricText(rawText: String): String {
+              VnFpsPref.captureLyricLine(rawText)
               val t = rawText.trim()
               val generic = setOf("", "στίχοι", "lyrics", "no lyrics", "δεν υπάρχουν στίχοι", "...")
               if (t.lowercase() !in generic && t.length >= 2) {
-                  VnFpsPref.savedPlayerLyricText = rawText
-                  val lines = rawText.lines().map { it.trim() }.filter { it.isNotEmpty() }
-                  if (lines.isNotEmpty()) VnFpsPref.savedPlayerLyricLines = lines
                   return rawText
               }
               return VnFpsPref.savedPlayerLyricText.ifBlank { rawText }
           }
 
-          fun vnPlayerInlineLyricText(rawText: AnnotatedString): AnnotatedString = vnStyleKaraokeText(rawText)
+          fun vnPlayerInlineLyricText(rawText: AnnotatedString): AnnotatedString {
+              VnFpsPref.captureLyricLine(rawText.text)
+              return vnStyleKaraokeText(rawText)
+          }
 
           @Composable
           fun VnRememberPlayerPreviewListState(state: Any?) {
@@ -840,6 +871,7 @@ jobs:
           }
 
           fun vnStyleKaraokeText(text: AnnotatedString): AnnotatedString {
+              VnFpsPref.captureLyricLine(text.text)
               val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
               val beautiful = VnFpsPref.lyricsBeautifulEnabled
               if (!beautiful && abs(scale - 1.0f) < 0.01f) return text
@@ -893,33 +925,158 @@ jobs:
               ownerId: String = "default",
               onClick: () -> Unit
           ) {
-              val isPrimaryOwner = ownerId == "lyrics_screen"
-              DisposableEffect(ownerId, isPrimaryOwner) {
-                  if (isPrimaryOwner || VnFpsPref.activeFullscreenButtonOwner == null) {
-                      VnFpsPref.activeFullscreenButtonOwner = ownerId
-                  }
-                  onDispose {
-                      if (VnFpsPref.activeFullscreenButtonOwner == ownerId) {
-                          VnFpsPref.activeFullscreenButtonOwner = null
-                      }
-                  }
-              }
-              if (VnFpsPref.activeFullscreenButtonOwner != ownerId) return
-
+              val c = LocalContext.current
+              val act = remember(c) { c.findActivity() }
               Surface(
-                  onClick = onClick,
-                  modifier = Modifier.size(34.dp),
+                  onClick = {
+                      onClick()
+                      if (isFullscreen) {
+                          if (VnFpsPref.lyricsFullscreenOpen) VnFpsPref.closeLyricsFullscreen(act)
+                      } else {
+                          if (!VnFpsPref.lyricsFullscreenOpen) VnFpsPref.openLyricsFullscreen(act)
+                      }
+                  },
+                  modifier = Modifier
+                      .zIndex(50f)
+                      .size(36.dp),
                   shape = CircleShape,
-                  color = Color.Black.copy(alpha = 0.62f),
-                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.24f))
+                  color = Color.Black.copy(alpha = 0.68f),
+                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f))
               ) {
                   Box(contentAlignment = Alignment.Center) {
                       Icon(
                           imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
                           contentDescription = if (isFullscreen) "Κλείσιμο πλήρους οθόνης" else "Πλήρης οθόνη στίχων",
                           tint = Color.White,
-                          modifier = Modifier.size(16.dp)
+                          modifier = Modifier.size(18.dp)
                       )
+                  }
+              }
+          }
+
+          @Composable
+          fun VnFullscreenLyricsOverlay() {
+              val c = LocalContext.current
+              val act = remember(c) { c.findActivity() }
+              VnFpsPref.ensureInit(c)
+
+              if (!VnFpsPref.lyricsFullscreenOpen || VnFpsPref.nativeLyricsScreenActive) return
+
+              var isClosing by remember { mutableStateOf(false) }
+              val scope = rememberCoroutineScope()
+              val closeOverlay: () -> Unit = {
+                  if (!isClosing) {
+                      isClosing = true
+                      scope.launch {
+                          delay(180L)
+                          VnFpsPref.closeLyricsFullscreen(act)
+                          isClosing = false
+                      }
+                  }
+              }
+
+              LaunchedEffect(VnFpsPref.lyricsImmersiveEnabled) {
+                  VnFpsPref.setSystemBarsHidden(act, VnFpsPref.lyricsImmersiveEnabled)
+              }
+              DisposableEffect(Unit) {
+                  onDispose {
+                      VnFpsPref.setSystemBarsHidden(act, false)
+                  }
+              }
+
+              Dialog(
+                  onDismissRequest = closeOverlay,
+                  properties = DialogProperties(
+                      usePlatformDefaultWidth = false,
+                      decorFitsSystemWindows = false
+                  )
+              ) {
+                  BackHandler(onBack = closeOverlay)
+                  val lines = VnFpsPref.savedPlayerLyricLines
+                  val activeText = VnFpsPref.savedPlayerLyricText
+                  val listState = rememberLazyListState()
+                  val accentColor = vnResolveSelectedLyricColor()
+                  val fontScale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
+
+                  LaunchedEffect(activeText, lines.size) {
+                      val activeIdx = lines.indexOfLast { it.equals(activeText.trim(), ignoreCase = true) }
+                      if (activeIdx >= 0) {
+                          runCatching { listState.animateScrollToItem((activeIdx - 2).coerceAtLeast(0)) }
+                      }
+                  }
+
+                  Box(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .vnFullscreenSlideContainer(isClosing = isClosing, matchPlayerBackground = false)
+                          .vnSmartLyricsSwipe(
+                              act = act,
+                              isExpanded = true,
+                              onCollapseToPlayer = closeOverlay
+                          )
+                          .statusBarsPadding()
+                          .navigationBarsPadding()
+                  ) {
+                      if (lines.isNotEmpty()) {
+                          LazyColumn(
+                              state = listState,
+                              modifier = Modifier
+                                  .fillMaxSize()
+                                  .padding(horizontal = 24.dp),
+                              contentPadding = PaddingValues(top = 72.dp, bottom = 96.dp),
+                              verticalArrangement = Arrangement.spacedBy(18.dp)
+                          ) {
+                              itemsIndexed(lines) { _, line ->
+                                  val isCurrent = line.equals(activeText.trim(), ignoreCase = true)
+                                  val textColor = when {
+                                      isCurrent && VnFpsPref.lyricsBeautifulEnabled -> accentColor
+                                      isCurrent -> Color.White
+                                      VnFpsPref.lyricsBeautifulEnabled -> accentColor.copy(alpha = 0.48f)
+                                      else -> Color.White.copy(alpha = 0.45f)
+                                  }
+                                  Text(
+                                      text = line,
+                                      style = MaterialTheme.typography.headlineSmall.copy(
+                                          fontSize = (22f * fontScale).sp,
+                                          lineHeight = (30f * fontScale).sp,
+                                          fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium
+                                      ),
+                                      color = textColor,
+                                      modifier = Modifier.fillMaxWidth()
+                                  )
+                              }
+                          }
+                      } else {
+                          Box(
+                              modifier = Modifier
+                                  .fillMaxSize()
+                                  .padding(horizontal = 28.dp),
+                              contentAlignment = Alignment.Center
+                          ) {
+                              Text(
+                                  text = activeText.ifBlank { "Δεν υπάρχουν διαθέσιμοι στίχοι για αυτό το κομμάτι" },
+                                  style = MaterialTheme.typography.headlineSmall.copy(
+                                      fontSize = (22f * fontScale).sp,
+                                      lineHeight = (30f * fontScale).sp,
+                                      fontWeight = FontWeight.SemiBold
+                                  ),
+                                  color = if (VnFpsPref.lyricsBeautifulEnabled) accentColor else Color.White,
+                                  textAlign = TextAlign.Center
+                              )
+                          }
+                      }
+
+                      Box(
+                          modifier = Modifier
+                              .align(Alignment.TopEnd)
+                              .padding(top = 14.dp, end = 16.dp)
+                      ) {
+                          VnLyricsFullscreenButton(
+                              isFullscreen = true,
+                              ownerId = "overlay_fullscreen",
+                              onClick = closeOverlay
+                          )
+                      }
                   }
               }
           }
@@ -1255,8 +1412,10 @@ jobs:
               VnFpsPref.ensureInit(c)
               val imm = VnFpsPref.lyricsImmersiveEnabled
               DisposableEffect(act, imm) {
+                  VnFpsPref.nativeLyricsScreenActive = true
                   VnFpsPref.setSystemBarsHidden(act, imm)
                   onDispose {
+                      VnFpsPref.nativeLyricsScreenActive = false
                       VnFpsPref.setSystemBarsHidden(act, false)
                   }
               }
@@ -1361,6 +1520,7 @@ jobs:
                       if (n >= 3 && slow >= 3) applyWindowFrameRate(a, fps, true)
                   }
               }
+              VnFullscreenLyricsOverlay()
               VnPlaybackMonitorDialog()
               VnShuffleNotificationBanner()
           }
@@ -1968,7 +2128,7 @@ jobs:
               ps = p2.read_text()
               ps = hook_lazy_cols(ps, "VnRememberPlayerPreviewListState")
               ps = suppress_duplicate_top_fullscreen_icons(ps)
-              m_state = re.search(r'(?m)^([ \t]*)var\s+(showLyrics|isLyricsExpanded|showFullLyrics|lyricsExpanded)\s+by\s+remember[^\n]*\n', ps)
+              m_state = re.search(r'(?m)^([ \t]*)var\s+([A-Za-z0-9_]*[Ll]yric[A-Za-z0-9_]*)\s+by\s+remember\s*\{\s*mutableStateOf\(\s*false\s*\)\s*\}[^\n]*\n', ps)
               if m_state and "onExternalOpenLyrics" not in ps:
                   ind = m_state.group(1)
                   vname = m_state.group(2)
@@ -1986,7 +2146,7 @@ jobs:
                   ps = ensure_imports(ps, ["androidx.compose.ui.graphics.toArgb"])
               p2.write_text(ps)
 
-          # 2. LyricsScreen.kt: single exit-fullscreen button inside content Box below artwork + slide-down close
+          # 2. LyricsScreen.kt: single exit-fullscreen button + slide-down close
           lf = Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt")
           if lf.exists():
               s0 = lf.read_text()
@@ -2053,7 +2213,7 @@ jobs:
                                   break
               if s1 != s0: lf.write_text(s1)
 
-          # 3. ImmersiveLyricsPanel.kt: single compact button below cover photo (NOT at top)
+          # 3. ImmersiveLyricsPanel.kt: fullscreen button + automatic callback discovery
           il = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
           if il.exists():
               t0 = il.read_text()
@@ -2069,20 +2229,18 @@ jobs:
                               if paren <= 0 and "{" in lines[j]: se = j; break
                           if se is not None:
                               sig = "".join(lines[i:se+1])
-                              m_exp = re.search(r'\bonExpand\s*:\s*\(\)\s*->\s*Unit(\?)?', sig)
-                              m_col = re.search(r'\bonCollapse\s*:\s*\(\)\s*->\s*Unit(\?)?', sig)
-                              m_cls = re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit(\?)?', sig)
+                              unit_cbs = re.findall(r'\b([A-Za-z0-9_]+)\s*:\s*\(\)\s*->\s*Unit(\?)?', sig)
+                              expand_expr = ""
+                              collapse_expr = ""
+                              for cb_name, is_opt in unit_cbs:
+                                  call_s = f"{cb_name}?.invoke()" if is_opt else f"{cb_name}()"
+                                  if not expand_expr and re.search(r'(?:expand|open|full|lyric|click|toggle)', cb_name, re.I) and not re.search(r'(?:close|collapse|dismiss|back)', cb_name, re.I):
+                                      expand_expr = call_s
+                                  if not collapse_expr and re.search(r'(?:close|collapse|dismiss|back)', cb_name, re.I):
+                                      collapse_expr = call_s
                               has_is_exp = re.search(r'\b(isExpanded|expanded|isFullscreen)\s*:', sig)
-                              expand_expr = ("onExpand?.invoke()" if m_exp.group(1) else "onExpand()") if m_exp else ""
-                              if m_col:
-                                  collapse_expr = "onCollapse?.invoke()" if m_col.group(1) else "onCollapse()"
-                              elif m_cls:
-                                  collapse_expr = "onClose?.invoke()" if m_cls.group(1) else "onClose()"
-                              else:
-                                  collapse_expr = ""
                               is_fs_expr = f"({has_is_exp.group(1)} || com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen)" if has_is_exp else "com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen"
                               lines[se] += (
-                                  "    com.music.spotui.ui.screens.VnLyricsFullscreenEffect()\n"
                                   "    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
                                   "    var vnImmClosingDown by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }\n"
                                   "    val vnImmScope = androidx.compose.runtime.rememberCoroutineScope()\n"
@@ -2209,7 +2367,7 @@ jobs:
           def patch_inline_and_karaoke_lyrics(path: Path):
               if not path.exists() or path.name in ("VnFrameRateManager.kt", "LyricsScreen.kt", "LookPreview.kt"):
                   return
-              is_karaoke_or_lyric_comp = bool(re.search(r'(?:Karaoke|WordByWord|SyncedLyric|SweptLyric|LyricLine|LyricPreview|InlineLyric)', path.name, re.I))
+              is_karaoke_or_lyric_comp = bool(re.search(r'(?:Karaoke|WordByWord|SyncedLyric|SweptLyric|LyricLine|LyricPreview|InlineLyric|ImmersiveLyrics)', path.name, re.I))
               is_player_ctrl = path.name == "PlayerControls.kt"
               if not is_karaoke_or_lyric_comp and not is_player_ctrl:
                   return
@@ -2326,7 +2484,7 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          # 5. Inject each VNEra settings card ONLY into verified @Composable / LazyListScope contexts
+          # 5. Inject VNEra settings cards PER-FILE into verified @Composable / LazyListScope contexts
           all_settings_files = [
               p for p in sorted(Path("app/src/main/java/com/music/spotui/ui").rglob("*.kt"))
               if "Settings" in p.name and p.name not in ("VnSettingsBackup.kt", "VnFrameRateManager.kt")
@@ -2370,23 +2528,23 @@ jobs:
               ),
           ]
 
-          COMPOSABLE_CONTAINERS = {
-              "Column", "Row", "Box", "BoxWithConstraints", "Surface", "Card", "ElevatedCard",
-              "OutlinedCard", "Scaffold", "ModalBottomSheet", "DropdownMenu", "AnimatedVisibility",
-              "AnimatedContent", "Crossfade", "CompositionLocalProvider", "ProvideTextStyle",
-              "item", "items", "itemsIndexed", "stickyHeader", "if", "else", "when"
+          NON_COMPOSABLE_CALLEES = {
+              "clickable", "combinedClickable", "pointerInput", "graphicsLayer", "drawBehind",
+              "drawWithContent", "drawWithCache", "onGloballyPositioned", "onSizeChanged",
+              "layout", "offset", "semantics", "remember", "derivedStateOf", "LaunchedEffect",
+              "DisposableEffect", "SideEffect", "produceState", "launch", "async", "withContext",
+              "runCatching", "forEach", "forEachIndexed", "map", "mapNotNull", "filter",
+              "firstOrNull", "any", "all", "none", "sortedBy", "groupBy", "let", "also",
+              "apply", "run", "with", "buildList", "buildString", "rememberLauncherForActivityResult"
+          }
+          NON_COMPOSABLE_NAMED_ARGS = {
+              "transitionSpec", "key", "contentType", "span", "contentAlignment"
           }
           LAZY_CONTAINERS = {
               "LazyColumn", "LazyRow", "LazyVerticalGrid", "LazyHorizontalGrid"
           }
 
           def analyze_composable_scopes(lines: list[str]) -> dict[int, str]:
-              """
-              Returns a mapping: line_idx -> 'COMPOSABLE' | 'LAZY_LIST'
-              ONLY for lines where a @Composable function call is 100% legal in Kotlin.
-              Any line inside a non-@Composable function, clickable {}, onClick = {},
-              remember {}, LaunchedEffect {}, forEach {}, etc. is excluded.
-              """
               n = len(lines)
               clean_lines = []
               in_bc = False
@@ -2414,8 +2572,6 @@ jobs:
                   clean_lines.append(s)
 
               valid_points: dict[int, str] = {}
-
-              # Find every @Composable fun declaration
               i = 0
               while i < n:
                   m_fun = re.search(r'\bfun\s+(?:<[^>]+>\s*)?(?:[A-Za-z0-9_.]+\.)?([A-Za-z0-9_]+)\s*\(', clean_lines[i])
@@ -2423,7 +2579,6 @@ jobs:
                       i += 1
                       continue
 
-                  # Verify @Composable annotation on preceding lines
                   has_composable_ann = "@Composable" in clean_lines[i]
                   if not has_composable_ann:
                       checked = 0
@@ -2440,7 +2595,6 @@ jobs:
                           if checked >= 6:
                               break
 
-                  # Find end of parameter list '(' ... ')'
                   p_depth = 0
                   saw_open_p = False
                   sig_end_line = i
@@ -2476,16 +2630,13 @@ jobs:
                       i = sig_end_line + 1
                       continue
 
-                  # Walk the @Composable function body tracking exact scope types
                   scope_stack: list[str] = ["COMPOSABLE"]
                   paren_depth = 0
                   bracket_depth = 0
                   last_ident = ""
                   saw_equals_at_zero = False
-                  saw_arrow_at_zero = False
 
                   for li in range(body_open_line, n):
-                      # Record validity at the START of line li (before tokens on line li mutate the stack)
                       if paren_depth == 0 and bracket_depth == 0 and scope_stack and "NON_COMPOSABLE" not in scope_stack:
                           valid_points[li] = scope_stack[-1]
 
@@ -2505,11 +2656,6 @@ jobs:
                                       last_ident = ident
                               idx_c = j_c
                               continue
-                          if ch == '-' and idx_c + 1 < L and line_s[idx_c + 1] == '>':
-                              if paren_depth == 0 and bracket_depth == 0:
-                                  saw_arrow_at_zero = True
-                              idx_c += 2
-                              continue
                           if ch == '=':
                               prev_ch = line_s[idx_c - 1] if idx_c > 0 else ''
                               next_ch = line_s[idx_c + 1] if idx_c + 1 < L else ''
@@ -2522,7 +2668,6 @@ jobs:
                               if paren_depth == 0 and bracket_depth == 0:
                                   last_ident = ""
                                   saw_equals_at_zero = False
-                                  saw_arrow_at_zero = False
                               idx_c += 1
                               continue
                           if ch == '(':
@@ -2537,25 +2682,22 @@ jobs:
                               if paren_depth != 0 or bracket_depth != 0:
                                   scope_stack.append("NON_COMPOSABLE")
                               elif saw_equals_at_zero:
-                                  scope_stack.append("COMPOSABLE" if last_ident == "content" else "NON_COMPOSABLE")
+                                  is_cb_arg = bool(re.match(r'^on[A-Z]', last_ident)) or last_ident in NON_COMPOSABLE_NAMED_ARGS
+                                  scope_stack.append("NON_COMPOSABLE" if is_cb_arg else "COMPOSABLE")
+                              elif last_ident in NON_COMPOSABLE_CALLEES:
+                                  scope_stack.append("NON_COMPOSABLE")
                               elif last_ident in LAZY_CONTAINERS:
                                   scope_stack.append("LAZY_LIST")
-                              elif last_ident in COMPOSABLE_CONTAINERS:
-                                  scope_stack.append("COMPOSABLE")
-                              elif saw_arrow_at_zero and scope_stack and scope_stack[-1] == "COMPOSABLE":
-                                  scope_stack.append("COMPOSABLE")
                               else:
-                                  scope_stack.append("NON_COMPOSABLE")
+                                  scope_stack.append("COMPOSABLE")
                               last_ident = ""
                               saw_equals_at_zero = False
-                              saw_arrow_at_zero = False
                           elif ch == '}':
                               if scope_stack:
                                   scope_stack.pop()
                               if paren_depth == 0 and bracket_depth == 0:
                                   last_ident = ""
                                   saw_equals_at_zero = False
-                                  saw_arrow_at_zero = False
                               if not scope_stack:
                                   break
                           idx_c += 1
@@ -2568,13 +2710,10 @@ jobs:
 
               return valid_points
 
-          placed_globally: dict[str, bool] = {"lyrics": False, "appearance": False, "playback": False}
-
           for sp_file in all_settings_files:
               for cat_name, marker, anchor_rx, comp_call in cat_configs:
                   st = sp_file.read_text()
                   if marker in st:
-                      placed_globally[cat_name] = True
                       continue
                   lines = st.splitlines(keepends=True)
                   valid_scopes = analyze_composable_scopes(lines)
@@ -2593,7 +2732,7 @@ jobs:
                           continue
                       if re.search(anchor_rx, line, re.IGNORECASE):
                           anchor_indent = len(line) - len(s_strip)
-                          for k in range(idx + 1, min(idx + 60, len(lines))):
+                          for k in range(idx + 1, min(idx + 80, len(lines))):
                               if k not in valid_scopes:
                                   continue
                               scope_kind = valid_scopes[k]
@@ -2607,7 +2746,6 @@ jobs:
                                   lines.insert(k, f"{ind}item {{ {comp_call} }}\n")
                                   sp_file.write_text("".join(lines))
                                   placed = True
-                                  placed_globally[cat_name] = True
                                   print(f"Injected {marker} into {cat_name} LazyColumn of {sp_file}")
                                   break
                               if re.match(r'^\s*\}\s*$', clean_k) and ind_len < anchor_indent:
@@ -2617,27 +2755,20 @@ jobs:
                                       lines.insert(k, f"{ind}    {comp_call}\n")
                                   sp_file.write_text("".join(lines))
                                   placed = True
-                                  placed_globally[cat_name] = True
                                   print(f"Injected {marker} into {cat_name} section of {sp_file}")
                                   break
                           if placed:
                               break
 
-          # Fallback: if any category wasn't placed in a dedicated @Composable section, append safely to main SettingsScreen / ImmersiveSettingsScreen
-          unplaced = [cfg for cfg in cat_configs if not placed_globally[cfg[0]]]
-          if unplaced:
-              for main_name in ("SettingsScreen.kt", "ImmersiveSettingsScreen.kt"):
-                  candidates = [p for p in all_settings_files if p.name == main_name]
-                  if not candidates:
-                      continue
-                  mp = candidates[0]
-                  for cat_name, marker, _, comp_call in unplaced:
-                      st = mp.read_text()
+              # Per-file fallback for main SettingsScreen & ImmersiveSettingsScreen:
+              # Ensure ALL 3 cards exist in each main settings screen even if a category sub-page uses indirect navigation
+              if sp_file.name in ("SettingsScreen.kt", "ImmersiveSettingsScreen.kt"):
+                  for cat_name, marker, _, comp_call in cat_configs:
+                      st = sp_file.read_text()
                       if marker in st:
                           continue
                       lines = st.splitlines(keepends=True)
                       valid_scopes = analyze_composable_scopes(lines)
-                      # Find the last closing brace inside a LAZY_LIST or top-level COMPOSABLE container
                       best_k = None
                       best_kind = None
                       for k in range(len(lines) - 1, -1, -1):
@@ -2653,8 +2784,8 @@ jobs:
                               lines.insert(best_k, f"{ind}    item {{ {comp_call} }}\n")
                           else:
                               lines.insert(best_k, f"{ind}    {comp_call}\n")
-                          mp.write_text("".join(lines))
-                          print(f"Fallback injected {marker} into {mp}")
+                          sp_file.write_text("".join(lines))
+                          print(f"Fallback injected {marker} into {sp_file}")
 
           for ap in [Path("app/src/main/java/com/music/spotui/ui/screens/SettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/pages/ImmersiveSettingsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")]:
               if ap.exists() and "vnAnimatedElement" not in ap.read_text():
