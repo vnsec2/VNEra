@@ -273,7 +273,8 @@ jobs:
               var keepShuffleEnabled by mutableStateOf(false); private set
               var rememberShuffleEnabled by mutableStateOf(false); private set
               var rememberedShuffleState by mutableStateOf(false); private set
-              val shuffleLockEnabled: Boolean get() = keepShuffleEnabled || rememberShuffleEnabled
+              val isShuffleMemoryActive: Boolean get() = keepShuffleEnabled || rememberShuffleEnabled
+              val shuffleLockEnabled: Boolean get() = isShuffleMemoryActive
               var cachedExtensionsText by mutableStateOf(""); private set
               var lyricsBeautifulEnabled by mutableStateOf(false); private set
               var lyricsCustomColorArgb by mutableLongStateOf(0L); private set
@@ -1281,7 +1282,6 @@ jobs:
                       return
                   }
 
-                  // isShuffleOn == false
                   if (recentlyTappedByUser && !userWantsShuffle) {
                       lastKnownShuffleOn = false
                       VnFpsPref.saveRememberedShuffleState(c, false)
@@ -1586,14 +1586,16 @@ jobs:
                   while (true) {
                       if (!VnFpsPref.hasDirectPlayerIsPlaying && am != null) {
                           val playingNow = if (Build.VERSION.SDK_INT >= 26) {
-                              runCatching {
-                                  am.activePlaybackConfigurations.any { cfg ->
-                                      val st = runCatching {
-                                          cfg.javaClass.getMethod("getPlayerState").invoke(cfg) as? Int
-                                      }.getOrDefault(-1)
-                                      st == 2
-                                  }
-                              }.getOrDefault(false)
+                              val states = am.activePlaybackConfigurations.mapNotNull { cfg ->
+                                  runCatching {
+                                      cfg.javaClass.getMethod("getPlayerState").invoke(cfg) as? Int
+                                  }.getOrNull()
+                              }
+                              if (states.isNotEmpty()) {
+                                  states.any { it == 2 }
+                              } else {
+                                  am.isMusicActive
+                              }
                           } else {
                               am.isMusicActive
                           }
@@ -1601,7 +1603,7 @@ jobs:
                               VnFpsPref.isPlaybackPlaying = playingNow
                           }
                       }
-                      delay(180L)
+                      delay(150L)
                   }
               }
               DisposableEffect(act) {
@@ -2599,7 +2601,7 @@ jobs:
               ct = ctrl_kt.read_text()
               orig_ct = ct
 
-              # A. Direct player isPlaying hooks (Player.Listener, ViewModel state, Player Composables)
+              # A. Direct player isPlaying hooks (Player.Listener, StateFlow assignment, ViewModel state, Player Composables)
               if "reportPlayerIsPlaying" not in ct:
                   # 1. Media3 Player.Listener.onIsPlayingChanged(isPlaying: Boolean)
                   ct, n_lis = re.subn(
@@ -2607,14 +2609,23 @@ jobs:
                       r'\1\n        com.music.spotui.ui.screens.VnFpsPref.reportPlayerIsPlaying(\2)',
                       ct
                   )
-                  # 2. Composable state collection: val isPlaying by ...collectAsState...
-                  if n_lis == 0 and "@Composable" in ct:
+                  # 2. Direct StateFlow assignment: _isPlaying.value = expr / isPlaying.value = expr
+                  if n_lis == 0:
+                      ct, n_val = re.subn(
+                          r'(?m)^([ \t]*)(_?isPlaying\.value\s*=\s*([^\n]+)\n)',
+                          r'\1\2\1com.music.spotui.ui.screens.VnFpsPref.reportPlayerIsPlaying(_isPlaying.value)\n' if '_isPlaying.value' in ct else r'\1\2\1com.music.spotui.ui.screens.VnFpsPref.reportPlayerIsPlaying(isPlaying.value)\n',
+                          ct
+                      )
+                  else:
+                      n_val = 0
+                  # 3. Composable state collection: val isPlaying by ...collectAsState...
+                  if n_lis == 0 and n_val == 0 and "@Composable" in ct:
                       ct, n_col = re.subn(
                           r'(?m)^([ \t]*)(val\s+(isPlaying)\s+by\s+[^\n]*collectAsState[^\n]*\n)',
                           r'\1\2\1androidx.compose.runtime.SideEffect { com.music.spotui.ui.screens.VnFpsPref.reportPlayerIsPlaying(\3) }\n',
                           ct
                       )
-                      # 3. Composable parameter: fun PlayerControls(..., isPlaying: Boolean, ...)
+                      # 4. Composable parameter: fun PlayerControls(..., isPlaying: Boolean, ...)
                       if n_col == 0 and re.search(r'(?:Player|Controls|MiniPlayer)', ctrl_kt.name, re.I):
                           lines_p = ct.splitlines(keepends=True)
                           for idx_p, lp in enumerate(lines_p):
