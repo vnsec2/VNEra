@@ -3994,7 +3994,6 @@ jobs:
                   t = re.sub(r'([A-Za-z0-9_]+\.readText\s*\(\s*\))', r'com.music.spotui.ui.screens.VnFpsPref.onBackupImported(context, \1)', t, count=1)
                   t = re.sub(r'(\.write\s*\(\s*)([A-Za-z0-9_]+)(\.toByteArray)', r'\1com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson(context, \2)\3', t, count=1)
                   sb.write_text(t)
-
           def apply_animations_in_composables(src: str) -> str:
               if "vnAnimatedElement" in src or "@Composable" not in src:
                   return src
@@ -4004,6 +4003,12 @@ jobs:
               comp_pending = False
               b_depth = 0
               counter = 0
+
+              def _anim_repl(m):
+                  nonlocal counter
+                  counter += 1
+                  return f"{m.group(0)}.vnAnimatedElement({counter})"
+
               for idx, raw_l in enumerate(lines):
                   cl = clean[idx]
                   if "@Composable" in cl:
@@ -4019,8 +4024,8 @@ jobs:
                           continue
                       if "vnAnimatedElement" not in raw_l and "VnPlayerInlineLyricsBar" not in raw_l:
                           new_l, n = re.subn(
-                              r'\bModifier\s*\.\s*(fillMaxWidth\s*\(\s*\)|clip\s*\([^)]+\))',
-                              lambda m: f"{m.group(0)}.vnAnimatedElement({(counter := counter + 1)})",
+                              r'\bModifier\s*\.\s*(fillMaxWidth\s*\(\s*\)|clip\s*\((?:[^()]+|\([^()]*\))+\))',
+                              _anim_repl,
                               raw_l,
                               count=1
                           )
