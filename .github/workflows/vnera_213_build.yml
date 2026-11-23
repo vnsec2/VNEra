@@ -215,6 +215,7 @@ jobs:
           import androidx.compose.foundation.shape.*
           import androidx.compose.material.icons.Icons
           import androidx.compose.material.icons.rounded.Check
+          import androidx.compose.material.icons.rounded.Close
           import androidx.compose.material.icons.rounded.Fullscreen
           import androidx.compose.material.icons.rounded.FullscreenExit
           import androidx.compose.material3.*
@@ -1097,6 +1098,23 @@ jobs:
           }
 
           @Composable
+          fun VnLyricsPanelScaleScope(content: @Composable () -> Unit) {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
+              val baseDensity = LocalDensity.current
+              val scale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
+              val scaledDensity = remember(baseDensity, scale) {
+                  Density(density = baseDensity.density, fontScale = baseDensity.fontScale * scale)
+              }
+              CompositionLocalProvider(
+                  LocalVnIsPlayerInlineLyric provides false,
+                  LocalDensity provides scaledDensity
+              ) {
+                  content()
+              }
+          }
+
+          @Composable
           fun VnPlayerInlineLyricScope(
               isPlayerControls: Boolean = true,
               content: @Composable () -> Unit
@@ -1122,36 +1140,33 @@ jobs:
               ownerId: String = "default",
               onClick: () -> Unit
           ) {
-              val c = LocalContext.current
-              val act = remember(c) { c.findActivity() }
+              val iconScale by animateFloatAsState(
+                  targetValue = if (isFullscreen) 1f else 1.04f,
+                  animationSpec = spring(dampingRatio = 0.78f, stiffness = 360f),
+                  label = "vn_fullscreen_icon_scale"
+              )
               Surface(
-                  onClick = {
-                      onClick()
-                      if (isFullscreen) {
-                          if (VnFpsPref.lyricsFullscreenOpen) VnFpsPref.closeLyricsFullscreen(act)
-                      } else {
-                          if (!VnFpsPref.lyricsFullscreenOpen) VnFpsPref.openLyricsFullscreen(act)
-                      }
-                  },
+                  onClick = onClick,
                   modifier = Modifier
                       .zIndex(99f)
-                      .size(42.dp),
-                  shape = CircleShape,
-                  color = Color.Black.copy(alpha = 0.82f),
-                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.48f)),
-                  shadowElevation = 9.dp
+                      .size(if (isFullscreen) 48.dp else 46.dp),
+                  shape = RoundedCornerShape(if (isFullscreen) 16.dp else 15.dp),
+                  color = Color(0xE6161820),
+                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
+                  shadowElevation = 12.dp
               ) {
-                  val iconScale by animateFloatAsState(
-                      targetValue = if (isFullscreen) 1.08f else 1f,
-                      animationSpec = spring(dampingRatio = 0.62f, stiffness = 520f),
-                      label = "vn_fullscreen_icon_scale"
-                  )
                   Box(contentAlignment = Alignment.Center) {
                       Icon(
-                          imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                          contentDescription = if (isFullscreen) "Κλείσιμο πλήρους οθόνης" else "Πλήρης οθόνη στίχων",
+                          imageVector = if (isFullscreen) Icons.Rounded.Close else Icons.Rounded.Fullscreen,
+                          contentDescription = if (isFullscreen) "Κλείσιμο πλήρους οθόνης" else "Άνοιγμα πλήρους οθόνης",
                           tint = Color.White,
-                          modifier = Modifier.graphicsLayer { scaleX = iconScale; scaleY = iconScale }.size(23.dp)
+                          modifier = Modifier
+                              .graphicsLayer {
+                                  scaleX = iconScale
+                                  scaleY = iconScale
+                                  rotationZ = if (isFullscreen) 0f else 0f
+                              }
+                              .size(if (isFullscreen) 22.dp else 24.dp)
                       )
                   }
               }
@@ -1172,7 +1187,8 @@ jobs:
                   if (!isClosing) {
                       isClosing = true
                       scope.launch {
-                          delay(250L)
+                          // Let the exit transition finish before removing the Dialog.
+                          delay(380L)
                           VnFpsPref.closeLyricsFullscreen(act)
                           isClosing = false
                       }
@@ -1222,6 +1238,15 @@ jobs:
                           modifier = Modifier
                               .fillMaxSize()
                               .vnFullscreenSlideContainer(isClosing = isClosing, matchPlayerBackground = false)
+                              .background(
+                                  Brush.verticalGradient(
+                                      colors = listOf(
+                                          Color(0xFF080A10),
+                                          Color(0xFF171B28),
+                                          Color(0xFF0B0D14)
+                                      )
+                                  )
+                              )
                               .vnSmartLyricsSwipe(
                                   act = act,
                                   isExpanded = true,
@@ -1268,33 +1293,39 @@ jobs:
                                       val targetTextColor = when {
                                           isCurrent && hasCustomActive -> accentColor.copy(alpha = 1.0f)
                                           isCurrent -> Color.White
-                                          hasCustomActive -> accentColor.copy(alpha = 0.42f)
-                                          else -> Color.White.copy(alpha = 0.44f)
+                                          hasCustomActive -> accentColor.copy(alpha = 0.34f)
+                                          else -> Color.White.copy(alpha = 0.34f)
                                       }
                                       val animatedColor by animateColorAsState(
                                           targetValue = targetTextColor,
-                                          animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+                                          animationSpec = spring(dampingRatio = 0.88f, stiffness = 240f),
                                           label = "vn_fs_lyric_color"
                                       )
                                       val animatedScale by animateFloatAsState(
-                                          targetValue = if (isCurrent) 1.03f else 0.98f,
-                                          animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+                                          targetValue = if (isCurrent) 1.045f else 0.975f,
+                                          animationSpec = spring(dampingRatio = 0.82f, stiffness = 300f),
                                           label = "vn_fs_lyric_scale"
                                       )
                                       Text(
                                           text = line,
                                           style = MaterialTheme.typography.headlineSmall.copy(
-                                              fontSize = (22f * fontScale).sp,
-                                              lineHeight = (30f * fontScale).sp,
+                                              fontSize = ((if (isCurrent) 29f else 21f) * fontScale).sp,
+                                              lineHeight = ((if (isCurrent) 37f else 29f) * fontScale).sp,
                                               fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium
                                           ),
                                           color = animatedColor,
+                                          textAlign = TextAlign.Center,
                                           modifier = Modifier
                                               .fillMaxWidth()
+                                              .clip(RoundedCornerShape(18.dp))
+                                              .background(
+                                                  if (isCurrent) accentColor.copy(alpha = 0.13f) else Color.Transparent
+                                              )
+                                              .padding(horizontal = 12.dp, vertical = 10.dp)
                                               .graphicsLayer {
                                                   scaleX = animatedScale
                                                   scaleY = animatedScale
-                                                  transformOrigin = TransformOrigin(0f, 0.5f)
+                                                  transformOrigin = TransformOrigin(0.5f, 0.5f)
                                               }
                                       )
                                   }
@@ -1363,9 +1394,9 @@ jobs:
               val progress by animateFloatAsState(
                   targetValue = if (isEntered && !isClosing) 1f else 0f,
                   animationSpec = if (isClosing) {
-                      tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                      tween(durationMillis = 360, easing = FastOutSlowInEasing)
                   } else {
-                      spring(dampingRatio = 0.86f, stiffness = 420f)
+                      spring(dampingRatio = 0.88f, stiffness = 260f)
                   },
                   label = "vn_fullscreen_smooth_transition"
               )
@@ -1830,7 +1861,7 @@ jobs:
                   if (lastKey.substringBefore("|") != ck && lastKey.isNotEmpty()) {
                       VnFpsPref.resetLyricsCache()
                   }
-                  if (cs.isEmpty() && score == 0) return
+                  // Do not exit here when only id/title are available: order alerts must still run.
                   lastKey = effectiveKey
 
                   val warnings = mutableListOf<String>()
@@ -1923,8 +1954,9 @@ jobs:
           fun applyWindowFrameRate(act: Activity, targetFps: Int, forceReset: Boolean = false) {
               val w = act.window ?: return; val d = act.currentDisplay() ?: return; val m = d.mode
               val modes = d.supportedModes.filter { it.physicalWidth == m.physicalWidth && it.physicalHeight == m.physicalHeight }
-              val hz = if (targetFps <= 0) modes.maxOfOrNull { it.refreshRate } ?: m.refreshRate else targetFps.toFloat()
-              val best = modes.minByOrNull { abs(it.refreshRate - hz) }
+              val requestedHz = if (targetFps <= 0) modes.maxOfOrNull { it.refreshRate } ?: m.refreshRate else targetFps.toFloat()
+              val best = modes.minByOrNull { abs(it.refreshRate - requestedHz) }
+              val hz = best?.refreshRate ?: m.refreshRate
               if (forceReset) w.attributes = w.attributes.apply { preferredDisplayModeId = 0; preferredRefreshRate = 0f }
               w.attributes = w.attributes.apply {
                   preferredDisplayModeId = if (best != null && abs(best.refreshRate - hz) <= 2f) best.modeId else 0
@@ -2265,7 +2297,7 @@ jobs:
                       )
                       Spacer(Modifier.height(3.dp))
                       Text(
-                          text = if (rates.isNotEmpty()) "Υποστηριζόμενα: ${rates.joinToString(" / ")} Hz" else "Προεπιλογή μέγιστου ρυθμού ανανέωσης",
+                          text = if (rates.isNotEmpty()) "Υποστηριζόμενα: ${rates.joinToString(" / ")} Hz · εμφανίζονται μόνο διαθέσιμες επιλογές" else "Προεπιλογή μέγιστου ρυθμού ανανέωσης",
                           style = MaterialTheme.typography.bodySmall,
                           color = MaterialTheme.colorScheme.onSurfaceVariant
                       )
@@ -2274,7 +2306,7 @@ jobs:
                           modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                           horizontalArrangement = Arrangement.spacedBy(8.dp)
                       ) {
-                          listOf(0, 30, 60, 90, 120).forEach { f ->
+                          (listOf(0) + rates.filter { it in listOf(30, 60, 90, 120) }.distinct()).forEach { f ->
                               VnOptionPill(
                                   label = if (f == 0) "Auto" else "$f FPS",
                                   selected = VnFpsPref.targetFps == f,
@@ -2794,6 +2826,20 @@ jobs:
                   )
                   ps = ps.replace(m_imm_fn.group(0), bg_hook, 1)
                   ps = ensure_imports(ps, ["androidx.compose.ui.graphics.toArgb"])
+              if "vnPlaybackStateObserver" not in ps:
+                  m_ctx = re.search(r'(?m)^(\s*)val context = LocalContext.current\s*$', ps)
+                  if m_ctx:
+                      ind = m_ctx.group(1)
+                      observer = (
+                          f"{ind}val vnPlaybackStateObserver = state\n"
+                          f"{ind}androidx.compose.runtime.LaunchedEffect(state.title, state.artist, state.coverUrl, com.music.spotui.ui.screens.VnFpsPref.playbackAlertsEnabled) {{\n"
+                          f"{ind}    if (com.music.spotui.ui.screens.VnFpsPref.playbackAlertsEnabled) {{\n"
+                          f"{ind}        com.music.spotui.ui.screens.VnPlaybackMonitor.inspectAndReport(context, vnPlaybackStateObserver)\n"
+                          f"{ind}        com.music.spotui.ui.screens.VnPlaybackMonitor.checkOrderMismatchOnly(context)\n"
+                          f"{ind}    }}\n"
+                          f"{ind}}}\n"
+                      )
+                      ps = ps.replace(m_ctx.group(0), m_ctx.group(0) + "\n" + observer.rstrip(), 1)
               p2.write_text(ps)
 
           lf = next(Path("app/src/main/java").rglob("LyricsScreen.kt"), Path("app/src/main/java/com/music/spotui/ui/screens/LyricsScreen.kt"))
@@ -2886,7 +2932,7 @@ jobs:
                                   if d <= 0: be = k; break
                               if be is not None:
                                   lines[se] += (
-                                      "    com.music.spotui.ui.screens.VnPlayerInlineLyricScope(isPlayerControls = false) {\n"
+                                      "    com.music.spotui.ui.screens.VnLyricsPanelScaleScope {\n"
                                       "    val vnImmLyricsActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()\n"
                                       "    var vnImmClosingDown by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }\n"
                                       "    val vnImmScope = androidx.compose.runtime.rememberCoroutineScope()\n"
@@ -3365,6 +3411,36 @@ jobs:
 
               if ct != orig_ct:
                   ctrl_kt.write_text(ct)
+
+          # Reliable shuffle persistence hook in the actual Immersive Player controls.
+          # Unlike the older icon-neighbour heuristic, this uses the real state and callback.
+          immersive_player = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
+          if immersive_player.exists():
+              src_shuffle = immersive_player.read_text()
+              old_shuffle = src_shuffle
+              if "VnShuffleGuard.observeShuffleState" not in src_shuffle:
+                  m_shuffle_fn = re.search(r'(@Composable\s+private fun PlayerControlsBlock\([\s\S]*?\n\)\s*\{)', src_shuffle)
+                  if m_shuffle_fn:
+                      guard = (
+                          "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
+                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle) {\n"
+                          "        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
+                          "    }\n"
+                      )
+                      src_shuffle = src_shuffle[:m_shuffle_fn.end()] + guard + src_shuffle[m_shuffle_fn.end():]
+                      src_shuffle, n_shuffle_cb = re.subn(
+                          r'onToggleShuffle\s*=\s*actions\.toggleShuffle\s*,',
+                          'onToggleShuffle = {\n            com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!state.shuffle, vnShuffleContext)\n            actions.toggleShuffle()\n        },',
+                          src_shuffle,
+                          count=1,
+                      )
+                      if n_shuffle_cb != 1:
+                          raise RuntimeError("Could not safely attach shuffle button callback")
+                  else:
+                      raise RuntimeError("Could not locate PlayerControlsBlock for shuffle integration")
+              if src_shuffle != old_shuffle:
+                  immersive_player.write_text(src_shuffle)
+                  print("Patched shuffle persistence in ImmersivePlayer PlayerControlsBlock")
 
           extra_c = ", ".join(f"Color(0xFF{c})" for c in ["E53935","FF5722","FF9800","FFC107","00BFA5","00BCD4","3F51B5","7C4DFF","E040FB","FF4081","64FFDA","FFAB91","B388FF","ECEFF1"])
           for kf in sorted(Path("app/src/main/java").rglob("*.kt")):
@@ -3897,12 +3973,14 @@ jobs:
                   print(f"Placed ALL VNEra settings cards in main Settings container of {kt_file}")
                   break
 
-          for target_name in ["SettingsScreen.kt", "ImmersiveSettingsScreen.kt"]:
+          # Apply optional element motion to actual player surfaces, never to the settings page itself.
+          for target_name in ["PlayerControls.kt", "ImmersivePlayer.kt"]:
               ap = next(Path("app/src/main/java").rglob(target_name), None)
               if ap is not None and ap.exists() and "vnAnimatedElement" not in ap.read_text():
                   c = [0]
                   an = re.sub(r'\bModifier\s*\.\s*fillMaxWidth\s*\(\s*\)', lambda m: (c.__setitem__(0, c[0]+1) or f"{m.group(0)}.vnAnimatedElement({c[0]})"), ap.read_text())
-                  ap.write_text(ensure_imports(an, ["com.music.spotui.ui.screens.vnAnimatedElement"]))
+                  if c[0] > 0:
+                      ap.write_text(ensure_imports(an, ["com.music.spotui.ui.screens.vnAnimatedElement"]))
 
           for sf in sorted(Path("app/src/main/java").rglob("*.kt")):
               ft = sf.read_text()
