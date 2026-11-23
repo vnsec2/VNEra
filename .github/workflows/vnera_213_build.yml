@@ -3131,14 +3131,16 @@ jobs:
                   for cb_name in ("onPlaybackStateChanged", "onIsPlayingChanged", "onMediaItemTransition", "onTimelineChanged"):
                       m_cb = re.search(rf'(override\s+fun\s+{cb_name}\s*\([^)]*\)\s*\{{)', ct)
                       if m_cb:
-                          player_ref = next(
+                          player_cand = next(
                               (cand for cand in ("player", "exoPlayer", "mediaController", "controller", "_player") if re.search(rf'\b{cand}\b', ct)),
                               "this" if re.search(r':\s*Player\b', ct) else None
                           )
-                          if player_ref:
+                          if player_cand:
+                              is_fn = player_cand != "this" and bool(re.search(rf'(?:\bfun\s+{player_cand}\s*\(|\b(?:val|var)\s+{player_cand}\s*:\s*\(\s*\)\s*->)', ct))
+                              player_expr = f"{player_cand}()" if is_fn else player_cand
                               ct = ct.replace(
                                   m_cb.group(1),
-                                  f"{m_cb.group(1)}\n        com.music.spotui.ui.screens.VnShuffleGuard.enforceOnPlayerIfNeeded({player_ref})",
+                                  f"{m_cb.group(1)}\n        runCatching {{ com.music.spotui.ui.screens.VnShuffleGuard.enforceOnPlayerIfNeeded({player_expr}) }}",
                                   1
                               )
                               break
