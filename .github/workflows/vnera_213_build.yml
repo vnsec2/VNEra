@@ -951,6 +951,7 @@ jobs:
               return rawText
           }
 
+          @Composable
           fun vnCaptureAndStyleLyric(rawText: AnnotatedString, isPlayer: Boolean = true): AnnotatedString {
               return vnStyleLyricAnnotatedString(rawText, isPlayer = isPlayer)
           }
@@ -970,6 +971,7 @@ jobs:
           fun vnHasCustomLyricColorEnabled(): Boolean =
               VnFpsPref.lyricsBeautifulEnabled || VnFpsPref.lyricsCustomColorArgb != 0L
 
+          @Composable
           fun vnPlayerInlineLyricColor(original: Color, isPlayer: Boolean = true): Color {
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
@@ -989,6 +991,7 @@ jobs:
               return chosen.copy(alpha = 1.0f)
           }
 
+          @Composable
           fun vnPlayerInlineLyricStyle(style: TextStyle, isPlayer: Boolean = true): TextStyle {
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
@@ -1011,6 +1014,7 @@ jobs:
               return updated
           }
 
+          @Composable
           fun vnStyleLyricAnnotatedString(raw: AnnotatedString, isPlayer: Boolean = true): AnnotatedString {
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasColorSpans = raw.spanStyles.any { it.item.color.isSpecified }
@@ -3236,7 +3240,6 @@ jobs:
                                   b_close = raw_oc.rfind("}")
                                   oc_body = raw_oc[b_open + 1:b_close].strip() if (b_open != -1 and b_close > b_open) else ""
                                   if shuf_expr and oc_body:
-                                      # Find start of the IconButton / clickable statement containing onClick
                                       stmt_start = back_s
                                       for st_back in range(back_s, max(-1, back_s - 8), -1):
                                           if re.search(r'\b(?:IconButton|FilledIconButton|OutlinedIconButton|Surface|Box|Icon)\s*\(', lines_s[st_back]):
@@ -3402,7 +3405,6 @@ jobs:
               tn = patch_material_theme_accent(tt)
               if tn != tt: tf.write_text(tn)
 
-          # Clean any previously scattered VNEra settings card injections so all 3 can be placed together right above Backup / Export
           scattered_rx = re.compile(
               r'^\s*(?:item\s*\{\s*)?(?:com\.music\.spotui\.ui\.screens\.)?Vn(?:Appearance|Playback|Lyrics|FpsSelector)Settings?Card\(\)\s*\}?\s*$'
           )
@@ -3669,7 +3671,6 @@ jobs:
                       )
                       if target_idx is not None:
                           s_idx, e_idx, item_ind = items[target_idx]
-                          # If immediately preceded by a section header item (e.g. "Backup" / "Αντίγραφα ασφαλείας" / "Εφαρμογή"), insert right before that header
                           if target_idx > 0:
                               ps, pe, pind = items[target_idx - 1]
                               prev_txt = "".join(new_lines[ps:pe+1])
@@ -3722,7 +3723,6 @@ jobs:
 
           placed_groups: set[str] = set()
 
-          # Pass 1: Place ALL 3 VNEra settings cards together directly above Backup / Export in Standard & Immersive Settings
           for target_group in ["standard", "immersive"]:
               for kt_file in ui_kt_files:
                   is_imm_file = "immersive" in str(kt_file).lower()
@@ -3756,7 +3756,6 @@ jobs:
                       print(f"Placed ALL VNEra settings cards above Backup/Export in {kt_file}")
                       break
 
-          # Pass 2: If SettingsScreen/ImmersiveSettingsScreen had no Backup anchor directly, place on main Settings container
           for target_group in ["standard", "immersive"]:
               if target_group in placed_groups:
                   continue
@@ -3819,7 +3818,6 @@ jobs:
                       else:
                           bt = re.sub(r'\b([A-Za-z0-9_]*json[A-Za-z0-9_]*\.toString\(\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1, flags=re.I)
 
-              # If VnSettingsBackup was NOT placed via SettingsScreen/ImmersiveSettingsScreen, place all 3 cards right at the top of VnSettingsBackup above Backup/Export
               if not placed_groups and "VnAppearanceSettingsCard" not in bt:
                   lines_b = bt.splitlines(keepends=True)
                   cs_b = next((i for i, l in enumerate(lines_b) if "@Composable" in l), None)
