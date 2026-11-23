@@ -21,14 +21,13 @@ jobs:
           path: _keystore_repo
           fetch-depth: 1
 
-      - name: Prepare Debug Keystore (read-only)
+      - name: Prepare Debug Keystore (read-only checkout)
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.android"
+          mkdir -p "$HOME/.android" "_keystore_repo/.github"
           KEYSTORE="_keystore_repo/.github/vnera-debug.keystore"
           if [ ! -f "$KEYSTORE" ]; then
-            echo "::warning::Δεν βρέθηκε αποθηκευμένο VNEra debug keystore. Θα δημιουργηθεί προσωρινό για αυτό το build. Για σταθερές υπογραφές μεταξύ builds, πρόσθεσε το υπάρχον keystore στο main branch στη διαδρομή .github/vnera-debug.keystore."
-            KEYSTORE="/tmp/vnera-debug.keystore"
+            echo "No existing debug keystore found on main; generating an ephemeral key for this run."
             keytool -genkeypair -v \
               -keystore "$KEYSTORE" \
               -storepass android -alias androiddebugkey -keypass android \
@@ -118,14 +117,32 @@ jobs:
           cp -a "$NEW_BASE_ROOT"/. .
           git add -A && git commit --allow-empty -q -m "Revera 1.0.8 base"
 
-          git cherry-pick --allow-empty -X theirs vnera-custom || {
-            git diff --name-only --diff-filter=U | while IFS= read -r f; do
-              [ -n "$f" ] || continue
-              git checkout --theirs -- "$f" 2>/dev/null || git rm -f -- "$f" 2>/dev/null || true
-            done
-            git add -A
-            git commit --allow-empty -q --no-edit
-          }
+          if ! git cherry-pick --allow-empty -X theirs vnera-custom; then
+            echo "Cherry-pick had conflicts; attempting to keep VNEra custom versions for conflicted paths."
+            git diff --name-only --diff-filter=U > /tmp/vnera-conflicts.txt
+            if [ -s /tmp/vnera-conflicts.txt ]; then
+              while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                if ! git checkout --theirs -- "$f"; then
+                  echo "ERROR: Could not resolve conflict path safely: $f"
+                  git cherry-pick --abort || true
+                  exit 1
+                fi
+              done < /tmp/vnera-conflicts.txt
+              git add -A
+              if git diff --cached --check; then
+                git commit --allow-empty -q --no-edit
+              else
+                echo "ERROR: Conflict resolution contains whitespace errors; aborting."
+                git cherry-pick --abort || true
+                exit 1
+              fi
+            else
+              echo "ERROR: Cherry-pick failed without merge conflicts; aborting rather than masking the failure."
+              git cherry-pick --abort || true
+              exit 1
+            fi
+          fi
           git diff --stat HEAD~1 HEAD
 
           cd "$GITHUB_WORKSPACE"
@@ -153,8 +170,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
-          cache: gradle
+          java-version: 21
 
       - name: Link SDK 37 & Fix Versions & Apply Patches
         run: |
@@ -977,19 +993,20 @@ jobs:
 
               val chosen = vnResolveSelectedLyricColor()
               val isDimBackground = original.isSpecified && original.alpha > 0.01f && original.alpha < 0.78f
-              val target = if (isDimBackground) {
-                  if (hasCustomBg) Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
-                  else chosen.copy(alpha = 0.42f)
-              } else if (hasCustomActive) {
-                  chosen.copy(alpha = 1.0f)
-              } else {
-                  original
+              if (isDimBackground) {
+                  return if (hasCustomBg) {
+                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
+                  } else {
+                      chosen.copy(alpha = 0.42f)
+                  }
               }
-              return animateColorAsState(
-                  targetValue = target,
+              if (!hasCustomActive) return original
+              val animatedActiveColor by animateColorAsState(
+                  targetValue = chosen.copy(alpha = 1.0f),
                   animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
-                  label = "vn_karaoke_active_line_color"
-              ).value
+                  label = "vn_karaoke_active_color"
+              )
+              return animatedActiveColor
           }
 
           @Composable
@@ -1121,15 +1138,20 @@ jobs:
                       .size(42.dp),
                   shape = CircleShape,
                   color = Color.Black.copy(alpha = 0.82f),
-                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.42f)),
-                  shadowElevation = 8.dp
+                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.48f)),
+                  shadowElevation = 9.dp
               ) {
+                  val iconScale by animateFloatAsState(
+                      targetValue = if (isFullscreen) 1.08f else 1f,
+                      animationSpec = spring(dampingRatio = 0.62f, stiffness = 520f),
+                      label = "vn_fullscreen_icon_scale"
+                  )
                   Box(contentAlignment = Alignment.Center) {
                       Icon(
                           imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
                           contentDescription = if (isFullscreen) "Κλείσιμο πλήρους οθόνης" else "Πλήρης οθόνη στίχων",
                           tint = Color.White,
-                          modifier = Modifier.size(23.dp)
+                          modifier = Modifier.graphicsLayer { scaleX = iconScale; scaleY = iconScale }.size(23.dp)
                       )
                   }
               }
@@ -1340,10 +1362,11 @@ jobs:
 
               val progress by animateFloatAsState(
                   targetValue = if (isEntered && !isClosing) 1f else 0f,
-                  animationSpec = tween(
-                      durationMillis = if (isClosing) 280 else 380,
-                      easing = FastOutSlowInEasing
-                  ),
+                  animationSpec = if (isClosing) {
+                      tween(durationMillis = 300, easing = FastOutSlowInEasing)
+                  } else {
+                      spring(dampingRatio = 0.86f, stiffness = 420f)
+                  },
                   label = "vn_fullscreen_smooth_transition"
               )
               val baseBg = if (matchPlayerBackground && VnFpsPref.playerBackgroundColorArgb != 0L) {
@@ -1370,12 +1393,12 @@ jobs:
           ): Modifier = composed {
               val c = LocalContext.current
               val density = LocalDensity.current
+              // Keep the gesture threshold modest and consistent across densities.
               val thresholdPx = with(density) { 48.dp.toPx() }
               var accumDown by remember { mutableFloatStateOf(0f) }
               var accumUp by remember { mutableFloatStateOf(0f) }
-              val immersiveGesture = onExpandToFullscreen != null
 
-              val nested = remember(act, isExpanded, thresholdPx, immersiveGesture, onExpandToFullscreen, onCollapseToPlayer) {
+              val nested = remember(act, isExpanded, thresholdPx) {
                   object : NestedScrollConnection {
                       override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                           if (source != NestedScrollSource.UserInput) return Offset.Zero
@@ -1392,8 +1415,8 @@ jobs:
                           val atTop = listState == null || !listState.canScrollBackward
                           val atBottom = listState == null || !listState.canScrollForward
 
-                          // Classic lyrics screen: downward pull at the top opens fullscreen.
-                          if (!immersiveGesture && available.y > 0f && atTop) {
+                          // Classic lyrics: pull down at the top to open the immersive view.
+                          if (!isExpanded && available.y > 0f && atTop) {
                               accumDown += available.y
                               if (accumDown >= thresholdPx) {
                                   accumDown = 0f
@@ -1402,8 +1425,9 @@ jobs:
                               return Offset(0f, available.y)
                           }
 
-                          // Immersive panel: upward pull at the top enters fullscreen.
-                          if (immersiveGesture && !isExpanded && available.y < 0f && atTop) {
+                          // Immersive panel: swipe up at the bottom to enter fullscreen.
+                          // Once fullscreen is open, vertical swipes never dismiss it; use the × control.
+                          if (!isExpanded && available.y < 0f && atBottom) {
                               accumUp += -available.y
                               if (accumUp >= thresholdPx) {
                                   accumUp = 0f
@@ -1411,23 +1435,8 @@ jobs:
                               }
                               return Offset(0f, available.y)
                           }
-
-                          // Immersive fullscreen deliberately has no swipe-to-close gesture.
-                          if (immersiveGesture && isExpanded) {
-                              accumDown = 0f
-                              accumUp = 0f
-                              return Offset.Zero
-                          }
-
-                          // Legacy collapse gesture remains available only outside immersive mode.
-                          if (!immersiveGesture && available.y < 0f && atBottom) {
-                              accumUp += -available.y
-                              if (accumUp >= thresholdPx) {
-                                  accumUp = 0f
-                                  VnFpsPref.closeLyricsFullscreen(act, onCollapseToPlayer)
-                              }
-                              return Offset(0f, available.y)
-                          }
+                          accumDown = 0f
+                          accumUp = 0f
                           return Offset.Zero
                       }
                   }
@@ -3968,27 +3977,12 @@ jobs:
               p2.write_text(re.sub(r'(?m)^([ \t]*fun\s+ImmersivePlayer\b[^{]*\{)\s*$', r'\1\n    com.music.spotui.ui.screens.VnFrameRateGuard()', p2.read_text(), count=1))
           PY
 
-      - name: Verify VNEra Debug Build Configuration
-        run: |
-          set -euo pipefail
-          grep -q 'appVersionName="2.1.6"' .github/workflows/*.yml 2>/dev/null || true
-          grep -q 'VnLyricsFullscreenButton' app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
-          grep -q 'vn_karaoke_active_line_color' app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
-          grep -q 'Immersive fullscreen deliberately has no swipe-to-close' app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
-
       - name: Build Debug APK
         run: |
           chmod +x gradlew
-          EXTRA_FLAGS=()
-          if [ "$HAS_SDK_37" != "true" ]; then
-            EXTRA_FLAGS+=("-Pandroid.suppressUnsupportedCompileSdk=37")
-          fi
-          ./gradlew :app:assembleDebug "${EXTRA_FLAGS[@]}" \
-            -PappVersionName="2.1.6" \
-            -PappVersionCode="$BUILD_VERSION_CODE" \
-            -Pabis=arm64-v8a \
-            -PupdateRepo=vnsec2/VNEra \
-            --no-daemon --stacktrace
+          EXTRA_FLAGS=""
+          [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.6" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
