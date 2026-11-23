@@ -213,6 +213,7 @@ jobs:
           import androidx.compose.ui.platform.LocalDensity
           import androidx.compose.ui.platform.LocalView
           import androidx.compose.ui.text.AnnotatedString
+          import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.buildAnnotatedString
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.text.style.TextAlign
@@ -975,12 +976,34 @@ jobs:
               }
           }
 
+          fun vnScalePlayerLyricSp(size: TextUnit): TextUnit {
+              if (!size.isSpecified) return size
+              val scale = VnFpsPref.playerLyricsFontScale.coerceIn(0.60f, 1.10f)
+              return if (abs(scale - 1.0f) < 0.005f) size else (size.value * scale).sp
+          }
+
+          @Composable
+          fun vnScalePlayerLyricTextStyle(baseStyle: TextStyle = LocalTextStyle.current): TextStyle {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
+              val scale = VnFpsPref.playerLyricsFontScale.coerceIn(0.60f, 1.10f)
+              if (abs(scale - 1.0f) < 0.005f) return baseStyle
+              val baseFontSize = if (baseStyle.fontSize.isSpecified) baseStyle.fontSize else 14.sp
+              val baseLineHeight = if (baseStyle.lineHeight.isSpecified) baseStyle.lineHeight else (baseFontSize.value * 1.32f).sp
+              return baseStyle.copy(
+                  fontSize = (baseFontSize.value * scale).sp,
+                  lineHeight = (baseLineHeight.value * scale).sp
+              )
+          }
+
           fun vnStyleLyricAnnotatedString(raw: AnnotatedString, isPlayer: Boolean = true): AnnotatedString {
               val hasActiveSpan = raw.spanStyles.isEmpty() || raw.spanStyles.any { !it.item.color.isSpecified || it.item.color.alpha >= 0.78f }
               VnFpsPref.captureLyricLine(raw.text, isActive = hasActiveSpan)
               val hasCustomBg = isPlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
               val hasCustomActive = VnFpsPref.lyricsBeautifulEnabled
-              if (!hasCustomBg && !hasCustomActive) return raw
+              val playerScale = VnFpsPref.playerLyricsFontScale.coerceIn(0.60f, 1.10f)
+              val hasPlayerScale = isPlayer && abs(playerScale - 1.0f) >= 0.005f
+              if (!hasCustomBg && !hasCustomActive && !hasPlayerScale) return raw
               if (raw.spanStyles.isEmpty()) return raw
               val bgTint = if (hasCustomBg) Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.72f) else Color.Unspecified
               val activeChosen = vnResolveSelectedLyricColor()
@@ -1000,32 +1023,23 @@ jobs:
                           hasCustomActive -> lerp(activeChosen, Color.White, 0.55f).copy(alpha = 1.0f)
                           else -> c
                       }
-                      addStyle(span.copy(color = newColor), range.start, range.end)
+                      val newFontSize = if (hasPlayerScale && span.fontSize.isSpecified) {
+                          (span.fontSize.value * playerScale).sp
+                      } else {
+                          span.fontSize
+                      }
+                      addStyle(span.copy(color = newColor, fontSize = newFontSize), range.start, range.end)
                   }
               }
           }
 
-          @Composable
-          fun VnPlayerInlineLyricScope(
-              isPlayerControls: Boolean = true,
-              content: @Composable () -> Unit
-          ) {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
-              val baseDensity = LocalDensity.current
-              val rawScale = if (isPlayerControls) VnFpsPref.playerLyricsFontScale else VnFpsPref.lyricsFontScale
-              val scale = if (isPlayerControls) rawScale.coerceIn(0.60f, 1.10f) else rawScale.coerceIn(0.70f, 1.70f)
-              val scaledDensity = remember(baseDensity, scale) {
-                  Density(density = baseDensity.density, fontScale = baseDensity.fontScale * scale)
-              }
-              val activeColor = vnPlayerInlineLyricColor(LocalContentColor.current, isPlayer = isPlayerControls)
-              CompositionLocalProvider(
-                  LocalDensity provides scaledDensity,
-                  LocalContentColor provides activeColor
-              ) {
-                  content()
-              }
+          fun vnStyleLyricTextAny(raw: String, isPlayer: Boolean = true): String {
+              VnFpsPref.captureLyricLine(raw, isActive = true)
+              return raw
           }
+
+          fun vnStyleLyricTextAny(raw: AnnotatedString, isPlayer: Boolean = true): AnnotatedString =
+              vnStyleLyricAnnotatedString(raw, isPlayer = isPlayer)
 
           @Composable
           fun VnLyricsFullscreenButton(
@@ -2979,6 +2993,48 @@ jobs:
               suffix = f", {extra_args}" if extra_args else ""
               return f"{call_src[:start_val]}{wrapper_fn}({expr}{suffix}){call_src[end_val:]}", True
 
+          def wrap_positional_first_arg(call_src: str, wrapper_fn: str, extra_args: str = "") -> tuple[str, bool]:
+              m = re.search(r'\bText\s*\(\s*', call_src)
+              if not m:
+                  return call_src, False
+              start_val = m.end()
+              rest = call_src[start_val:]
+              if wrapper_fn in rest[:len(wrapper_fn) + 55]:
+                  return call_src, False
+              if re.match(r'^[A-Za-z0-9_]+\s*=', rest):
+                  return call_src, False
+              depth_p = depth_b = depth_c = 0
+              end_val = len(call_src)
+              for idx_c in range(start_val, len(call_src)):
+                  ch = call_src[idx_c]
+                  if ch == '(': depth_p += 1
+                  elif ch == ')':
+                      if depth_p == 0 and depth_b == 0 and depth_c == 0:
+                          end_val = idx_c
+                          break
+                      depth_p -= 1
+                  elif ch == '[': depth_b += 1
+                  elif ch == ']': depth_b -= 1
+                  elif ch == '{': depth_c += 1
+                  elif ch == '}': depth_c -= 1
+                  elif ch == ',' and depth_p == 0 and depth_b == 0 and depth_c == 0:
+                      end_val = idx_c
+                      break
+              expr = call_src[start_val:end_val].strip()
+              if not expr or expr.startswith('"'):
+                  return call_src, False
+              suffix = f", {extra_args}" if extra_args else ""
+              return f"{call_src[:start_val]}{wrapper_fn}({expr}{suffix}){call_src[end_val:]}", True
+
+          def append_named_arg_before_close(call_src: str, arg_assignment: str) -> str:
+              r_paren = call_src.rfind(")")
+              if r_paren == -1:
+                  return call_src
+              before = call_src[:r_paren].rstrip()
+              after = call_src[r_paren:]
+              sep = " " if before.endswith(",") else ", "
+              return f"{before}{sep}{arg_assignment}{after}"
+
           def extract_arg_expr(call_src: str, param_name: str) -> str:
               m = re.search(rf'\b{param_name}\s*=\s*', call_src)
               if not m:
@@ -3007,7 +3063,7 @@ jobs:
               if not re.match(r'^\s*Text\s*\(', call_block):
                   return call_block, False
               new_block = call_block
-              c0 = c1 = False
+              c0 = c1 = c2 = c3 = c4 = False
               is_player_lit = "true" if is_player else "false"
               txt_expr = extract_arg_expr(new_block, "text")
               color_expr = extract_arg_expr(new_block, "color")
@@ -3032,6 +3088,12 @@ jobs:
                           "text",
                           "com.music.spotui.ui.screens.vnCaptureLyricText"
                       )
+              elif not txt_expr:
+                  new_block, c0 = wrap_positional_first_arg(
+                      new_block,
+                      "com.music.spotui.ui.screens.vnStyleLyricTextAny",
+                      f"isPlayer = {is_player_lit}"
+                  )
               if color_expr:
                   new_block, c1 = wrap_existing_arg_call(
                       new_block,
@@ -3039,86 +3101,32 @@ jobs:
                       "com.music.spotui.ui.screens.vnPlayerInlineLyricColor",
                       f"isPlayer = {is_player_lit}"
                   )
-              return new_block, (c0 or c1)
-
-          def wrap_player_inline_lyrics(src: str) -> str:
-              lines = src.splitlines(keepends=True)
-              out = []
-              i = 0
-              while i < len(lines):
-                  line = lines[i]
-                  m_comp = re.match(r'^(\s*)([A-Za-z0-9_]*(?:InlineLyric|LyricPreview|PlayerLyric|SyncedLyric|KaraokeLyric|SweptLyric|MiniLyric|CurrentLyric)[A-Za-z0-9_]*)\s*\(', line)
-                  if m_comp and "ImmersiveLyricsPanel" not in line and "LyricsScreen" not in line and "VnPlayerInlineLyricScope" not in "".join(lines[max(0, i-2):i]):
-                      ind = m_comp.group(1)
-                      block = [line]
-                      p_cnt = line.count("(") - line.count(")")
-                      b_cnt = line.count("{") - line.count("}")
-                      j = i + 1
-                      while j < len(lines) and (p_cnt > 0 or b_cnt > 0):
-                          block.append(lines[j])
-                          p_cnt += lines[j].count("(") - lines[j].count(")")
-                          b_cnt += lines[j].count("{") - lines[j].count("}")
-                          j += 1
-                      if j < len(lines) and lines[j].lstrip().startswith("{"):
-                          b_cnt = 0
-                          while j < len(lines):
-                              block.append(lines[j])
-                              b_cnt += lines[j].count("{") - lines[j].count("}")
-                              j += 1
-                              if b_cnt <= 0:
-                                  break
-                      out.append(f"{ind}com.music.spotui.ui.screens.VnPlayerInlineLyricScope(isPlayerControls = true) {{\n")
-                      out.extend(block)
-                      out.append(f"{ind}}}\n")
-                      i = j
-                      continue
-                  out.append(line)
-                  i += 1
-
-              res = "".join(out)
-              if "VnPlayerInlineLyricScope" in res:
-                  return res
-
-              lines = res.splitlines(keepends=True)
-              for idx, line in enumerate(lines):
-                  if re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›"|\blyricPreview\b|\bcurrentLyric\b|\bactiveLyric\b)', line, re.I):
-                      win_start = max(0, idx - 36)
-                      win_end = min(len(lines), idx + 12)
-                      win_txt = "".join(lines[win_start:win_end])
-                      if re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings|ImmersiveLyricsPanel|LyricsScreen', win_txt, re.IGNORECASE):
-                          target_open = None
-                          target_close = None
-                          for back in range(idx, max(-1, idx - 42), -1):
-                              if re.search(r'\b(?:Row|Surface|Box|Column|AnimatedContent)\s*\(', lines[back]):
-                                  p_cnt = 0
-                                  open_l = None
-                                  for j in range(back, min(len(lines), back + 16)):
-                                      s_no_c = lines[j].split("//")[0]
-                                      p_cnt += s_no_c.count("(") - s_no_c.count(")")
-                                      if p_cnt <= 0 and "{" in s_no_c:
-                                          open_l = j
-                                          break
-                                  if open_l is not None:
-                                      b_cnt = 0
-                                      close_l = None
-                                      for j in range(open_l, len(lines)):
-                                          s_no_c = lines[j].split("//")[0]
-                                          b_cnt += s_no_c.count("{") - s_no_c.count("}")
-                                          if b_cnt <= 0:
-                                              close_l = j
-                                              break
-                                      if close_l is not None and close_l >= idx:
-                                          span_body = "".join(lines[open_l:close_l + 1])
-                                          if re.search(r'(?<![.\w])Text\s*\(', span_body):
-                                              target_open = open_l
-                                              target_close = close_l
-                                              break
-                          if target_open is not None and target_close is not None:
-                              ind = re.match(r'^(\s*)', lines[target_open]).group(1)
-                              lines[target_open] = lines[target_open] + f"{ind}    com.music.spotui.ui.screens.VnPlayerInlineLyricScope(isPlayerControls = true) {{\n"
-                              lines[target_close] = f"{ind}    }}\n" + lines[target_close]
-                              return "".join(lines)
-              return res
+              if is_player:
+                  if re.search(r'\bstyle\s*=', new_block):
+                      new_block, c2 = wrap_existing_arg_call(
+                          new_block,
+                          "style",
+                          "com.music.spotui.ui.screens.vnScalePlayerLyricTextStyle"
+                      )
+                  elif "vnScalePlayerLyricTextStyle" not in new_block:
+                      new_block = append_named_arg_before_close(
+                          new_block,
+                          "style = com.music.spotui.ui.screens.vnScalePlayerLyricTextStyle()"
+                      )
+                      c2 = True
+                  if re.search(r'\bfontSize\s*=', new_block):
+                      new_block, c3 = wrap_existing_arg_call(
+                          new_block,
+                          "fontSize",
+                          "com.music.spotui.ui.screens.vnScalePlayerLyricSp"
+                      )
+                  if re.search(r'\blineHeight\s*=', new_block):
+                      new_block, c4 = wrap_existing_arg_call(
+                          new_block,
+                          "lineHeight",
+                          "com.music.spotui.ui.screens.vnScalePlayerLyricSp"
+                      )
+              return new_block, (c0 or c1 or c2 or c3 or c4)
 
           for ui_kt in sorted(Path("app/src/main/java").rglob("*.kt")):
               if ui_kt.name in ("VnFrameRateManager.kt", "LyricsScreen.kt", "LookPreview.kt"):
@@ -3132,18 +3140,15 @@ jobs:
               orig_src = src
               is_player_scope = ui_kt.name != "ImmersiveLyricsPanel.kt"
 
-              if is_player_ctrl:
-                  src = wrap_player_inline_lyrics(src)
-
               lines = src.splitlines(keepends=True)
               for idx, line in enumerate(lines):
-                  near_chevron = is_player_ctrl and bool(re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›")', line))
+                  near_chevron = is_player_ctrl and bool(re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›"|\bswept\b|\bprevText\b|\bnextText\b|\blyricPreview\b|\bcurrentLyric\b)', line))
                   near_lyric = is_lyric_comp and bool(re.search(r'(?<![.\w])Text\s*\(', line))
                   if near_chevron or near_lyric:
                       win_start = max(0, idx - 36) if near_chevron else idx
-                      win_end = min(len(lines), idx + 16) if near_chevron else min(len(lines), idx + 1)
+                      win_end = min(len(lines), idx + 18) if near_chevron else min(len(lines), idx + 1)
                       win_txt = "".join(lines[win_start:win_end])
-                      if near_lyric or (re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', win_txt, re.IGNORECASE)):
+                      if near_lyric or (re.search(r'(?:lyric|swept|prevText|nextText)', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', win_txt, re.IGNORECASE)):
                           k = win_start
                           while k < min(len(lines), win_end):
                               if re.search(r'(?<![.\w])Text\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
@@ -3760,7 +3765,9 @@ jobs:
               if ap is not None and ap.exists() and "vnAnimatedElement" not in ap.read_text():
                   c = [0]
                   an = re.sub(r'\bModifier\s*\.\s*fillMaxWidth\s*\(\s*\)', lambda m: (c.__setitem__(0, c[0]+1) or f"{m.group(0)}.vnAnimatedElement({c[0]})"), ap.read_text())
-                  if c[0] > 0: ap.write_text(an)
+                  if c[0] > 0:
+                      an = ensure_imports(an, ["com.music.spotui.ui.screens.vnAnimatedElement"])
+                      ap.write_text(an)
           PY
 
       - name: Build Debug APK
