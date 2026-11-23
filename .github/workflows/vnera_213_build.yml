@@ -1,162 +1,27 @@
-name: Build VNEra 2.1.5 APK
+name: Build VNEra APK
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - work/source-review
-
-permissions:
-  contents: write
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout main for persistent keystore
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: main
-          path: _keystore_repo
-          fetch-depth: 1
 
-      - name: Ensure persistent VNEra keystore
-        run: |
-          mkdir -p "$HOME/.android"
-          if [ ! -f "_keystore_repo/.github/vnera-debug.keystore" ]; then
-            mkdir -p "_keystore_repo/.github"
-            keytool -genkeypair -v \
-              -keystore "_keystore_repo/.github/vnera-debug.keystore" \
-              -storepass android -alias androiddebugkey -keypass android \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -dname "CN=VNEra Debug,O=VNEra,C=GR"
-            cd _keystore_repo
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add .github/vnera-debug.keystore
-            git commit -m "Add persistent keystore for seamless VNEra updates"
-            git push || echo "Warning: Could not push keystore to main"
-            cd ..
-          fi
-          cp -f "_keystore_repo/.github/vnera-debug.keystore" "$HOME/.android/debug.keystore"
-          cp -f "_keystore_repo/.github/vnera-debug.keystore" "/tmp/vnera-debug.keystore"
-
-      - name: Checkout VNEra source
-        uses: actions/checkout@v4
-        with:
-          ref: work/source-review
-          fetch-depth: 0
-
-      - name: Merge VNEra customizations onto Revera v1.0.8
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old /tmp/merge_repo
-          mkdir -p /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old
-
-          [ -f "gradlew" ] && cp -f "gradlew" /tmp/vnera_gradle/
-          [ -f "gradlew.bat" ] && cp -f "gradlew.bat" /tmp/vnera_gradle/
-          if [ -d "gradle/wrapper" ]; then
-            mkdir -p /tmp/vnera_gradle/wrapper
-            cp -rf gradle/wrapper/* /tmp/vnera_gradle/wrapper/
-          fi
-          if [ -d "app/src/main/res" ]; then
-            cp -rn app/src/main/res/mipmap* /tmp/vnera_res/ 2>/dev/null || true
-            find app/src/main/res -maxdepth 2 -name "*ic_launcher*" -exec cp --parents -rn {} /tmp/vnera_res/ \; 2>/dev/null || true
-          fi
-
-          tar --exclude='.git' --exclude='.github' --exclude='_keystore_repo' --exclude='*.zip' -cf - . | tar -xf - -C /tmp/vnera_custom
-
-          git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
-          git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
-
-          git archive refs/tags/v1.0.8 | tar -x -C /tmp/revera_108
-          NEW_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1)
-          [ -n "$NEW_SETTINGS" ] || { echo "ERROR: Δεν βρέθηκε Gradle root στο Revera v1.0.8"; exit 1; }
-          NEW_BASE_ROOT=$(dirname "$NEW_SETTINGS")
-
-          python3 <<'PY'
-          import shutil, subprocess
-          from pathlib import Path
-
-          exts = {".kt", ".kts", ".xml", ".toml", ".properties", ".pro"}
-          vnera_files = {
-              str(p.relative_to("/tmp/vnera_custom")): p.read_bytes()
-              for p in Path("/tmp/vnera_custom").rglob("*")
-              if p.is_file() and p.suffix in exts and ".git" not in p.parts and ".github" not in p.parts
-          }
-          tags = [t for t in sorted(subprocess.check_output(["git", "tag", "-l", "v1.0.*"], text=True).splitlines()) if t != "v1.0.8"]
-          best_label, best_ref, best_score = "v1.0.7", "refs/tags/v1.0.7", -1
-          for t in tags:
-              tmp_dir = Path("/tmp/rev_cand")
-              shutil.rmtree(tmp_dir, ignore_errors=True)
-              tmp_dir.mkdir(parents=True)
-              subprocess.run(f"git archive refs/tags/{t} | tar -x -C {tmp_dir}", shell=True, check=True)
-              base_dir = tmp_dir / "base" if (tmp_dir / "base").exists() else tmp_dir
-              matches = sum(1 for rel, data in vnera_files.items() if (base_dir / rel).exists() and (base_dir / rel).read_bytes() == data)
-              if matches > best_score:
-                  best_label, best_ref, best_score = t, f"refs/tags/{t}", matches
-          print(f"SELECTED_OLD_BASE={best_label} ({best_score}/{len(vnera_files)} files matched)")
-          Path("/tmp/best_base_ref.txt").write_text(best_ref)
-          PY
-
-          git archive "$(cat /tmp/best_base_ref.txt)" | tar -x -C /tmp/revera_old
-          OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
-          OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
-
-          git init /tmp/merge_repo
-          cd /tmp/merge_repo
-          git config user.name "VNEra Merge Bot"
-          git config user.email "bot@vnera.local"
-
-          cp -a "$OLD_BASE_ROOT"/. .
-          git add -A && git commit -q -m "Old Revera base"
-
-          git checkout -q -b vnera-custom
-          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
-          cp -a /tmp/vnera_custom/. .
-          git add -A && git commit -q -m "VNEra custom changes"
-
-          git checkout -q -b revera-108 master
-          find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
-          cp -a "$NEW_BASE_ROOT"/. .
-          git add -A && git commit -q -m "Revera 1.0.8 base"
-
-          git cherry-pick -X theirs vnera-custom || {
-            git diff --name-only --diff-filter=U | xargs -r git checkout --theirs --
-            git add -A
-            git commit -q --no-edit
-          }
-          git diff --stat HEAD~1 HEAD
-
-          cd "$GITHUB_WORKSPACE"
-          find . -mindepth 1 -maxdepth 1 ! -name ".git" ! -name ".github" ! -name "_keystore_repo" -exec rm -rf {} +
-          tar --exclude='.git' -cf - -C /tmp/merge_repo . | tar -xf - -C .
-
-          mkdir -p app
-          cp -f "/tmp/vnera-debug.keystore" "app/vnera-debug.keystore"
-
-          if [ ! -f "gradlew" ] && [ -f "/tmp/vnera_gradle/gradlew" ]; then
-            cp -f /tmp/vnera_gradle/gradlew ./gradlew
-            [ -f "/tmp/vnera_gradle/gradlew.bat" ] && cp -f /tmp/vnera_gradle/gradlew.bat ./gradlew.bat
-            mkdir -p gradle/wrapper
-            [ -f "/tmp/vnera_gradle/wrapper/gradle-wrapper.jar" ] && cp -f /tmp/vnera_gradle/wrapper/gradle-wrapper.jar gradle/wrapper/
-            [ ! -f "gradle/wrapper/gradle-wrapper.properties" ] && [ -f "/tmp/vnera_gradle/wrapper/gradle-wrapper.properties" ] && cp -f /tmp/vnera_gradle/wrapper/gradle-wrapper.properties gradle/wrapper/
-          fi
-          chmod +x ./gradlew
-
-          if [ -d "/tmp/vnera_res" ] && [ -d "app/src/main/res" ]; then
-            cp -rf /tmp/vnera_res/mipmap* app/src/main/res/ 2>/dev/null || true
-            [ -d "/tmp/vnera_res/app/src/main/res" ] && cp -rf /tmp/vnera_res/app/src/main/res/* app/src/main/res/ 2>/dev/null || true
-          fi
-
-      - name: Setup Java 21
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: '21'
 
-      - name: Apply VNEra 2.1.5 fixes (Animations, Player Lyrics, Scale Setting)
+      - name: Setup Android SDK & Apply VNEra Patches
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
@@ -1887,12 +1752,24 @@ jobs:
 
           root = Path(".")
 
-          # 1. Update app/build.gradle.kts version to 2.1.5 and signing config
+          # 1. Update app/build.gradle.kts version to 2.1.5 and resolve missing projectUrl
           gradle_file = root / "app/build.gradle.kts"
           if gradle_file.exists():
               g = gradle_file.read_text(encoding="utf-8")
               g = re.sub(r'versionCode\s*=\s*[^\n]+', 'versionCode = (System.getenv("BUILD_VERSION_CODE")?.toIntOrNull() ?: 215001)', g)
               g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "2.1.5"', g)
+              if "projectUrl" in g and not re.search(r'\b(?:val|var)\s+projectUrl\b', g):
+                  project_url_decl = (
+                      'val projectUrl: String = (project.findProperty("projectUrl") as? String)\n'
+                      '    ?: providers.gradleProperty("projectUrl").orNull\n'
+                      '    ?: System.getenv("PROJECT_URL")\n'
+                      '    ?: "https://github.com/vnsec2/VNEra"\n\n'
+                  )
+                  m_android = re.search(r'^\s*android\s*\{', g, re.M)
+                  if m_android:
+                      g = g[:m_android.start()] + project_url_decl + g[m_android.start():]
+                  else:
+                      g = project_url_decl + g
               gradle_file.write_text(g, encoding="utf-8")
 
           # 2. Replace old version strings (2.1.x) across res & kotlin files with 2.1.5
@@ -1949,6 +1826,29 @@ jobs:
                   i += 1
               return -1
 
+          def split_first_top_level_arg(args_body: str):
+              d_p = d_b = d_k = 0
+              in_s = False
+              for idx, ch in enumerate(args_body):
+                  if ch == '"' and (idx == 0 or args_body[idx - 1] != '\\'):
+                      in_s = not in_s
+                  elif not in_s:
+                      if ch == '(':
+                          d_p += 1
+                      elif ch == ')':
+                          d_p -= 1
+                      elif ch == '[':
+                          d_b += 1
+                      elif ch == ']':
+                          d_b -= 1
+                      elif ch == '{':
+                          d_k += 1
+                      elif ch == '}':
+                          d_k -= 1
+                      elif ch == ',' and d_p == 0 and d_b == 0 and d_k == 0:
+                          return args_body[:idx], args_body[idx:]
+              return args_body, ""
+
           # 3. Hook lyrics & player state across player/lyrics Kotlin files
           ui_root = root / "app/src/main/java/com/music/spotui"
           for kt in ui_root.rglob("*.kt"):
@@ -1960,19 +1860,31 @@ jobs:
               # Capture ordered lyrics lists when lyrics variables are read
               if any(k in kt.name.lower() for k in ("lyric", "player")):
                   src = ensure_import(src, "com.music.spotui.ui.screens.*")
-                  # Capture lyrics list expressions like lyrics.forEach / items(lyrics) / syncedLyrics
                   src = re.sub(
                       r'\bitems\s*\(\s*([a-zA-Z0-9_.]+(?:[Ll]yric[a-zA-Z0-9_.]*|[Ll]ines))\s*\)',
-                      r'items(\1.also { VnFpsPref.captureOrderedLyricsList(it) })',
+                      lambda m: m.group(0) if m.group(1).endswith(('.size', '.length', '.count', '.indices', '.lastIndex')) else f'items({m.group(1)}.also {{ VnFpsPref.captureOrderedLyricsList(it) }})',
                       src
                   )
-                  # Scale lyric font sizes & capture text in Lyric files
+                  # Scale lyric font sizes & capture text in Lyric files (balanced parentheses)
                   if "lyric" in kt.name.lower():
-                      src = re.sub(
-                          r'\bText\s*\(\s*text\s*=\s*([^,\n]+)',
-                          r'Text(text = vnStyleLyricTextAny(\1, isPlayer = true)',
-                          src
-                      )
+                      out_t = []
+                      pos_t = 0
+                      for m_t in re.finditer(r'\bText\s*\(', src):
+                          open_p = m_t.end() - 1
+                          close_p = find_matching_paren(src, open_p)
+                          if close_p == -1:
+                              continue
+                          inner = src[open_p + 1:close_p]
+                          m_arg = re.match(r'(\s*text\s*=\s*)(.+)', inner, re.S)
+                          if m_arg and "vnStyleLyricTextAny(" not in inner:
+                              prefix_arg, rest_arg = m_arg.group(1), m_arg.group(2)
+                              expr, tail = split_first_top_level_arg(rest_arg)
+                              out_t.append(src[pos_t:open_p + 1])
+                              out_t.append(f"{prefix_arg}vnStyleLyricTextAny({expr.strip()}, isPlayer = true){tail}")
+                              pos_t = close_p
+                      out_t.append(src[pos_t:])
+                      src = "".join(out_t)
+
                       src = re.sub(
                           r'(\b\d+(?:\.\d+)?\.sp)\b',
                           r'vnScalePlayerLyricSp(\1)',
@@ -1982,7 +1894,6 @@ jobs:
               # Inject inline lyrics card into ImmersivePlayer.kt (and PlayerScreen.kt if present)
               if kt.name in {"ImmersivePlayer.kt", "PlayerScreen.kt"} and "VnPlayerInlineLyricsSection(" not in src:
                   src = ensure_import(src, "com.music.spotui.ui.screens.*")
-                  # Insert right before PlayerControls( call or before closing of main player Column
                   m_ctrl = re.search(r'\bPlayerControls\s*\(', src)
                   if m_ctrl:
                       line_start = src.rfind('\n', 0, m_ctrl.start()) + 1
@@ -2008,9 +1919,6 @@ jobs:
 
               # Inject .vnAnimatedElement(idx) onto UI cards/surfaces in screens & immersive
               if ("/ui/" in kt.as_posix()) and "vnAnimatedElement(" not in src and "Dialog(" not in src:
-                  anim_idx = 0
-                  out = []
-                  pos = 0
                   for m in re.finditer(r'\b(ElevatedCard|OutlinedCard|Card)\s*\(', src):
                       open_p = m.end() - 1
                       close_p = find_matching_paren(src, open_p)
@@ -2022,7 +1930,7 @@ jobs:
                       src = ensure_import(src, "com.music.spotui.ui.screens.vnAnimatedElement")
                       break
 
-                  # Re-run cleanly after import insertion
+                  anim_idx = 0
                   pos = 0
                   out = []
                   for m in re.finditer(r'\b(ElevatedCard|OutlinedCard|Card)\s*\(', src):
@@ -2042,12 +1950,14 @@ jobs:
                               count=1
                           )
                           if patched_args == args_str:
-                              patched_args = re.sub(
-                                  r'(\bmodifier\s*=\s*)',
-                                  rf'\1Modifier.vnAnimatedElement({anim_idx % 8}).then(',
-                                  args_str,
-                                  count=1
-                              ) + ")"
+                              m_mod = re.search(r'\bmodifier\s*=\s*', args_str)
+                              if m_mod:
+                                  mod_expr, mod_tail = split_first_top_level_arg(args_str[m_mod.end():])
+                                  patched_args = (
+                                      args_str[:m_mod.end()]
+                                      + f"Modifier.vnAnimatedElement({anim_idx % 8}).then({mod_expr.strip()})"
+                                      + mod_tail
+                                  )
                       else:
                           sep = ", " if args_str.strip() else ""
                           patched_args = f"modifier = Modifier.vnAnimatedElement({anim_idx % 8}){sep}{args_str}"
@@ -2075,8 +1985,9 @@ jobs:
                   print(f"Patched: {kt}")
           PY
 
-      - name: Build VNEra 2.1.5 APK
+      - name: Build Debug APK
         run: |
+          chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
           mkdir -p dist
           APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
@@ -2084,9 +1995,8 @@ jobs:
           cp -f "$APK_PATH" "dist/VNEra-2.1.5.apk"
           ls -lh "dist/VNEra-2.1.5.apk"
 
-      - name: Upload VNEra 2.1.5 APK artifact
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: VNEra-2.1.5
           path: dist/VNEra-2.1.5.apk
-          if-no-files-found: error
