@@ -165,7 +165,7 @@ jobs:
 
           export HAS_SDK_37="false"
           [ -d "$SDK_ROOT/platforms/android-37" ] && export HAS_SDK_37="true"
-          export BUILD_VERSION_CODE=$((215000 + ${GITHUB_RUN_NUMBER:-1}))
+          export BUILD_VERSION_CODE=$((216000 + ${GITHUB_RUN_NUMBER:-1}))
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
           echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
 
@@ -213,6 +213,7 @@ jobs:
           import androidx.compose.ui.platform.LocalDensity
           import androidx.compose.ui.platform.LocalView
           import androidx.compose.ui.text.AnnotatedString
+          import androidx.compose.ui.text.SpanStyle
           import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.buildAnnotatedString
           import androidx.compose.ui.text.font.FontWeight
@@ -984,6 +985,9 @@ jobs:
               return rawText
           }
 
+          fun vnHasCustomLyricColor(): Boolean =
+              VnFpsPref.lyricsBeautifulEnabled || VnFpsPref.lyricsCustomColorArgb != 0L
+
           fun vnResolveSelectedLyricColor(): Color {
               val customArgb = VnFpsPref.lyricsCustomColorArgb
               val accentArgb = VnFpsPref.customAccentColorArgb
@@ -997,17 +1001,16 @@ jobs:
           }
 
           fun vnPlayerInlineLyricColor(original: Color, isPlayer: Boolean = true): Color {
-              if (!original.isSpecified || original.alpha <= 0.01f) return original
-              val isDimBackground = original.alpha < 0.78f
+              val isDimBackground = original.isSpecified && original.alpha in 0.01f..0.77f
               if (isPlayer && isDimBackground && VnFpsPref.playerKaraokeBgColorArgb != 0L) {
-                  return Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.72f)
+                  return Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
               }
-              if (!VnFpsPref.lyricsBeautifulEnabled) return original
+              if (!vnHasCustomLyricColor()) return original
               val chosen = vnResolveSelectedLyricColor()
               return if (isDimBackground) {
-                  lerp(chosen, Color.White, 0.45f).copy(alpha = 0.48f)
+                  chosen.copy(alpha = 0.52f)
               } else {
-                  lerp(chosen, Color.White, 0.55f).copy(alpha = 1.0f)
+                  chosen.copy(alpha = 1.0f)
               }
           }
 
@@ -1022,12 +1025,16 @@ jobs:
               val c = LocalContext.current
               VnFpsPref.ensureInit(c)
               val scale = VnFpsPref.playerLyricsFontScale.coerceIn(0.60f, 1.10f)
-              if (abs(scale - 1.0f) < 0.005f) return baseStyle
-              val baseFontSize = if (baseStyle.fontSize.isSpecified) baseStyle.fontSize else 14.sp
-              val baseLineHeight = if (baseStyle.lineHeight.isSpecified) baseStyle.lineHeight else (baseFontSize.value * 1.32f).sp
+              val hasScale = abs(scale - 1.0f) >= 0.005f
+              val hasColor = vnHasCustomLyricColor() || VnFpsPref.playerKaraokeBgColorArgb != 0L
+              if (!hasScale && !hasColor) return baseStyle
+              val baseFontSize = if (baseStyle.fontSize.isSpecified) baseStyle.fontSize else 15.sp
+              val baseLineHeight = if (baseStyle.lineHeight.isSpecified) baseStyle.lineHeight else (baseFontSize.value * 1.42f).sp
+              val nextColor = if (hasColor) vnPlayerInlineLyricColor(baseStyle.color, isPlayer = true) else baseStyle.color
               return baseStyle.copy(
-                  fontSize = (baseFontSize.value * scale).sp,
-                  lineHeight = (baseLineHeight.value * scale).sp
+                  color = nextColor,
+                  fontSize = if (hasScale) (baseFontSize.value * scale).sp else baseStyle.fontSize,
+                  lineHeight = if (hasScale) (baseLineHeight.value * scale).sp else baseStyle.lineHeight
               )
           }
 
@@ -1035,13 +1042,22 @@ jobs:
               val hasActiveSpan = raw.spanStyles.isEmpty() || raw.spanStyles.any { !it.item.color.isSpecified || it.item.color.alpha >= 0.78f }
               VnFpsPref.captureLyricLine(raw.text, isActive = hasActiveSpan, fromPlayer = isPlayer)
               val hasCustomBg = isPlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
-              val hasCustomActive = VnFpsPref.lyricsBeautifulEnabled
+              val hasCustomActive = vnHasCustomLyricColor()
               val playerScale = VnFpsPref.playerLyricsFontScale.coerceIn(0.60f, 1.10f)
               val hasPlayerScale = isPlayer && abs(playerScale - 1.0f) >= 0.005f
               if (!hasCustomBg && !hasCustomActive && !hasPlayerScale) return raw
-              if (raw.spanStyles.isEmpty()) return raw
-              val bgTint = if (hasCustomBg) Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.72f) else Color.Unspecified
+              val bgTint = if (hasCustomBg) Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f) else Color.Unspecified
               val activeChosen = vnResolveSelectedLyricColor()
+              if (raw.spanStyles.isEmpty()) {
+                  if (!hasCustomActive) return raw
+                  return buildAnnotatedString {
+                      append(raw.text)
+                      raw.paragraphStyles.forEach { addStyle(it.item, it.start, it.end) }
+                      if (raw.text.isNotEmpty()) {
+                          addStyle(SpanStyle(color = activeChosen.copy(alpha = 1.0f)), 0, raw.text.length)
+                      }
+                  }
+              }
               return buildAnnotatedString {
                   append(raw.text)
                   raw.paragraphStyles.forEach { addStyle(it.item, it.start, it.end) }
@@ -1049,13 +1065,12 @@ jobs:
                       val span = range.item
                       val c = span.color
                       val newColor = when {
-                          !c.isSpecified || c.alpha <= 0.01f -> c
-                          c.alpha < 0.78f -> when {
+                          c.isSpecified && c.alpha in 0.01f..0.77f -> when {
                               hasCustomBg -> bgTint
-                              hasCustomActive -> lerp(activeChosen, Color.White, 0.45f).copy(alpha = 0.48f)
+                              hasCustomActive -> activeChosen.copy(alpha = 0.52f)
                               else -> c
                           }
-                          hasCustomActive -> lerp(activeChosen, Color.White, 0.55f).copy(alpha = 1.0f)
+                          hasCustomActive -> activeChosen.copy(alpha = 1.0f)
                           else -> c
                       }
                       val newFontSize = if (hasPlayerScale && span.fontSize.isSpecified) {
@@ -1103,55 +1118,60 @@ jobs:
 
               val scale = VnFpsPref.playerLyricsFontScale.coerceIn(0.60f, 1.10f)
               val chosen = vnResolveSelectedLyricColor()
-              val activeColor = if (VnFpsPref.lyricsBeautifulEnabled) {
-                  lerp(chosen, Color.White, 0.55f)
+              val activeColor = if (vnHasCustomLyricColor()) {
+                  chosen.copy(alpha = 1.0f)
               } else {
                   MaterialTheme.colorScheme.onSurface
               }
               val secondaryColor = if (VnFpsPref.playerKaraokeBgColorArgb != 0L) {
-                  Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
-              } else if (VnFpsPref.lyricsBeautifulEnabled) {
-                  lerp(chosen, Color.White, 0.45f).copy(alpha = 0.58f)
+                  Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.82f)
+              } else if (vnHasCustomLyricColor()) {
+                  chosen.copy(alpha = 0.62f)
               } else {
-                  MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.68f)
+                  MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
               }
 
               Surface(
                   onClick = { VnFpsPref.openLyricsFullscreen(act) },
                   modifier = modifier
                       .fillMaxWidth()
-                      .padding(horizontal = 16.dp, vertical = 6.dp)
+                      .heightIn(min = 92.dp)
+                      .wrapContentHeight()
+                      .padding(horizontal = 12.dp, vertical = 8.dp)
                       .vnAnimatedElement(4),
-                  shape = RoundedCornerShape(16.dp),
-                  color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.62f)
+                  shape = RoundedCornerShape(18.dp),
+                  color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.68f)
               ) {
                   Column(
                       modifier = Modifier
                           .fillMaxWidth()
-                          .padding(horizontal = 14.dp, vertical = 10.dp),
-                      verticalArrangement = Arrangement.spacedBy(3.dp)
+                          .wrapContentHeight()
+                          .padding(horizontal = 16.dp, vertical = 14.dp),
+                      verticalArrangement = Arrangement.spacedBy(6.dp)
                   ) {
                       Text(
                           text = currentLine,
                           style = MaterialTheme.typography.bodyMedium.copy(
-                              fontSize = (15f * scale).sp,
-                              lineHeight = (20f * scale).sp,
+                              fontSize = (15.5f * scale).sp,
+                              lineHeight = (23f * scale).sp,
                               fontWeight = FontWeight.Bold
                           ),
                           color = activeColor,
-                          maxLines = 2,
-                          overflow = TextOverflow.Ellipsis
+                          maxLines = 4,
+                          softWrap = true,
+                          overflow = TextOverflow.Visible
                       )
                       if (nextLine.isNotBlank()) {
                           Text(
                               text = nextLine,
                               style = MaterialTheme.typography.bodySmall.copy(
-                                  fontSize = (12.5f * scale).sp,
-                                  lineHeight = (16.5f * scale).sp,
+                                  fontSize = (13f * scale).sp,
+                                  lineHeight = (19f * scale).sp,
                                   fontWeight = FontWeight.Medium
                               ),
                               color = secondaryColor,
-                              maxLines = 1,
+                              maxLines = 2,
+                              softWrap = true,
                               overflow = TextOverflow.Ellipsis
                           )
                       }
@@ -1319,9 +1339,9 @@ jobs:
                               itemsIndexed(lines, key = { idx, line -> "${idx}_${line.hashCode()}" }) { idx, line ->
                                   val isCurrent = idx == activeIdx
                                   val targetColor = when {
-                                      isCurrent && VnFpsPref.lyricsBeautifulEnabled -> lerp(accentColor, Color.White, 0.55f)
+                                      isCurrent && vnHasCustomLyricColor() -> accentColor.copy(alpha = 1.0f)
                                       isCurrent -> Color.White
-                                      VnFpsPref.lyricsBeautifulEnabled -> lerp(accentColor, Color.White, 0.45f).copy(alpha = 0.45f)
+                                      vnHasCustomLyricColor() -> accentColor.copy(alpha = 0.48f)
                                       else -> Color.White.copy(alpha = 0.42f)
                                   }
                                   val animatedColor by animateColorAsState(
@@ -1366,7 +1386,7 @@ jobs:
                                       lineHeight = (30f * fontScale).sp,
                                       fontWeight = FontWeight.SemiBold
                                   ),
-                                  color = if (VnFpsPref.lyricsBeautifulEnabled) lerp(accentColor, Color.White, 0.55f) else Color.White,
+                                  color = if (vnHasCustomLyricColor()) accentColor.copy(alpha = 1.0f) else Color.White,
                                   textAlign = TextAlign.Center
                               )
                           }
@@ -2109,7 +2129,7 @@ jobs:
               if (!VnFpsPref.elementAnimEnabled) return@composed this
               val mode = VnFpsPref.elementAnimMode
               val isPaused = VnFpsPref.elementAnimPauseOnPause && !VnFpsPref.isPlaybackPlaying
-              var elapsedSec by remember { mutableFloatStateOf((phaseIndex % 8) * 0.55f) }
+              var elapsedSec by remember { mutableFloatStateOf((phaseIndex % 8) * 1.35f) }
 
               LaunchedEffect(VnFpsPref.elementAnimEnabled, isPaused, mode) {
                   if (isPaused) return@LaunchedEffect
@@ -2127,15 +2147,15 @@ jobs:
                   }
               }
 
-              val period = when (mode) { 1 -> 4.2f; 2 -> 3.6f; else -> 4.6f }
+              val period = when (mode) { 1 -> 11.5f; 2 -> 9.8f; else -> 12.5f }
               val angle = (elapsedSec / period) * (2f * PI.toFloat())
               val wave = sin(angle)
               val wave2 = cos(angle * 0.85f)
-              val scale = 0.985f + 0.015f * wave2
+              val scale = 0.988f + 0.012f * wave2
 
               graphicsLayer {
-                  val maxTx = 4.5.dp.toPx()
-                  val maxTy = 5.0.dp.toPx()
+                  val maxTx = 4.2.dp.toPx()
+                  val maxTy = 4.6.dp.toPx()
                   scaleX = scale
                   scaleY = scale
                   when (mode) {
@@ -2145,12 +2165,12 @@ jobs:
                       2 -> {
                           translationX = wave * maxTx
                           translationY = -wave2 * maxTy
-                          rotationZ = wave * 1.15f
+                          rotationZ = wave * 1.05f
                       }
                       else -> {
                           translationY = wave * (maxTy * 0.85f)
-                          rotationY = wave * 3.2f
-                          rotationX = -wave2 * 2.2f
+                          rotationY = wave * 2.8f
+                          rotationX = -wave2 * 2.0f
                           cameraDistance = 14f * density
                       }
                   }
@@ -2607,17 +2627,23 @@ jobs:
                   VnNativeSwitchRow(
                       title = "Προσαρμοσμένο Χρώμα Στίχων",
                       subtitle = "Οι ενεργοί στίχοι και το καραόκε διατηρούν σταθερά το χρώμα που επέλεξες",
-                      checked = VnFpsPref.lyricsBeautifulEnabled,
-                      onCheckedChange = { VnFpsPref.updateLyricsBeautiful(c, it) }
+                      checked = vnHasCustomLyricColor(),
+                      onCheckedChange = { en ->
+                          VnFpsPref.updateLyricsBeautiful(c, en)
+                          if (!en) VnFpsPref.updateLyricsCustomColor(c, 0L)
+                      }
                   )
 
-                  if (VnFpsPref.lyricsBeautifulEnabled) {
-                      Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) {
-                          VnColorSwatchRow(
-                              selectedArgb = VnFpsPref.lyricsCustomColorArgb,
-                              onSelect = { VnFpsPref.updateLyricsCustomColor(c, it) }
-                          )
-                      }
+                  Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) {
+                      VnColorSwatchRow(
+                          selectedArgb = VnFpsPref.lyricsCustomColorArgb,
+                          onSelect = { argb ->
+                              VnFpsPref.updateLyricsCustomColor(c, argb)
+                              if (argb != 0L && !VnFpsPref.lyricsBeautifulEnabled) {
+                                  VnFpsPref.updateLyricsBeautiful(c, true)
+                              }
+                          }
+                      )
                   }
 
                   VnCardDivider()
@@ -2815,7 +2841,7 @@ jobs:
           from pathlib import Path
 
           has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
-          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "215001"))
+          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "216001"))
           target_agp = "9.1.0" if has_sdk_37 else "8.7.2"
 
           for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
@@ -2840,7 +2866,7 @@ jobs:
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.5"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.6"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -3313,14 +3339,27 @@ jobs:
                       "com.music.spotui.ui.screens.vnStyleLyricTextAny",
                       f"isPlayer = {is_player_lit}"
                   )
-              if color_expr and not is_basic:
-                  new_block, c1 = wrap_existing_arg_call(
-                      new_block,
-                      "color",
-                      "com.music.spotui.ui.screens.vnPlayerInlineLyricColor",
-                      f"isPlayer = {is_player_lit}"
-                  )
+              if not is_basic:
+                  if color_expr:
+                      new_block, c1 = wrap_existing_arg_call(
+                          new_block,
+                          "color",
+                          "com.music.spotui.ui.screens.vnPlayerInlineLyricColor",
+                          f"isPlayer = {is_player_lit}"
+                      )
+                  elif is_player and "vnPlayerInlineLyricColor" not in new_block:
+                      new_block = append_named_arg_before_close(
+                          new_block,
+                          "color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.ui.graphics.Color.Unspecified, isPlayer = true)"
+                      )
+                      c1 = True
               if is_player:
+                  if re.search(r'\bmaxLines\s*=\s*1\b', new_block):
+                      new_block = re.sub(r'\bmaxLines\s*=\s*1\b', 'maxLines = 3', new_block, count=1)
+                      c2 = True
+                  elif re.search(r'\bmaxLines\s*=\s*2\b', new_block):
+                      new_block = re.sub(r'\bmaxLines\s*=\s*2\b', 'maxLines = 4', new_block, count=1)
+                      c2 = True
                   if re.search(r'\bstyle\s*=', new_block):
                       new_block, c2 = wrap_existing_arg_call(
                           new_block,
@@ -4057,11 +4096,11 @@ jobs:
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.5" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.6" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.1.5-debug
+          name: VNEra-2.1.6-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
