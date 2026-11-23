@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -21,26 +21,22 @@ jobs:
           path: _keystore_repo
           fetch-depth: 1
 
-      - name: Prepare Persistent Debug Keystore
+      - name: Prepare Debug Keystore (read-only)
         run: |
+          set -euo pipefail
           mkdir -p "$HOME/.android"
-          if [ ! -f "_keystore_repo/.github/vnera-debug.keystore" ]; then
-            mkdir -p "_keystore_repo/.github"
+          KEYSTORE="_keystore_repo/.github/vnera-debug.keystore"
+          if [ ! -f "$KEYSTORE" ]; then
+            echo "::warning::Δεν βρέθηκε αποθηκευμένο VNEra debug keystore. Θα δημιουργηθεί προσωρινό για αυτό το build. Για σταθερές υπογραφές μεταξύ builds, πρόσθεσε το υπάρχον keystore στο main branch στη διαδρομή .github/vnera-debug.keystore."
+            KEYSTORE="/tmp/vnera-debug.keystore"
             keytool -genkeypair -v \
-              -keystore "_keystore_repo/.github/vnera-debug.keystore" \
+              -keystore "$KEYSTORE" \
               -storepass android -alias androiddebugkey -keypass android \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=VNEra Debug,O=VNEra,C=GR"
-            cd _keystore_repo
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add .github/vnera-debug.keystore
-            git commit -m "Add persistent keystore for seamless VNEra updates"
-            git push || echo "Warning: Could not push keystore to main"
-            cd ..
           fi
-          cp -f "_keystore_repo/.github/vnera-debug.keystore" "$HOME/.android/debug.keystore"
-          cp -f "_keystore_repo/.github/vnera-debug.keystore" "/tmp/vnera-debug.keystore"
+          cp -f "$KEYSTORE" "$HOME/.android/debug.keystore"
+          cp -f "$KEYSTORE" "/tmp/vnera-debug.keystore"
 
       - name: Checkout source-review
         uses: actions/checkout@v4
@@ -157,7 +153,8 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: '21'
+          cache: gradle
 
       - name: Link SDK 37 & Fix Versions & Apply Patches
         run: |
@@ -980,15 +977,19 @@ jobs:
 
               val chosen = vnResolveSelectedLyricColor()
               val isDimBackground = original.isSpecified && original.alpha > 0.01f && original.alpha < 0.78f
-              if (isDimBackground) {
-                  return if (hasCustomBg) {
-                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
-                  } else {
-                      chosen.copy(alpha = 0.42f)
-                  }
+              val target = if (isDimBackground) {
+                  if (hasCustomBg) Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
+                  else chosen.copy(alpha = 0.42f)
+              } else if (hasCustomActive) {
+                  chosen.copy(alpha = 1.0f)
+              } else {
+                  original
               }
-              if (!hasCustomActive) return original
-              return chosen.copy(alpha = 1.0f)
+              return animateColorAsState(
+                  targetValue = target,
+                  animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+                  label = "vn_karaoke_active_line_color"
+              ).value
           }
 
           @Composable
@@ -1117,18 +1118,18 @@ jobs:
                   },
                   modifier = Modifier
                       .zIndex(99f)
-                      .size(38.dp),
+                      .size(42.dp),
                   shape = CircleShape,
-                  color = Color.Black.copy(alpha = 0.76f),
-                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)),
-                  shadowElevation = 6.dp
+                  color = Color.Black.copy(alpha = 0.82f),
+                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.42f)),
+                  shadowElevation = 8.dp
               ) {
                   Box(contentAlignment = Alignment.Center) {
                       Icon(
                           imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
                           contentDescription = if (isFullscreen) "Κλείσιμο πλήρους οθόνης" else "Πλήρης οθόνη στίχων",
                           tint = Color.White,
-                          modifier = Modifier.size(20.dp)
+                          modifier = Modifier.size(23.dp)
                       )
                   }
               }
@@ -1340,7 +1341,7 @@ jobs:
               val progress by animateFloatAsState(
                   targetValue = if (isEntered && !isClosing) 1f else 0f,
                   animationSpec = tween(
-                      durationMillis = if (isClosing) 250 else 320,
+                      durationMillis = if (isClosing) 280 else 380,
                       easing = FastOutSlowInEasing
                   ),
                   label = "vn_fullscreen_smooth_transition"
@@ -1369,11 +1370,12 @@ jobs:
           ): Modifier = composed {
               val c = LocalContext.current
               val density = LocalDensity.current
-              val thresholdPx = with(density) { 64.dp.toPx() }
+              val thresholdPx = with(density) { 48.dp.toPx() }
               var accumDown by remember { mutableFloatStateOf(0f) }
               var accumUp by remember { mutableFloatStateOf(0f) }
+              val immersiveGesture = onExpandToFullscreen != null
 
-              val nested = remember(act, isExpanded, thresholdPx) {
+              val nested = remember(act, isExpanded, thresholdPx, immersiveGesture, onExpandToFullscreen, onCollapseToPlayer) {
                   object : NestedScrollConnection {
                       override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                           if (source != NestedScrollSource.UserInput) return Offset.Zero
@@ -1387,10 +1389,11 @@ jobs:
                           if (source != NestedScrollSource.UserInput) return Offset.Zero
                           if (!VnFpsPref.isSwipeToExpandLyricsEnabled(c)) return Offset.Zero
                           val listState = VnFpsPref.activeLyricsScrollState as? LazyListState
-                          val atTop = listState == null || (!listState.canScrollBackward)
-                          val atBottom = listState == null || (!listState.canScrollForward)
+                          val atTop = listState == null || !listState.canScrollBackward
+                          val atBottom = listState == null || !listState.canScrollForward
 
-                          if (available.y > 0f && atTop) {
+                          // Classic lyrics screen: downward pull at the top opens fullscreen.
+                          if (!immersiveGesture && available.y > 0f && atTop) {
                               accumDown += available.y
                               if (accumDown >= thresholdPx) {
                                   accumDown = 0f
@@ -1399,7 +1402,25 @@ jobs:
                               return Offset(0f, available.y)
                           }
 
-                          if (available.y < 0f && atBottom) {
+                          // Immersive panel: upward pull at the top enters fullscreen.
+                          if (immersiveGesture && !isExpanded && available.y < 0f && atTop) {
+                              accumUp += -available.y
+                              if (accumUp >= thresholdPx) {
+                                  accumUp = 0f
+                                  VnFpsPref.openLyricsFullscreen(act, onExpandToFullscreen)
+                              }
+                              return Offset(0f, available.y)
+                          }
+
+                          // Immersive fullscreen deliberately has no swipe-to-close gesture.
+                          if (immersiveGesture && isExpanded) {
+                              accumDown = 0f
+                              accumUp = 0f
+                              return Offset.Zero
+                          }
+
+                          // Legacy collapse gesture remains available only outside immersive mode.
+                          if (!immersiveGesture && available.y < 0f && atBottom) {
                               accumUp += -available.y
                               if (accumUp >= thresholdPx) {
                                   accumUp = 0f
@@ -3947,12 +3968,27 @@ jobs:
               p2.write_text(re.sub(r'(?m)^([ \t]*fun\s+ImmersivePlayer\b[^{]*\{)\s*$', r'\1\n    com.music.spotui.ui.screens.VnFrameRateGuard()', p2.read_text(), count=1))
           PY
 
+      - name: Verify VNEra Debug Build Configuration
+        run: |
+          set -euo pipefail
+          grep -q 'appVersionName="2.1.6"' .github/workflows/*.yml 2>/dev/null || true
+          grep -q 'VnLyricsFullscreenButton' app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
+          grep -q 'vn_karaoke_active_line_color' app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
+          grep -q 'Immersive fullscreen deliberately has no swipe-to-close' app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
+
       - name: Build Debug APK
         run: |
           chmod +x gradlew
-          EXTRA_FLAGS=""
-          [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.6" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          EXTRA_FLAGS=()
+          if [ "$HAS_SDK_37" != "true" ]; then
+            EXTRA_FLAGS+=("-Pandroid.suppressUnsupportedCompileSdk=37")
+          fi
+          ./gradlew :app:assembleDebug "${EXTRA_FLAGS[@]}" \
+            -PappVersionName="2.1.6" \
+            -PappVersionCode="$BUILD_VERSION_CODE" \
+            -Pabis=arm64-v8a \
+            -PupdateRepo=vnsec2/VNEra \
+            --no-daemon --stacktrace
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
