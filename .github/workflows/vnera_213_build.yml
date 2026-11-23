@@ -205,14 +205,13 @@ jobs:
           import androidx.compose.ui.draw.clip
           import androidx.compose.ui.geometry.Offset
           import androidx.compose.ui.graphics.*
-          import androidx.compose.ui.graphics.lerp
           import androidx.compose.ui.input.nestedscroll.*
           import androidx.compose.ui.input.pointer.*
           import androidx.compose.ui.platform.LocalConfiguration
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.platform.LocalDensity
           import androidx.compose.ui.text.AnnotatedString
-          import androidx.compose.ui.text.SpanStyle
+          import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.buildAnnotatedString
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.text.style.TextAlign
@@ -342,8 +341,8 @@ jobs:
                   rememberedShuffleState = rem
                   VnShuffleGuard.syncFromPrefs(keep && rem)
                   cachedExtensionsText = sp.getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
-                  lyricsBeautifulEnabled = sp.getBoolean(KEY_LYRICS_BEAUTIFUL, false)
                   lyricsCustomColorArgb = sp.getLong(KEY_LYRICS_COLOR, 0L)
+                  lyricsBeautifulEnabled = sp.getBoolean(KEY_LYRICS_BEAUTIFUL, false) || (lyricsCustomColorArgb != 0L)
                   playerKaraokeBgColorArgb = sp.getLong(KEY_PLAYER_KARAOKE_BG_COLOR, 0L)
                   lyricsFontScale = sp.getFloat(KEY_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.70f, 1.70f)
                   playerLyricsFontScale = sp.getFloat(KEY_PLAYER_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.60f, 1.10f)
@@ -412,9 +411,22 @@ jobs:
                           .commit()
                   }
               }
-              fun updateLyricsBeautiful(c: Context, en: Boolean) { lyricsBeautifulEnabled = en; prefs(c).edit().putBoolean(KEY_LYRICS_BEAUTIFUL, en).apply() }
-              fun updateLyricsCustomColor(c: Context, argb: Long) { lyricsCustomColorArgb = argb; prefs(c).edit().putLong(KEY_LYRICS_COLOR, argb).apply() }
-              fun updatePlayerKaraokeBgColor(c: Context, argb: Long) { playerKaraokeBgColorArgb = argb; prefs(c).edit().putLong(KEY_PLAYER_KARAOKE_BG_COLOR, argb).apply() }
+              fun updateLyricsBeautiful(c: Context, en: Boolean) {
+                  lyricsBeautifulEnabled = en
+                  prefs(c).edit().putBoolean(KEY_LYRICS_BEAUTIFUL, en).apply()
+              }
+              fun updateLyricsCustomColor(c: Context, argb: Long) {
+                  lyricsCustomColorArgb = argb
+                  if (argb != 0L) lyricsBeautifulEnabled = true
+                  prefs(c).edit()
+                      .putLong(KEY_LYRICS_COLOR, argb)
+                      .putBoolean(KEY_LYRICS_BEAUTIFUL, lyricsBeautifulEnabled)
+                      .apply()
+              }
+              fun updatePlayerKaraokeBgColor(c: Context, argb: Long) {
+                  playerKaraokeBgColorArgb = argb
+                  prefs(c).edit().putLong(KEY_PLAYER_KARAOKE_BG_COLOR, argb).apply()
+              }
               fun updateLyricsFontScale(c: Context, scale: Float) {
                   val s = ((scale * 20f).roundToInt() / 20f).coerceIn(0.70f, 1.70f)
                   lyricsFontScale = s
@@ -929,6 +941,15 @@ jobs:
               return rawText
           }
 
+          fun vnCaptureAndStyleLyric(rawText: String, isPlayer: Boolean = true): String {
+              VnFpsPref.captureLyricLine(rawText, isActive = true)
+              return rawText
+          }
+
+          fun vnCaptureAndStyleLyric(rawText: AnnotatedString, isPlayer: Boolean = true): AnnotatedString {
+              return vnStyleLyricAnnotatedString(rawText, isPlayer = isPlayer)
+          }
+
           fun vnResolveSelectedLyricColor(): Color {
               val customArgb = VnFpsPref.lyricsCustomColorArgb
               val accentArgb = VnFpsPref.customAccentColorArgb
@@ -941,48 +962,88 @@ jobs:
               return Color(argb)
           }
 
+          fun vnHasCustomLyricColorEnabled(): Boolean =
+              VnFpsPref.lyricsBeautifulEnabled || VnFpsPref.lyricsCustomColorArgb != 0L
+
           fun vnPlayerInlineLyricColor(original: Color, isPlayer: Boolean = true): Color {
-              if (!original.isSpecified || original.alpha <= 0.01f) return original
-              val isDimBackground = original.alpha < 0.78f
-              if (isPlayer && isDimBackground && VnFpsPref.playerKaraokeBgColorArgb != 0L) {
-                  return Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.72f)
-              }
-              if (!VnFpsPref.lyricsBeautifulEnabled) return original
+              val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
+              val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
+              val hasCustomActive = vnHasCustomLyricColorEnabled()
+              if (!hasCustomBg && !hasCustomActive) return original
+
               val chosen = vnResolveSelectedLyricColor()
-              return if (isDimBackground) {
-                  lerp(chosen, Color.White, 0.45f).copy(alpha = 0.48f)
-              } else {
-                  lerp(chosen, Color.White, 0.55f).copy(alpha = 1.0f)
+              val isDimBackground = original.isSpecified && original.alpha > 0.01f && original.alpha < 0.78f
+              if (isDimBackground) {
+                  return if (hasCustomBg) {
+                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
+                  } else {
+                      chosen.copy(alpha = 0.42f)
+                  }
               }
+              if (!hasCustomActive) return original
+              return chosen.copy(alpha = 1.0f)
+          }
+
+          fun vnPlayerInlineLyricStyle(style: TextStyle, isPlayer: Boolean = true): TextStyle {
+              val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
+              val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
+              val hasCustomActive = vnHasCustomLyricColorEnabled()
+              if (!hasCustomBg && !hasCustomActive) return style
+
+              var updated = style
+              if (style.color.isSpecified) {
+                  updated = updated.copy(color = vnPlayerInlineLyricColor(style.color, isPlayer = effectivePlayer))
+              }
+              if (style.brush != null && hasCustomActive) {
+                  val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
+                  val bgTint = if (hasCustomBg) {
+                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
+                  } else {
+                      activeChosen.copy(alpha = 0.42f)
+                  }
+                  updated = updated.copy(brush = Brush.horizontalGradient(listOf(activeChosen, bgTint)))
+              }
+              return updated
           }
 
           fun vnStyleLyricAnnotatedString(raw: AnnotatedString, isPlayer: Boolean = true): AnnotatedString {
+              val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasColorSpans = raw.spanStyles.any { it.item.color.isSpecified }
               val isLineActive = !hasColorSpans || raw.spanStyles.any { it.item.color.isSpecified && it.item.color.alpha >= 0.78f }
               VnFpsPref.captureLyricLine(raw.text, isActive = isLineActive)
-              val hasCustomBg = isPlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
-              val hasCustomActive = VnFpsPref.lyricsBeautifulEnabled
+
+              val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
+              val hasCustomActive = vnHasCustomLyricColorEnabled()
               if (!hasCustomBg && !hasCustomActive) return raw
               if (raw.spanStyles.isEmpty()) return raw
-              val bgTint = if (hasCustomBg) Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.72f) else Color.Unspecified
-              val activeChosen = vnResolveSelectedLyricColor()
+
+              val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
+              val bgTint = if (hasCustomBg) {
+                  Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
+              } else {
+                  activeChosen.copy(alpha = 0.42f)
+              }
+
               return buildAnnotatedString {
                   append(raw.text)
                   raw.paragraphStyles.forEach { addStyle(it.item, it.start, it.end) }
                   raw.spanStyles.forEach { range ->
                       val span = range.item
                       val c = span.color
-                      val newColor = when {
-                          !c.isSpecified || c.alpha <= 0.01f -> c
-                          c.alpha < 0.78f -> when {
-                              hasCustomBg -> bgTint
-                              hasCustomActive -> lerp(activeChosen, Color.White, 0.45f).copy(alpha = 0.48f)
-                              else -> c
+                      var styledSpan = span
+                      if (span.brush != null && hasCustomActive) {
+                          styledSpan = styledSpan.copy(
+                              brush = Brush.horizontalGradient(listOf(activeChosen, bgTint))
+                          )
+                      } else if (c.isSpecified && c.alpha > 0.01f) {
+                          val newColor = if (c.alpha < 0.78f) {
+                              if (hasCustomBg || hasCustomActive) bgTint else c
+                          } else {
+                              if (hasCustomActive) activeChosen else c
                           }
-                          hasCustomActive -> lerp(activeChosen, Color.White, 0.55f).copy(alpha = 1.0f)
-                          else -> c
+                          styledSpan = styledSpan.copy(color = newColor)
                       }
-                      addStyle(span.copy(color = newColor), range.start, range.end)
+                      addStyle(styledSpan, range.start, range.end)
                   }
               }
           }
@@ -1108,6 +1169,7 @@ jobs:
                       val activeText = VnFpsPref.savedPlayerLyricText.trim()
                       val listState = rememberLazyListState()
                       val accentColor = vnResolveSelectedLyricColor()
+                      val hasCustomActive = vnHasCustomLyricColorEnabled()
                       val fontScale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
 
                       var lastScrolledTargetIdx by remember { mutableIntStateOf(-1) }
@@ -1172,9 +1234,9 @@ jobs:
                                   ) { _, line ->
                                       val isCurrent = activeText.isNotEmpty() && line.equals(activeText, ignoreCase = true)
                                       val targetTextColor = when {
-                                          isCurrent && VnFpsPref.lyricsBeautifulEnabled -> lerp(accentColor, Color.White, 0.55f)
+                                          isCurrent && hasCustomActive -> accentColor.copy(alpha = 1.0f)
                                           isCurrent -> Color.White
-                                          VnFpsPref.lyricsBeautifulEnabled -> lerp(accentColor, Color.White, 0.45f).copy(alpha = 0.46f)
+                                          hasCustomActive -> accentColor.copy(alpha = 0.42f)
                                           else -> Color.White.copy(alpha = 0.44f)
                                       }
                                       val animatedColor by animateColorAsState(
@@ -1219,7 +1281,7 @@ jobs:
                                           lineHeight = (30f * fontScale).sp,
                                           fontWeight = FontWeight.SemiBold
                                       ),
-                                      color = if (VnFpsPref.lyricsBeautifulEnabled) lerp(accentColor, Color.White, 0.55f) else Color.White,
+                                      color = if (hasCustomActive) accentColor.copy(alpha = 1.0f) else Color.White,
                                       textAlign = TextAlign.Center
                                   )
                               }
@@ -2252,19 +2314,17 @@ jobs:
                   VnCardDivider()
 
                   VnNativeSwitchRow(
-                      title = "Προσαρμοσμένο Χρώμα Στίχων",
-                      subtitle = "Οι ενεργοί στίχοι και το καραόκε διατηρούν σταθερά το χρώμα που επέλεξες",
+                      title = "Προσαρμοσμένο Χρώμα Στίχων & Καραόκε",
+                      subtitle = "Οι ενεργοί στίχοι του Player και το καραόκε παίρνουν το χρώμα που επέλεξες",
                       checked = VnFpsPref.lyricsBeautifulEnabled,
                       onCheckedChange = { VnFpsPref.updateLyricsBeautiful(c, it) }
                   )
 
-                  if (VnFpsPref.lyricsBeautifulEnabled) {
-                      Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) {
-                          VnColorSwatchRow(
-                              selectedArgb = VnFpsPref.lyricsCustomColorArgb,
-                              onSelect = { VnFpsPref.updateLyricsCustomColor(c, it) }
-                          )
-                      }
+                  Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 14.dp)) {
+                      VnColorSwatchRow(
+                          selectedArgb = VnFpsPref.lyricsCustomColorArgb,
+                          onSelect = { VnFpsPref.updateLyricsCustomColor(c, it) }
+                      )
                   }
 
                   VnCardDivider()
@@ -2803,113 +2863,149 @@ jobs:
                                   break
               if t1 != t0: il.write_text(t1)
 
-          def extract_named_arg(call_src: str, param_name: str) -> str:
-              m = re.search(rf'\b{param_name}\s*=\s*', call_src)
-              if not m:
-                  return ""
-              start_val = m.end()
-              depth_p = depth_b = depth_c = 0
-              end_val = len(call_src)
-              for idx_c in range(start_val, len(call_src)):
-                  ch = call_src[idx_c]
-                  if ch == '(': depth_p += 1
-                  elif ch == ')':
-                      if depth_p == 0 and depth_b == 0 and depth_c == 0:
-                          end_val = idx_c
-                          break
-                      depth_p -= 1
-                  elif ch == '[': depth_b += 1
-                  elif ch == ']': depth_b -= 1
-                  elif ch == '{': depth_c += 1
-                  elif ch == '}': depth_c -= 1
-                  elif ch == ',' and depth_p == 0 and depth_b == 0 and depth_c == 0:
-                      end_val = idx_c
-                      break
-              return call_src[start_val:end_val].strip()
+          def split_top_level_args(arg_body: str) -> list[tuple[int, int, str]]:
+              parts = []
+              dp = db = dc = 0
+              in_str = False
+              esc = False
+              start = 0
+              for i, ch in enumerate(arg_body):
+                  if in_str:
+                      if esc:
+                          esc = False
+                      elif ch == '\\':
+                          esc = True
+                      elif ch == '"':
+                          in_str = False
+                      continue
+                  if ch == '"':
+                      in_str = True
+                      continue
+                  if ch == '(': dp += 1
+                  elif ch == ')': dp -= 1
+                  elif ch == '[': db += 1
+                  elif ch == ']': db -= 1
+                  elif ch == '{': dc += 1
+                  elif ch == '}': dc -= 1
+                  elif ch == ',' and dp == 0 and db == 0 and dc == 0:
+                      parts.append((start, i, arg_body[start:i]))
+                      start = i + 1
+              if start <= len(arg_body):
+                  parts.append((start, len(arg_body), arg_body[start:]))
+              return parts
 
-          def wrap_existing_arg_call(call_src: str, param_name: str, wrapper_fn: str, extra_args: str = "") -> tuple[str, bool]:
-              m = re.search(rf'\b{param_name}\s*=\s*', call_src)
-              if not m:
-                  return call_src, False
-              start_val = m.end()
-              if wrapper_fn in call_src[start_val:start_val + len(wrapper_fn) + 55]:
-                  return call_src, False
-              depth_p = depth_b = depth_c = 0
-              end_val = len(call_src)
-              for idx_c in range(start_val, len(call_src)):
-                  ch = call_src[idx_c]
-                  if ch == '(': depth_p += 1
-                  elif ch == ')':
-                      if depth_p == 0 and depth_b == 0 and depth_c == 0:
-                          end_val = idx_c
-                          break
-                      depth_p -= 1
-                  elif ch == '[': depth_b += 1
-                  elif ch == ']': depth_b -= 1
-                  elif ch == '{': depth_c += 1
-                  elif ch == '}': depth_c -= 1
-                  elif ch == ',' and depth_p == 0 and depth_b == 0 and depth_c == 0:
-                      end_val = idx_c
-                      break
-              expr = call_src[start_val:end_val].strip()
-              if not expr:
-                  return call_src, False
-              suffix = f", {extra_args}" if extra_args else ""
-              return f"{call_src[:start_val]}{wrapper_fn}({expr}{suffix}){call_src[end_val:]}", True
+          def top_level_eq_pos(segment: str) -> int:
+              dp = db = dc = 0
+              in_str = False
+              esc = False
+              for i, ch in enumerate(segment):
+                  if in_str:
+                      if esc:
+                          esc = False
+                      elif ch == '\\':
+                          esc = True
+                      elif ch == '"':
+                          in_str = False
+                      continue
+                  if ch == '"':
+                      in_str = True
+                      continue
+                  if ch == '(': dp += 1
+                  elif ch == ')': dp -= 1
+                  elif ch == '[': db += 1
+                  elif ch == ']': db -= 1
+                  elif ch == '{': dc += 1
+                  elif ch == '}': dc -= 1
+                  elif ch == '=' and dp == 0 and db == 0 and dc == 0:
+                      prev_c = segment[i - 1] if i > 0 else ''
+                      next_c = segment[i + 1] if i + 1 < len(segment) else ''
+                      if prev_c not in ('=', '!', '<', '>') and next_c not in ('=', '>'):
+                          return i
+              return -1
 
-          def patch_lyric_text_preserve_metrics(call_block: str, is_player: bool) -> tuple[str, bool]:
-              if not re.match(r'^\s*Text\s*\(', call_block):
+          def patch_lyric_text_call(call_block: str, is_player: bool) -> tuple[str, bool]:
+              m_head = re.match(r'^(\s*Text\s*\()', call_block)
+              if not m_head:
                   return call_block, False
-              new_block = call_block
-              c0 = c1 = False
+              close_paren = call_block.rfind(')')
+              if close_paren <= m_head.end():
+                  return call_block, False
+
+              head = call_block[:m_head.end()]
+              body = call_block[m_head.end():close_paren]
+              tail = call_block[close_paren:]
               is_player_lit = "true" if is_player else "false"
-              txt_expr = extract_named_arg(new_block, "text")
-              color_expr = extract_named_arg(new_block, "color")
-              if txt_expr and not txt_expr.startswith('"'):
-                  if "AnnotatedString" in new_block or "annotated" in txt_expr.lower() or "buildAnnotatedString" in new_block:
-                      new_block, c0 = wrap_existing_arg_call(
-                          new_block,
-                          "text",
-                          "com.music.spotui.ui.screens.vnStyleLyricAnnotatedString",
-                          f"isPlayer = {is_player_lit}"
-                      )
-                  elif color_expr:
-                      new_block, c0 = wrap_existing_arg_call(
-                          new_block,
-                          "text",
-                          "com.music.spotui.ui.screens.vnCaptureLyricTextWithColor",
-                          f"color = {color_expr}"
-                      )
+
+              args = split_top_level_args(body)
+              if not args:
+                  return call_block, False
+
+              has_color = False
+              modified = False
+              rebuilt_segments = []
+
+              for idx_a, (_, _, seg) in enumerate(args):
+                  stripped = seg.strip()
+                  if not stripped:
+                      rebuilt_segments.append(seg)
+                      continue
+                  lead_ws = seg[:len(seg) - len(seg.lstrip())]
+                  trail_ws = seg[len(seg.rstrip()):]
+                  eq = top_level_eq_pos(stripped)
+                  if eq != -1:
+                      pname = stripped[:eq].strip()
+                      pval = stripped[eq + 1:].strip()
+                      if pname == "text":
+                          if not pval.startswith('"') and "vnCaptureAndStyleLyric" not in pval and "vnStyleLyricAnnotatedString" not in pval and "vnCaptureLyricText" not in pval:
+                              pval = f"com.music.spotui.ui.screens.vnCaptureAndStyleLyric({pval}, isPlayer = {is_player_lit})"
+                              modified = True
+                          rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
+                      elif pname == "color":
+                          has_color = True
+                          if "vnPlayerInlineLyricColor" not in pval:
+                              pval = f"com.music.spotui.ui.screens.vnPlayerInlineLyricColor({pval}, isPlayer = {is_player_lit})"
+                              modified = True
+                          rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
+                      elif pname == "style":
+                          if "vnPlayerInlineLyricStyle" not in pval:
+                              pval = f"com.music.spotui.ui.screens.vnPlayerInlineLyricStyle({pval}, isPlayer = {is_player_lit})"
+                              modified = True
+                          rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
+                      else:
+                          rebuilt_segments.append(seg)
                   else:
-                      new_block, c0 = wrap_existing_arg_call(
-                          new_block,
-                          "text",
-                          "com.music.spotui.ui.screens.vnCaptureLyricText",
-                          f"isActive = {is_player_lit}"
-                      )
-              if re.search(r'\bcolor\s*=', new_block):
-                  new_block, c1 = wrap_existing_arg_call(
-                      new_block,
-                      "color",
-                      "com.music.spotui.ui.screens.vnPlayerInlineLyricColor",
-                      f"isPlayer = {is_player_lit}"
-                  )
-              return new_block, (c0 or c1)
+                      if idx_a == 0 and not stripped.startswith('"') and "vnCaptureAndStyleLyric" not in stripped and "vnStyleLyricAnnotatedString" not in stripped and "vnCaptureLyricText" not in stripped:
+                          pval = f"com.music.spotui.ui.screens.vnCaptureAndStyleLyric({stripped}, isPlayer = {is_player_lit})"
+                          modified = True
+                          rebuilt_segments.append(f"{lead_ws}{pval}{trail_ws}")
+                      else:
+                          rebuilt_segments.append(seg)
+
+              new_body = ",".join(rebuilt_segments)
+              if not has_color:
+                  if new_body.strip():
+                      new_body = new_body.rstrip() + f", color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current, isPlayer = {is_player_lit})"
+                  else:
+                      new_body = f"color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current, isPlayer = {is_player_lit})"
+                  modified = True
+
+              if not modified:
+                  return call_block, False
+              return f"{head}{new_body}{tail}", True
 
           def wrap_player_controls_lyric_block(src: str) -> str:
               if "VnPlayerOnlyLyricScope" in src:
                   return src
               lines = src.splitlines(keepends=True)
+
               for idx, line in enumerate(lines):
                   if re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›")', line):
                       win_start = max(0, idx - 36)
                       win_end = min(len(lines), idx + 12)
                       win_txt = "".join(lines[win_start:win_end])
                       if re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', win_txt, re.IGNORECASE):
-                          target_open = None
-                          target_close = None
                           for back in range(idx, max(-1, idx - 42), -1):
-                              if re.search(r'\b(?:Row|Surface|Box)\s*\(', lines[back]):
+                              if re.search(r'\b(?:Row|Surface|Box|Column)\s*\(', lines[back]):
                                   p_cnt = 0
                                   open_l = None
                                   for j in range(back, min(len(lines), back + 16)):
@@ -2930,17 +3026,13 @@ jobs:
                                       if close_l is not None and close_l >= idx:
                                           span_body = "".join(lines[open_l:close_l + 1])
                                           if re.search(r'(?<![.\w])Text\s*\(', span_body):
-                                              target_open = open_l
-                                              target_close = close_l
-                                              break
-                          if target_open is not None and target_close is not None:
-                              ind = re.match(r'^(\s*)', lines[target_open]).group(1)
-                              lines[target_open] = lines[target_open] + f"{ind}    com.music.spotui.ui.screens.VnPlayerOnlyLyricScope {{\n"
-                              lines[target_close] = f"{ind}    }}\n" + lines[target_close]
-                              return "".join(lines)
+                                              ind = re.match(r'^(\s*)', lines[open_l]).group(1)
+                                              lines[open_l] = lines[open_l] + f"{ind}    com.music.spotui.ui.screens.VnPlayerOnlyLyricScope {{\n"
+                                              lines[close_l] = f"{ind}    }}\n" + lines[close_l]
+                                              return "".join(lines)
 
               for idx, line in enumerate(lines):
-                  if re.search(r'\b(?:Box|Row|Surface|AnimatedContent|Crossfade)\s*\(', line):
+                  if re.search(r'\b(?:Box|Row|Column|Surface|AnimatedContent|Crossfade|AnimatedVisibility)\s*\(', line):
                       p_cnt = 0
                       open_l = None
                       for j in range(idx, min(len(lines), idx + 14)):
@@ -2958,11 +3050,12 @@ jobs:
                               if b_cnt <= 0:
                                   close_l = j
                                   break
-                          if close_l is not None and (close_l - open_l) <= 45:
+                          if close_l is not None and (close_l - open_l) <= 55:
                               span_txt = "".join(lines[idx:close_l + 1])
                               if (
-                                  re.search(r'\b(?:currentLyric|lyricLine|lyricText|activeLyric|syncedLyric|karaoke)\b', span_txt, re.I)
-                                  and not re.search(r'ImmersiveLyricsPanel|FormatQuote|Settings', span_txt, re.I)
+                                  re.search(r'\b(?:currentLyric|lyricLine|lyricText|activeLyric|syncedLyric|karaoke|lyrics|inlineLyric|currentLine|wordByWord|swept)\b', span_txt, re.I)
+                                  and re.search(r'(?<![.\w])Text\s*\(', span_txt)
+                                  and not re.search(r'ImmersiveLyricsPanel|FormatQuote|Settings|Slider|IconButton', span_txt, re.I)
                               ):
                                   ind = re.match(r'^(\s*)', lines[open_l]).group(1)
                                   lines[open_l] = lines[open_l] + f"{ind}    com.music.spotui.ui.screens.VnPlayerOnlyLyricScope {{\n"
@@ -2971,46 +3064,53 @@ jobs:
               return src
 
           for ui_kt in sorted(Path("app/src/main/java").rglob("*.kt")):
-              if ui_kt.name in ("VnFrameRateManager.kt", "LyricsScreen.kt", "LookPreview.kt"):
+              if ui_kt.name in ("VnFrameRateManager.kt", "VnSettingsBackup.kt", "LyricsScreen.kt", "LookPreview.kt"):
                   continue
-              is_lyric_comp = bool(re.search(r'(?:Karaoke|WordByWord|SyncedLyric|SweptLyric|LyricLine|LyricPreview|InlineLyric|ImmersiveLyrics)', ui_kt.name, re.I))
-              is_player_ctrl = ui_kt.name in ("PlayerControls.kt", "ImmersivePlayer.kt")
-              if not is_lyric_comp and not is_player_ctrl:
+              if "Setting" in ui_kt.name or "About" in ui_kt.name or "Dialog" in ui_kt.name:
                   continue
 
               src = ui_kt.read_text()
+              is_lyric_comp = bool(re.search(r'(?:Karaoke|WordByWord|SyncedLyric|SweptLyric|LyricLine|LyricPreview|InlineLyric|ImmersiveLyrics|PlayerLyrics|MiniLyrics)', ui_kt.name, re.I))
+              is_player_file = bool(re.search(r'(?:PlayerControls|ImmersivePlayer|PlayerScreen|NowPlaying|PlayerContent|PlayerBody|PlayerInfo|TrackInfo|MediaControls)', ui_kt.name, re.I))
+              if not is_lyric_comp and not is_player_file:
+                  if re.search(r'\b(?:karaoke|wordByWord|sweptLyric|syncedLyric|currentLyric|inlineLyric)\b', src, re.I) and "@Composable" in src:
+                      is_lyric_comp = True
+                  else:
+                      continue
+
               orig_src = src
               is_player_scope = ui_kt.name != "ImmersiveLyricsPanel.kt"
 
-              if is_player_ctrl:
+              if is_player_file:
                   src = wrap_player_controls_lyric_block(src)
 
               lines = src.splitlines(keepends=True)
-              for idx, line in enumerate(lines):
-                  near_chevron = is_player_ctrl and bool(re.search(r'(?:ChevronRight|KeyboardArrowRight|ArrowForwardIos|">"|"›")', line))
-                  near_lyric = is_lyric_comp and bool(re.search(r'(?<![.\w])Text\s*\(', line))
-                  if near_chevron or near_lyric:
-                      win_start = max(0, idx - 36) if near_chevron else idx
-                      win_end = min(len(lines), idx + 16) if near_chevron else min(len(lines), idx + 1)
-                      win_txt = "".join(lines[win_start:win_end])
-                      if near_lyric or (re.search(r'\blyric', win_txt, re.IGNORECASE) and not re.search(r'FormatQuote|lyrics_button|openLyrics|Settings', win_txt, re.IGNORECASE)):
-                          k = win_start
-                          while k < min(len(lines), win_end):
-                              if re.search(r'(?<![.\w])Text\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
-                                  p_cnt = 0
-                                  t_end = k
-                                  for j in range(k, min(len(lines), k + 18)):
-                                      p_cnt += lines[j].count("(") - lines[j].count(")")
-                                      if p_cnt <= 0:
-                                          t_end = j
-                                          break
-                                  call_block = "".join(lines[k:t_end + 1])
-                                  new_block, did_patch = patch_lyric_text_preserve_metrics(call_block, is_player=is_player_scope)
-                                  if did_patch:
-                                      lines[k:t_end + 1] = [new_block]
-                                      k = t_end + 1
-                                      continue
-                              k += 1
+              k = 0
+              while k < len(lines):
+                  if re.search(r'(?<![.\w])Text\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
+                      ctx_win = "".join(lines[max(0, k - 28):min(len(lines), k + 18)])
+                      has_lyric_ctx = is_lyric_comp or bool(
+                          re.search(r'\b(?:lyric|karaoke|synced|wordByWord|swept|VnPlayerOnlyLyricScope|currentLine)\b', ctx_win, re.I)
+                      )
+                      is_non_lyric_ui = bool(
+                          re.search(r'FormatQuote|lyrics_button|openLyrics|Settings|"Lossless"|"Hi-Res"|track\.artist|song\.artist|artistName', lines[k], re.I)
+                      )
+                      if has_lyric_ctx and not is_non_lyric_ui:
+                          p_cnt = 0
+                          t_end = k
+                          for j in range(k, min(len(lines), k + 22)):
+                              p_cnt += lines[j].count("(") - lines[j].count(")")
+                              if p_cnt <= 0:
+                                  t_end = j
+                                  break
+                          call_block = "".join(lines[k:t_end + 1])
+                          new_block, did_patch = patch_lyric_text_call(call_block, is_player=is_player_scope)
+                          if did_patch:
+                              lines[k:t_end + 1] = [new_block]
+                              k = t_end + 1
+                              continue
+                  k += 1
+
               updated_src = "".join(lines)
               if updated_src != orig_src:
                   ui_kt.write_text(updated_src)
@@ -3194,46 +3294,38 @@ jobs:
                   tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
                   if n > 0: tf.write_text(tn)
 
-          res_map: dict[str, set[str]] = {"appearance": set(), "playback": set(), "lyrics": set(), "app": set()}
+          # Clean any previously scattered VNEra settings card injections so all 3 can be placed together right above Backup / Export
+          scattered_rx = re.compile(
+              r'^\s*(?:item\s*\{\s*)?(?:com\.music\.spotui\.ui\.screens\.)?Vn(?:Appearance|Playback|Lyrics|FpsSelector)Settings?Card\(\)\s*\}?\s*$'
+          )
+          for kt_clean in sorted(Path("app/src/main/java").rglob("*.kt")):
+              if kt_clean.name == "VnFrameRateManager.kt":
+                  continue
+              old_lines = kt_clean.read_text().splitlines(keepends=True)
+              filtered_lines = [ln for ln in old_lines if not scattered_rx.match(ln)]
+              if len(filtered_lines) != len(old_lines):
+                  kt_clean.write_text("".join(filtered_lines))
+
+          backup_res_keys: set[str] = set()
           for xml_f in Path("app/src/main/res").rglob("*.xml"):
               xt = xml_f.read_text(errors="ignore")
               for m in re.finditer(r'<string\s+name="([^"]+)"[^>]*>([^<]+)</string>', xt):
                   k, val = m.group(1), m.group(2)
                   kl = k.lower()
-                  if any(w in kl for w in ("appearance", "theme", "accent", "dynamic_color", "display", "look", "color")) or re.search(r'(?:Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme|Γλώσσα|Language|Όψη|Look)', val, re.I):
-                      res_map["appearance"].add(k)
-                  if any(w in kl for w in ("playback", "audio", "quality", "gapless", "normaliz", "crossfade", "automix", "sound")) or re.search(r'(?:Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση|AutoMix|Μεταβάσεις|Ήχος|Sound)', val, re.I):
-                      res_map["playback"].add(k)
-                  if "lyric" in kl or re.search(r'(?:Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke)', val, re.I):
-                      res_map["lyrics"].add(k)
-                  if any(w in kl for w in ("backup", "export", "import", "check_updates", "restart_player", "restore", "about", "general")) or re.search(r'(?:Import / Export|Export settings|Backup|Αντίγραφα ασφαλείας|Έλεγχος για ενημερώσεις|Επανεκκίνηση του player|Γενικά|General)', val, re.I):
-                      res_map["app"].add(k)
+                  if any(w in kl for w in ("backup", "export", "import_export", "restore_settings", "export_settings")) or re.search(r'(?:Import\s*/\s*Export|Export settings|Import settings|Backup|Αντίγραφα ασφαλείας|Εξαγωγή ρυθμίσεων|Εισαγωγή ρυθμίσεων)', val, re.I):
+                      backup_res_keys.add(k)
 
-          def build_cat_regex(literals: str, keys: set[str]) -> str:
-              parts = [rf'"[^"]*(?:{literals})[^"]*"'] + [rf'\bR\.string\.{re.escape(k)}\b' for k in sorted(keys)]
-              return "|".join(parts)
+          backup_parts = [
+              r'\bVnSettingsBackup\b',
+              r'"[^"]*(?:Import\s*/\s*Export|Export settings|Import settings|Backup|Αντίγραφα ασφαλείας|Εξαγωγή ρυθμίσεων|Εισαγωγή ρυθμίσεων|Αντίγραφο ασφαλείας)[^"]*"'
+          ] + [rf'\bR\.string\.{re.escape(k)}\b' for k in sorted(backup_res_keys)]
+          backup_anchor_rx = "|".join(backup_parts)
 
-          cat_configs = [
-              (
-                  "appearance",
-                  "VnAppearanceSettingsCard",
-                  build_cat_regex(r'Εμφάνιση και γλώσσα|Appearance and language|Εμφάνιση|Appearance|Χρώμα τόνου|Accent color|Dynamic color|Δυναμικό χρώμα|Θέμα|Theme|Όψη|Look', res_map["appearance"]),
-                  "com.music.spotui.ui.screens.VnAppearanceSettingsCard()"
-              ),
-              (
-                  "playback",
-                  "VnPlaybackSettingsCard",
-                  build_cat_regex(r'Αναπαραγωγή|Playback|Ποιότητα ήχου|Audio quality|Gapless|Normalization|Κανονικοποίηση|AutoMix|Μεταβάσεις|Ήχος|Sound', res_map["playback"]),
-                  "com.music.spotui.ui.screens.VnPlaybackSettingsCard()"
-              ),
-              (
-                  "lyrics",
-                  "VnLyricsSettingsCard",
-                  build_cat_regex(r'Στίχοι|Lyrics|Προεπισκόπηση στίχων|Swipe to expand lyrics|Λέξη προς λέξη|Καραόκε|Karaoke', res_map["lyrics"]),
-                  "com.music.spotui.ui.screens.VnLyricsSettingsCard()"
-              ),
+          all_vnera_cards = [
+              "com.music.spotui.ui.screens.VnAppearanceSettingsCard()",
+              "com.music.spotui.ui.screens.VnPlaybackSettingsCard()",
+              "com.music.spotui.ui.screens.VnLyricsSettingsCard()",
           ]
-          app_fallback_rx = build_cat_regex(r'Import / Export|Export settings|Backup|Αντίγραφα ασφαλείας|Έλεγχος για ενημερώσεις|Επανεκκίνηση του player|VnSettingsBackup', res_map["app"])
 
           LAZY_ITEM_CALLS = {"item", "items", "itemsIndexed", "stickyHeader"}
           INLINE_ITEM_PARENTS = {"Row", "Surface", "Card", "ElevatedCard", "OutlinedCard", "AlertDialog", "DropdownMenu", "Button", "OutlinedButton", "TextButton", "IconButton"}
@@ -3456,32 +3548,51 @@ jobs:
 
               return containers
 
-          def insert_into_container(lines: list[str], cont: dict, comp_call: str, before_backup: bool = False) -> list[str]:
+          def insert_all_above_backup(lines: list[str], cont: dict, comp_calls: list[str]) -> list[str]:
               new_lines = list(lines)
               if cont["kind"] == "LazyColumn":
                   items = cont["lazy_items"]
-                  if before_backup and items:
-                      backup_item = next(((s, e, ind) for (s, e, ind) in items if "VnSettingsBackup" in "".join(new_lines[s:e+1])), None)
-                      if backup_item is not None:
-                          s_idx, _, item_ind = backup_item
-                          new_lines.insert(s_idx, f"{item_ind}item {{ {comp_call} }}\n")
-                          return new_lines
                   if items:
+                      target_item = next(
+                          ((s, e, ind) for (s, e, ind) in items if re.search(backup_anchor_rx, "".join(new_lines[s:e+1]), re.I)),
+                          None
+                      )
+                      if target_item is not None:
+                          s_idx, e_idx, item_ind = target_item
+                          # If immediately preceded by a section header item (e.g. "Backup" / "Αντίγραφα ασφαλείας" / "Εφαρμογή"), insert right before that header
+                          prev_idx = next((idx_it for idx_it, (ps, pe, _) in enumerate(items) if pe + 1 == s_idx or ps < s_idx), None)
+                          if prev_idx is not None:
+                              ps, pe, pind = items[prev_idx]
+                              prev_txt = "".join(new_lines[ps:pe+1])
+                              if (pe - ps) <= 8 and re.search(r'(?:Backup|Αντίγραφα ασφαλείας|Import\s*/\s*Export|Εφαρμογή|App)', prev_txt, re.I) and not re.search(r'Switch|onClick|Button', prev_txt, re.I):
+                                  s_idx, item_ind = ps, pind
+                          ins_block = [f"{item_ind}item {{ {call} }}\n" for call in comp_calls]
+                          new_lines[s_idx:s_idx] = ins_block
+                          return new_lines
                       _, last_end, item_ind = items[-1]
-                      new_lines.insert(last_end + 1, f"{item_ind}item {{ {comp_call} }}\n")
+                      ins_block = [f"{item_ind}item {{ {call} }}\n" for call in comp_calls]
+                      new_lines[last_end + 1:last_end + 1] = ins_block
                       return new_lines
                   child_ind = cont["base_indent"] + "    "
-                  new_lines.insert(cont["close_li"], f"{child_ind}item {{ {comp_call} }}\n")
+                  ins_block = [f"{child_ind}item {{ {call} }}\n" for call in comp_calls]
+                  new_lines[cont["close_li"]:cont["close_li"]] = ins_block
                   return new_lines
               else:
-                  if before_backup:
-                      for li in range(cont["open_li"] + 1, cont["close_li"]):
-                          if "VnSettingsBackup(" in new_lines[li]:
-                              ind = re.match(r'^(\s*)', new_lines[li]).group(1)
-                              new_lines.insert(li, f"{ind}{comp_call}\n")
-                              return new_lines
+                  for li in range(cont["open_li"] + 1, cont["close_li"]):
+                      if re.search(backup_anchor_rx, new_lines[li], re.I):
+                          ins_li = li
+                          for back in range(li - 1, max(cont["open_li"], li - 8), -1):
+                              if re.match(r'^\s*(?:Text|Surface|Card|ElevatedCard|OutlinedCard|Row|Column)\s*\(', new_lines[back]):
+                                  if re.search(r'(?:Backup|Αντίγραφα ασφαλείας|Import\s*/\s*Export|VnSettingsBackup)', new_lines[back], re.I):
+                                      ins_li = back
+                                  break
+                          ind = re.match(r'^(\s*)', new_lines[ins_li]).group(1)
+                          ins_block = [f"{ind}{call}\n" for call in comp_calls]
+                          new_lines[ins_li:ins_li] = ins_block
+                          return new_lines
                   child_ind = cont["base_indent"] + "    "
-                  new_lines.insert(cont["close_li"], f"{child_ind}{comp_call}\n")
+                  ins_block = [f"{child_ind}{call}\n" for call in comp_calls]
+                  new_lines[cont["close_li"]:cont["close_li"]] = ins_block
                   return new_lines
 
           ui_kt_files = [
@@ -3500,89 +3611,52 @@ jobs:
 
           ui_kt_files.sort(key=file_priority)
 
-          placed_standard: set[str] = set()
-          placed_immersive: set[str] = set()
+          placed_groups: set[str] = set()
 
-          for kt_file in ui_kt_files:
-              is_imm_file = "immersive" in str(kt_file).lower()
-              placed_set = placed_immersive if is_imm_file else placed_standard
-
-              for cat_name, marker, anchor_rx, comp_call in cat_configs:
-                  if cat_name in placed_set:
-                      continue
-                  src_text = kt_file.read_text()
-                  if marker in src_text:
-                      placed_set.add(cat_name)
-                      continue
-                  lines = src_text.splitlines(keepends=True)
-                  containers = extract_layout_containers(lines)
-                  if not containers:
-                      continue
-
-                  best_cont = None
-                  best_score = 0
-                  for cont in containers:
-                      if not cont["is_scrollable"] and not re.search(cat_name, cont["fun_name"], re.I):
-                          continue
-                      body_txt = "".join(lines[cont["start_li"]:cont["close_li"] + 1])
-                      is_root_menu = (
-                          bool(re.search(r'(?:Λογαριασμοί|Accounts)', body_txt, re.I)) and
-                          bool(re.search(r'(?:Αποθηκευτικός χώρος|Storage)', body_txt, re.I)) and
-                          bool(re.search(r'(?:Εφαρμογή|App)', body_txt, re.I))
-                      )
-                      if is_root_menu:
-                          continue
-                      score = 0
-                      if re.search(cat_name, cont["fun_name"], re.I):
-                          score += 15
-                      matches = len(re.findall(anchor_rx, body_txt, re.I))
-                      score += matches * 3
-                      if cont["is_scrollable"]:
-                          score += 6
-                      is_outer = any(
-                          other is not cont and other["start_li"] > cont["start_li"] and other["close_li"] < cont["close_li"]
-                          for other in containers
-                      )
-                      if not is_outer:
-                          score += 3
-                      if score > best_score and matches > 0:
-                          best_score = score
-                          best_cont = cont
-
-                  if best_cont is not None:
-                      updated_lines = insert_into_container(lines, best_cont, comp_call, before_backup=False)
-                      kt_file.write_text("".join(updated_lines))
-                      placed_set.add(cat_name)
-
-          for target_group, placed_set in [("standard", placed_standard), ("immersive", placed_immersive)]:
-              missing_cats = [c for c in cat_configs if c[0] not in placed_set]
-              if not missing_cats:
-                  continue
+          # Pass 1: Place ALL 3 VNEra settings cards together directly above Backup / Export in Standard & Immersive Settings
+          for target_group in ["standard", "immersive"]:
               for kt_file in ui_kt_files:
                   is_imm_file = "immersive" in str(kt_file).lower()
                   if (target_group == "immersive") != is_imm_file:
                       continue
                   src_text = kt_file.read_text()
+                  if "VnAppearanceSettingsCard" in src_text:
+                      placed_groups.add(target_group)
+                      break
                   lines = src_text.splitlines(keepends=True)
                   containers = extract_layout_containers(lines)
                   scrollable_conts = [c for c in containers if c["is_scrollable"]]
-                  app_cont = next(
-                      (c for c in reversed(scrollable_conts) if re.search(app_fallback_rx, "".join(lines[c["start_li"]:c["close_li"] + 1]), re.I)),
+                  backup_cont = next(
+                      (c for c in reversed(scrollable_conts) if re.search(backup_anchor_rx, "".join(lines[c["start_li"]:c["close_li"] + 1]), re.I)),
                       None
                   )
-                  if app_cont is not None:
-                      for cat_name, marker, _, comp_call in missing_cats:
-                          if marker not in "".join(lines):
-                              lines = insert_into_container(lines, app_cont, comp_call, before_backup=True)
-                              placed_set.add(cat_name)
+                  if backup_cont is not None:
+                      lines = insert_all_above_backup(lines, backup_cont, all_vnera_cards)
                       cur_joined = "".join(lines)
                       if "VnSettingsBackup(" not in cur_joined and "VnCopyBackupExtensionsButton" not in cur_joined:
-                          lines = insert_into_container(lines, app_cont, "com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()", before_backup=False)
+                          lines = insert_all_above_backup(lines, backup_cont, [])
+                          # Append extensions button right at the bottom of the backup container
+                          if backup_cont["kind"] == "LazyColumn":
+                              upd_conts = extract_layout_containers(lines)
+                              b_cont2 = next((c for c in reversed(upd_conts) if c["is_scrollable"] and re.search(backup_anchor_rx, "".join(lines[c["start_li"]:c["close_li"] + 1]), re.I)), None)
+                              if b_cont2 and b_cont2["lazy_items"]:
+                                  _, last_e, last_ind = b_cont2["lazy_items"][-1]
+                                  lines.insert(last_e + 1, f"{last_ind}item {{ com.music.spotui.ui.screens.VnCopyBackupExtensionsButton() }}\n")
+                          else:
+                              upd_conts = extract_layout_containers(lines)
+                              b_cont2 = next((c for c in reversed(upd_conts) if c["is_scrollable"] and re.search(backup_anchor_rx, "".join(lines[c["start_li"]:c["close_li"] + 1]), re.I)), None)
+                              if b_cont2:
+                                  c_ind = b_cont2["base_indent"] + "    "
+                                  lines.insert(b_cont2["close_li"], f"{c_ind}com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
                       kt_file.write_text("".join(lines))
+                      placed_groups.add(target_group)
+                      print(f"Placed ALL VNEra settings cards above Backup/Export in {kt_file}")
                       break
 
-          for target_group, placed_set in [("standard", placed_standard), ("immersive", placed_immersive)]:
-              missing_cats = [c for c in cat_configs if c[0] not in placed_set]
+          # Pass 2: If SettingsScreen/ImmersiveSettingsScreen had no Backup anchor directly, place on main Settings container
+          for target_group in ["standard", "immersive"]:
+              if target_group in placed_groups:
+                  continue
               for kt_file in ui_kt_files:
                   if "Setting" not in kt_file.name:
                       continue
@@ -3596,18 +3670,10 @@ jobs:
                   if not scrollable_conts:
                       continue
                   main_cont = scrollable_conts[0]
-                  did_modify = False
-                  for cat_name, marker, _, comp_call in missing_cats:
-                      if marker not in "".join(lines):
-                          lines = insert_into_container(lines, main_cont, comp_call, before_backup=True)
-                          placed_set.add(cat_name)
-                          did_modify = True
-                  cur_joined = "".join(lines)
-                  if "VnSettingsBackup(" not in cur_joined and "VnCopyBackupExtensionsButton" not in cur_joined:
-                      lines = insert_into_container(lines, main_cont, "com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()", before_backup=False)
-                      did_modify = True
-                  if did_modify:
-                      kt_file.write_text("".join(lines))
+                  lines = insert_all_above_backup(lines, main_cont, all_vnera_cards)
+                  kt_file.write_text("".join(lines))
+                  placed_groups.add(target_group)
+                  print(f"Placed ALL VNEra settings cards in main Settings container of {kt_file}")
                   break
 
           for target_name in ["SettingsScreen.kt", "ImmersiveSettingsScreen.kt"]:
@@ -3646,6 +3712,20 @@ jobs:
                       bt = re.sub(r'\bJSONObject\(\s*([A-Za-z0-9_]+)\s*\)', rf'JSONObject(com.music.spotui.ui.screens.VnFpsPref.onBackupImported({cv}, \1))', bt, count=1)
                   if "enrichBackupJson" not in bt:
                       bt = re.sub(r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)?\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1)
+
+              # If VnSettingsBackup was NOT placed via SettingsScreen/ImmersiveSettingsScreen, place all 3 cards right at the top of VnSettingsBackup above Backup/Export
+              if not placed_groups and "VnAppearanceSettingsCard" not in bt:
+                  lines_b = bt.splitlines(keepends=True)
+                  cs_b = next((i for i, l in enumerate(lines_b) if "@Composable" in l), None)
+                  col_b = next((i for i in range(cs_b, len(lines_b)) if re.search(r'\bColumn\b', lines_b[i])), None) if cs_b is not None else None
+                  if col_b is not None:
+                      open_brace_b = next((i for i in range(col_b, min(len(lines_b), col_b + 12)) if "{" in lines_b[i]), None)
+                      if open_brace_b is not None:
+                          ind_top = re.match(r'^(\s*)', lines_b[col_b]).group(1) + "    "
+                          top_cards = "".join(f"{ind_top}{call}\n" for call in all_vnera_cards)
+                          lines_b[open_brace_b] += top_cards
+                          bt = "".join(lines_b)
+
               if "VnCopyBackupExtensionsButton" not in bt:
                   lines = bt.splitlines(keepends=True)
                   cs = next((i for i, l in enumerate(lines) if "@Composable" in l), None)
@@ -3656,14 +3736,7 @@ jobs:
                           d += lines[i].count("{") - lines[i].count("}")
                           if "{" in lines[i]: op = True
                           if op and d <= 0:
-                              safety_calls = []
-                              for cat_name, marker, _, comp_call in cat_configs:
-                                  if cat_name not in placed_standard and cat_name not in placed_immersive:
-                                      safety_calls.append(f"    {comp_call}\n")
                               ind_b = re.match(r'^(\s*)', lines[i]).group(1)
-                              for sc in safety_calls:
-                                  lines.insert(i, ind_b + sc)
-                                  i += 1
                               lines.insert(i, ind_b + "    com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
                               bt = "".join(lines); break
               bf.write_text(bt)
