@@ -364,7 +364,7 @@ jobs:
                   lyricsBeautifulEnabled = sp.getBoolean(KEY_LYRICS_BEAUTIFUL, false) || (lyricsCustomColorArgb != 0L)
                   playerKaraokeBgColorArgb = sp.getLong(KEY_PLAYER_KARAOKE_BG_COLOR, 0L)
                   lyricsFontScale = sp.getFloat(KEY_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.70f, 1.70f)
-                  playerLyricsFontScale = sp.getFloat(KEY_PLAYER_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.60f, 1.10f)
+                  playerLyricsFontScale = sp.getFloat(KEY_PLAYER_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.60f, 1.60f)
               }
 
               fun ensureInit(c: Context) {
@@ -575,11 +575,15 @@ jobs:
               }
               fun toggleSystemBars(act: Activity?) = setSystemBarsHidden(act, !lyricsBarsHidden)
 
+              private val backupSafeKey = Regex("(?i).*(setting|pref|theme|color|font|scale|display|lyrics|player|quality|source|order|shuffle|repeat|volume|equalizer|notification|download|wifi|transition|anim|fps|language|autoplay|crossfade|gapless|normalize|data.?save|battery|appearance|control|gesture|swipe|timer).*" )
+              private val backupSensitiveKey = Regex("(?i).*(password|passwd|token|secret|credential|auth|cookie|session|account|email|username|user.?id|oauth|access.?key|refresh.?key|private.?key|pin|purchase|billing|payment).*" )
+
               fun exportAllPrefsJson(c: Context): JSONObject = JSONObject().also { all ->
                   File(c.applicationInfo.dataDir, "shared_prefs").listFiles()?.filter { it.name.endsWith(".xml") }?.forEach { f ->
                       val spName = f.name.removeSuffix(".xml")
                       val entries = JSONObject()
                       c.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE).all.forEach { (k, v) ->
+                          if (backupSensitiveKey.matches(k)) return@forEach
                           when (v) {
                               is Boolean -> entries.put(k, JSONObject().put("t", "b").put("v", v))
                               is Int -> entries.put(k, JSONObject().put("t", "i").put("v", v))
@@ -589,7 +593,7 @@ jobs:
                               is Set<*> -> entries.put(k, JSONObject().put("t", "set").put("v", JSONArray().apply { v.filterNotNull().forEach { put(it.toString()) } }))
                           }
                       }
-                      all.put(spName, entries)
+                      if (entries.length() > 0) all.put(spName, entries)
                   }
               }
 
@@ -607,7 +611,7 @@ jobs:
                               val entries = allPrefs.optJSONObject(spName) ?: return@forEach
                               val ed = c.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE).edit()
                               entries.keys().forEach { k ->
-                                  if (k == KEY_LAST_BACKUP_JSON || k == KEY_LAST_BACKUP_EXTENSIONS || k == KEY_RESTORED_EXTENSIONS) return@forEach
+                                  if (k == KEY_LAST_BACKUP_JSON || k == KEY_LAST_BACKUP_EXTENSIONS || k == KEY_RESTORED_EXTENSIONS || backupSensitiveKey.matches(k)) return@forEach
                                   val item = entries.optJSONObject(k) ?: return@forEach
                                   when (item.optString("t")) {
                                       "b" -> ed.putBoolean(k, item.optBoolean("v"))
@@ -625,6 +629,7 @@ jobs:
                               val sp = c.applicationContext.getSharedPreferences(f.name.removeSuffix(".xml"), Context.MODE_PRIVATE)
                               val existing = sp.all; val ed = sp.edit(); var mod = false
                               root.keys().forEach { k ->
+                                  if (backupSensitiveKey.matches(k)) return@forEach
                                   when (val cur = existing[k]) {
                                       is Boolean -> { ed.putBoolean(k, root.optBoolean(k, cur)); mod = true }
                                       is Int -> { ed.putInt(k, root.optInt(k, cur)); mod = true }
@@ -1083,7 +1088,7 @@ jobs:
               val c = LocalContext.current
               VnFpsPref.ensureInit(c)
               val baseDensity = LocalDensity.current
-              val scale = VnFpsPref.playerLyricsFontScale.coerceIn(0.60f, 1.10f)
+              val scale = VnFpsPref.playerLyricsFontScale.coerceIn(0.60f, 1.60f)
               val scaledDensity = remember(baseDensity, scale) {
                   Density(density = baseDensity.density, fontScale = baseDensity.fontScale * scale)
               }
@@ -2381,7 +2386,7 @@ jobs:
           fun VnLyricsSettingsCard(modifier: Modifier = Modifier) {
               val c = LocalContext.current
               VnFpsPref.ensureInit(c)
-              val playerScalePresets = listOf(0.60f, 0.70f, 0.80f, 0.90f, 1.00f, 1.10f)
+              val playerScalePresets = listOf(0.60f, 0.80f, 1.00f, 1.20f, 1.40f, 1.60f)
               val panelScalePresets = listOf(0.70f, 0.85f, 1.00f, 1.20f, 1.40f, 1.70f)
 
               VnSectionBlock(sectionTitle = "VNERA · ΣΤΙΧΟΙ", modifier = modifier) {
@@ -2439,7 +2444,7 @@ jobs:
                           horizontalArrangement = Arrangement.SpaceBetween
                       ) {
                           Text(
-                              text = "Μέγεθος Στίχων Player (60% - 110%)",
+                              text = "Μέγεθος Στίχων Player (60% - 160%)",
                               style = MaterialTheme.typography.bodyLarge,
                               fontWeight = FontWeight.Medium,
                               color = MaterialTheme.colorScheme.onSurface
@@ -2461,7 +2466,7 @@ jobs:
                       Slider(
                           value = VnFpsPref.playerLyricsFontScale,
                           onValueChange = { VnFpsPref.updatePlayerLyricsFontScale(c, it) },
-                          valueRange = 0.60f..1.10f,
+                          valueRange = 0.60f..1.60f,
                           steps = 9,
                           modifier = Modifier.fillMaxWidth()
                       )
@@ -2531,123 +2536,8 @@ jobs:
           }
 
           @Composable
-          fun VnCopyBackupExtensionsButton(modifier: Modifier = Modifier) {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
-              var showRestoreDialog by remember { mutableStateOf(false) }
-              var restoreText by remember { mutableStateOf("") }
+          fun VnCopyBackupExtensionsButton(modifier: Modifier = Modifier) { /* Extension clipboard feature disabled. */ }
 
-              Surface(
-                  modifier = modifier
-                      .fillMaxWidth()
-                      .padding(vertical = 8.dp),
-                  shape = RoundedCornerShape(22.dp),
-                  color = MaterialTheme.colorScheme.surfaceContainerHigh
-              ) {
-                  Column(Modifier.fillMaxWidth()) {
-                      Row(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .clickable { VnFpsPref.copyExtensionsToClipboard(c) }
-                              .padding(horizontal = 16.dp, vertical = 14.dp),
-                          verticalAlignment = Alignment.CenterVertically
-                      ) {
-                          Column(Modifier.weight(1f)) {
-                              Text(
-                                  text = "Αντιγραφή Extensions",
-                                  style = MaterialTheme.typography.bodyLarge,
-                                  fontWeight = FontWeight.Medium,
-                                  color = MaterialTheme.colorScheme.onSurface
-                              )
-                              Spacer(Modifier.height(3.dp))
-                              Text(
-                                  text = "Αντιγράφει μόνο τα ονόματα και τα links των extensions",
-                                  style = MaterialTheme.typography.bodySmall,
-                                  color = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
-                          }
-                      }
-
-                      VnCardDivider()
-
-                      Row(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .clickable {
-                                  restoreText = VnFpsPref.getClipboardText(c)
-                                  showRestoreDialog = true
-                              }
-                              .padding(horizontal = 16.dp, vertical = 14.dp),
-                          verticalAlignment = Alignment.CenterVertically
-                      ) {
-                          Column(Modifier.weight(1f)) {
-                              Text(
-                                  text = "Επαναφορά Extensions",
-                                  style = MaterialTheme.typography.bodyLarge,
-                                  fontWeight = FontWeight.Medium,
-                                  color = MaterialTheme.colorScheme.primary
-                              )
-                              Spacer(Modifier.height(3.dp))
-                              Text(
-                                  text = "Επαναφέρει μόνο τις επεκτάσεις από το πρόχειρο χωρίς να αλλάζει τις ρυθμίσεις",
-                                  style = MaterialTheme.typography.bodySmall,
-                                  color = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
-                          }
-                      }
-                  }
-              }
-
-              if (showRestoreDialog) {
-                  AlertDialog(
-                      onDismissRequest = { showRestoreDialog = false },
-                      title = {
-                          Text(
-                              text = "Επαναφορά Extensions",
-                              style = MaterialTheme.typography.titleMedium,
-                              fontWeight = FontWeight.Bold
-                          )
-                      },
-                      text = {
-                          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                              Text(
-                                  text = "Επικόλλησε τα extensions (όνομα ή link ανά γραμμή). Οι ρυθμίσεις της εφαρμογής δεν θα τροποποιηθούν.",
-                                  style = MaterialTheme.typography.bodySmall,
-                                  color = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
-                              OutlinedTextField(
-                                  value = restoreText,
-                                  onValueChange = { restoreText = it },
-                                  modifier = Modifier
-                                      .fillMaxWidth()
-                                      .heightIn(min = 120.dp, max = 220.dp),
-                                  placeholder = { Text("π.χ. Spotify - https://...") }
-                              )
-                          }
-                      },
-                      confirmButton = {
-                          TextButton(
-                              onClick = {
-                                  val count = VnFpsPref.restoreExtensionsOnly(c, restoreText)
-                                  showRestoreDialog = false
-                                  if (count > 0) {
-                                      Toast.makeText(c, "Επαναφέρθηκαν $count extensions (οι ρυθμίσεις διατηρήθηκαν)", Toast.LENGTH_SHORT).show()
-                                  } else {
-                                      Toast.makeText(c, "Δεν βρέθηκαν έγκυρα extensions για επαναφορά", Toast.LENGTH_SHORT).show()
-                                  }
-                              }
-                          ) {
-                              Text("Επαναφορά")
-                          }
-                      },
-                      dismissButton = {
-                          TextButton(onClick = { showRestoreDialog = false }) {
-                              Text("Ακύρωση")
-                          }
-                      }
-                  )
-              }
-          }
           EOF
 
           python3 <<'PY'
@@ -3423,14 +3313,14 @@ jobs:
                   if m_shuffle_fn:
                       guard = (
                           "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
-                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle) {\n"
-                          "        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
+                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, state.smart, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle) {\n"
+                          "        if (!state.smart) com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
                           "    }\n"
                       )
                       src_shuffle = src_shuffle[:m_shuffle_fn.end()] + guard + src_shuffle[m_shuffle_fn.end():]
                       src_shuffle, n_shuffle_cb = re.subn(
                           r'onToggleShuffle\s*=\s*actions\.toggleShuffle\s*,',
-                          'onToggleShuffle = {\n            com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!state.shuffle, vnShuffleContext)\n            actions.toggleShuffle()\n        },',
+                          'onToggleShuffle = {\n            if (!state.smart) com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!state.shuffle, vnShuffleContext)\n            actions.toggleShuffle()\n        },',
                           src_shuffle,
                           count=1,
                       )
@@ -3937,7 +3827,7 @@ jobs:
                   if backup_cont is not None:
                       lines = insert_all_above_backup(lines, backup_cont, all_vnera_cards)
                       cur_joined = "".join(lines)
-                      if "VnSettingsBackup(" not in cur_joined and "VnCopyBackupExtensionsButton" not in cur_joined:
+                      if False and "VnSettingsBackup(" not in cur_joined:
                           upd_conts = extract_layout_containers(lines)
                           b_cont2 = next((c for c in reversed(upd_conts) if c["is_scrollable"] and re.search(backup_anchor_rx, "".join(lines[c["start_li"]:c["close_li"] + 1]), re.I)), None)
                           if b_cont2 and b_cont2["kind"] == "LazyColumn" and b_cont2["lazy_items"]:
@@ -4029,7 +3919,7 @@ jobs:
                           bt = "".join(lines_b)
                           print("Placed ALL VNEra settings cards at top of VnSettingsBackup.kt")
 
-              if "VnCopyBackupExtensionsButton" not in bt:
+              if False and "VnCopyBackupExtensionsButton" not in bt:
                   lines = bt.splitlines(keepends=True)
                   cs = next((i for i, l in enumerate(lines) if "@Composable" in l), None)
                   col = next((i for i in range(cs, len(lines)) if re.search(r'\bColumn\b', lines[i])), None) if cs is not None else None
