@@ -104,28 +104,31 @@ jobs:
           OLD_SETTINGS=$(find /tmp/revera_old -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1 || true)
           OLD_BASE_ROOT=$(dirname "${OLD_SETTINGS:-/tmp/revera_old/settings.gradle.kts}")
 
-          git init /tmp/merge_repo
+          git init -b master /tmp/merge_repo
           cd /tmp/merge_repo
           git config user.name "VNEra Merge Bot"
           git config user.email "bot@vnera.local"
 
           cp -a "$OLD_BASE_ROOT"/. .
-          git add -A && git commit -q -m "Old Revera base"
+          git add -A && git commit --allow-empty -q -m "Old Revera base"
 
           git checkout -q -b vnera-custom
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
           cp -a /tmp/vnera_custom/. .
-          git add -A && git commit -q -m "VNEra custom changes"
+          git add -A && git commit --allow-empty -q -m "VNEra custom changes"
 
           git checkout -q -b revera-108 master
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
           cp -a "$NEW_BASE_ROOT"/. .
-          git add -A && git commit -q -m "Revera 1.0.8 base"
+          git add -A && git commit --allow-empty -q -m "Revera 1.0.8 base"
 
-          git cherry-pick -X theirs vnera-custom || {
-            git diff --name-only --diff-filter=U | xargs -r git checkout --theirs --
+          git cherry-pick --allow-empty -X theirs vnera-custom || {
+            git diff --name-only --diff-filter=U | while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              git checkout --theirs -- "$f" 2>/dev/null || git rm -f -- "$f" 2>/dev/null || true
+            done
             git add -A
-            git commit -q --no-edit
+            git commit --allow-empty -q --no-edit
           }
           git diff --stat HEAD~1 HEAD
 
@@ -165,6 +168,8 @@ jobs:
 
           export HAS_SDK_37="false"
           [ -d "$SDK_ROOT/platforms/android-37" ] && export HAS_SDK_37="true"
+          export FALLBACK_SDK="35"
+          [ -d "$SDK_ROOT/platforms/android-36" ] && export FALLBACK_SDK="36"
           export BUILD_VERSION_CODE=$((216000 + ${GITHUB_RUN_NUMBER:-1}))
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
           echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
@@ -1310,6 +1315,16 @@ jobs:
               DisposableEffect(s) {
                   VnFpsPref.activeLyricsScrollState = s
                   onDispose { if (VnFpsPref.activeLyricsScrollState === s) VnFpsPref.activeLyricsScrollState = null }
+              }
+          }
+
+          @Composable
+          fun VnRememberPlayerPreviewListState(state: Any?) {
+              VnRegisterLyricsScrollState(state)
+              val listState = state as? LazyListState ?: return
+              LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) {
+                  VnFpsPref.savedPlayerPreviewScrollIndex = listState.firstVisibleItemIndex
+                  VnFpsPref.savedPlayerPreviewScrollOffset = listState.firstVisibleItemScrollOffset
               }
           }
 
@@ -2574,6 +2589,7 @@ jobs:
           from pathlib import Path
 
           has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
+          fallback_sdk = os.environ.get("FALLBACK_SDK", "35")
           build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "216001"))
           target_agp = "9.1.0" if has_sdk_37 else "8.7.2"
 
@@ -2581,13 +2597,13 @@ jobs:
               if p.exists():
                   t = p.read_text().replace("2.4.10", "2.2.20").replace("2.4.21", "2.2.20").replace("9.4.1", target_agp)
                   if not has_sdk_37:
-                      t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', r'\g<1> = "35"', t)
+                      t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', rf'\g<1> = "{fallback_sdk}"', t)
                   p.write_text(t)
 
           if not has_sdk_37:
               for gf in Path(".").rglob("*.gradle.kts"):
                   t = gf.read_text()
-                  tn = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', r'\g<1>.set(35)', re.sub(r'(compileSdk|targetSdk)\s*=\s*37', r'\g<1> = 35', t))
+                  tn = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', rf'\g<1>.set({fallback_sdk})', re.sub(r'(compileSdk|targetSdk)\s*=\s*37', rf'\g<1> = {fallback_sdk}', t))
                   if t != tn: gf.write_text(tn)
 
           for sp in Path("app/src/main/res").rglob("strings.xml"):
@@ -2626,38 +2642,39 @@ jobs:
           cast_msg = Path("app/src/main/java/com/music/spotui/cast/CastMessage.kt")
           if cast_msg.exists():
               lines = cast_msg.read_text().splitlines()
-              ti = min(36, len(lines) - 1)
-              if "return" in lines[ti]:
-                  fi = next((i for i in range(ti, -1, -1) if re.search(r'\bfun\b', lines[i])), None)
-                  if fi is not None:
-                      paren = 0; eq_l = eq_c = None
-                      for i in range(fi, ti + 1):
-                          for ci, ch in enumerate(lines[i]):
-                              if ch == '(': paren += 1
-                              elif ch == ')': paren -= 1
-                              elif ch == '=' and paren == 0 and (lines[i][ci-1:ci] not in ('=','!','<','>')) and (lines[i][ci+1:ci+2] not in ('=','>')):
-                                  eq_l, eq_c = i, ci; break
-                          if eq_l is not None: break
-                      if eq_l is not None:
-                          ind = re.match(r'^(\s*)', lines[fi]).group(1)
-                          b = p = br = 0; hb = False; el = eq_l
-                          for i in range(eq_l, len(lines)):
-                              cp = (lines[i][eq_c+1:] if i == eq_l else lines[i]).split('//')[0]
-                              if cp.strip(): hb = True
-                              for ch in cp:
-                                  if ch == '{': b += 1
-                                  elif ch == '}': b -= 1
-                                  elif ch == '(': p += 1
-                                  elif ch == ')': p -= 1
-                                  elif ch == '[': br += 1
-                                  elif ch == ']': br -= 1
-                              if hb and b <= 0 and p <= 0 and br <= 0 and i >= ti and not (lines[i+1].lstrip() if i+1 < len(lines) else '').startswith(('.', '?.', '?:', '&&', '||')):
-                                  el = i; break
-                          beq, aeq = lines[eq_l][:eq_c].rstrip(), lines[eq_l][eq_c+1:].lstrip()
-                          if aeq: lines[eq_l] = f"{beq} {{\n{ind}    return {aeq}"
-                          else: lines[eq_l] = f"{beq} {{"; lines[eq_l+1] = f"{ind}    return " + lines[eq_l+1].lstrip()
-                          lines[el] += f"\n{ind}}}"
-                          cast_msg.write_text("\n".join(lines) + "\n")
+              if lines:
+                  ti = min(36, len(lines) - 1)
+                  if "return" in lines[ti]:
+                      fi = next((i for i in range(ti, -1, -1) if re.search(r'\bfun\b', lines[i])), None)
+                      if fi is not None:
+                          paren = 0; eq_l = eq_c = None
+                          for i in range(fi, ti + 1):
+                              for ci, ch in enumerate(lines[i]):
+                                  if ch == '(': paren += 1
+                                  elif ch == ')': paren -= 1
+                                  elif ch == '=' and paren == 0 and (lines[i][ci-1:ci] not in ('=','!','<','>')) and (lines[i][ci+1:ci+2] not in ('=','>')):
+                                      eq_l, eq_c = i, ci; break
+                              if eq_l is not None: break
+                          if eq_l is not None:
+                              ind = re.match(r'^(\s*)', lines[fi]).group(1)
+                              b = p = br = 0; hb = False; el = eq_l
+                              for i in range(eq_l, len(lines)):
+                                  cp = (lines[i][eq_c+1:] if i == eq_l else lines[i]).split('//')[0]
+                                  if cp.strip(): hb = True
+                                  for ch in cp:
+                                      if ch == '{': b += 1
+                                      elif ch == '}': b -= 1
+                                      elif ch == '(': p += 1
+                                      elif ch == ')': p -= 1
+                                      elif ch == '[': br += 1
+                                      elif ch == ']': br -= 1
+                                  if hb and b <= 0 and p <= 0 and br <= 0 and i >= ti and not (lines[i+1].lstrip() if i+1 < len(lines) else '').startswith(('.', '?.', '?:', '&&', '||')):
+                                      el = i; break
+                              beq, aeq = lines[eq_l][:eq_c].rstrip(), lines[eq_l][eq_c+1:].lstrip()
+                              if aeq: lines[eq_l] = f"{beq} {{\n{ind}    return {aeq}"
+                              else: lines[eq_l] = f"{beq} {{"; lines[eq_l+1] = f"{ind}    return " + lines[eq_l+1].lstrip()
+                              lines[el] += f"\n{ind}}}"
+                              cast_msg.write_text("\n".join(lines) + "\n")
 
           def ensure_imports(src: str, imports: list[str]) -> str:
               missing = [imp for imp in imports if imp not in src]
@@ -2666,15 +2683,24 @@ jobs:
               block = "\n".join(f"import {imp}" for imp in missing)
               return re.sub(r'(?m)^(package\s+[^\r\n]+)', rf'\1\n{block}', src, count=1)
 
+          def strip_line_strings_and_comments(line: str) -> str:
+              s = re.sub(r'"(?:\\.|[^"\\])*"', '""', line)
+              s = re.sub(r"'(?:\\.|[^'\\])'", "''", s)
+              return s.split("//")[0]
+
           def hook_lazy_cols(src, register_fn="VnRegisterLyricsScrollState"):
               if register_fn in src: return src
               lines, out, i = src.splitlines(keepends=True), [], 0
               while i < len(lines):
                   m = re.match(r'^(\s*)LazyColumn\s*\(', lines[i])
                   if m:
-                      block, paren = [lines[i]], lines[i].count("(") - lines[i].count(")")
+                      clean_l = strip_line_strings_and_comments(lines[i])
+                      block, paren = [lines[i]], clean_l.count("(") - clean_l.count(")")
                       while paren > 0 and i + 1 < len(lines):
-                          i += 1; block.append(lines[i]); paren += lines[i].count("(") - lines[i].count(")")
+                          i += 1
+                          block.append(lines[i])
+                          cl_next = strip_line_strings_and_comments(lines[i])
+                          paren += cl_next.count("(") - cl_next.count(")")
                       ms = re.search(r'\bstate\s*=\s*([A-Za-z0-9_.]+)', "".join(block))
                       if ms: out.append(f"{m.group(1)}com.music.spotui.ui.screens.{register_fn}({ms.group(1)})\n")
                       out.extend(block)
@@ -2689,14 +2715,26 @@ jobs:
               while i < len(lines):
                   if re.search(r'\bIconButton\s*\(', lines[i]):
                       block = [lines[i]]
-                      paren = lines[i].count("(") - lines[i].count(")")
-                      brace = lines[i].count("{") - lines[i].count("}")
+                      cl0 = strip_line_strings_and_comments(lines[i])
+                      paren = cl0.count("(") - cl0.count(")")
+                      brace = cl0.count("{") - cl0.count("}")
                       j = i + 1
                       while j < len(lines) and (paren > 0 or brace > 0):
                           block.append(lines[j])
-                          paren += lines[j].count("(") - lines[j].count(")")
-                          brace += lines[j].count("{") - lines[j].count("}")
+                          clj = strip_line_strings_and_comments(lines[j])
+                          paren += clj.count("(") - clj.count(")")
+                          brace += clj.count("{") - clj.count("}")
                           j += 1
+                      if brace == 0 and j < len(lines) and lines[j].lstrip().startswith("{"):
+                          clj = strip_line_strings_and_comments(lines[j])
+                          brace += clj.count("{") - clj.count("}")
+                          block.append(lines[j])
+                          j += 1
+                          while j < len(lines) and brace > 0:
+                              block.append(lines[j])
+                              clj = strip_line_strings_and_comments(lines[j])
+                              brace += clj.count("{") - clj.count("}")
+                              j += 1
                       joined = "".join(block)
                       if re.search(r'Icons\.(?:Rounded|Outlined|Default|Filled)\.(?:Fullscreen|OpenInFull)\b', joined) and "VnLyricsFullscreenButton" not in joined:
                           i = j
@@ -2735,15 +2773,17 @@ jobs:
                       if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', lines[i]):
                           paren = 0; se = None
                           for j in range(i, min(i + 25, len(lines))):
-                              paren += lines[j].count("(") - lines[j].count(")")
-                              if paren <= 0 and "{" in lines[j]: se = j; break
+                              clj = strip_line_strings_and_comments(lines[j])
+                              paren += clj.count("(") - clj.count(")")
+                              if paren <= 0 and "{" in clj: se = j; break
                           sig_str = "".join(lines[i:se+1]) if se is not None else ""
                           m_close_p = re.search(r'\bonClose\s*:\s*\(\)\s*->\s*Unit(\?)?', sig_str)
                           if se is not None and m_close_p:
                               close_call = "onClose?.invoke()" if m_close_p.group(1) else "onClose()"
                               d = 0; be = None
                               for k in range(se, len(lines)):
-                                  d += lines[k].count("{") - lines[k].count("}")
+                                  clk = strip_line_strings_and_comments(lines[k])
+                                  d += clk.count("{") - clk.count("}")
                                   if d <= 0: be = k; break
                               if be is not None and ".fillMaxSize()" in "".join(lines[se:be+1]):
                                   lines[se] += (
@@ -2801,12 +2841,14 @@ jobs:
                       if re.search(r'\bfun\s+ImmersiveLyricsPanel\b', lines[i]):
                           paren = 0; se = None
                           for j in range(i, min(i + 25, len(lines))):
-                              paren += lines[j].count("(") - lines[j].count(")")
-                              if paren <= 0 and "{" in lines[j]: se = j; break
+                              clj = strip_line_strings_and_comments(lines[j])
+                              paren += clj.count("(") - clj.count(")")
+                              if paren <= 0 and "{" in clj: se = j; break
                           if se is not None:
                               d = 0; be = None
                               for k in range(se, len(lines)):
-                                  d += lines[k].count("{") - lines[k].count("}")
+                                  clk = strip_line_strings_and_comments(lines[k])
+                                  d += clk.count("{") - clk.count("}")
                                   if d <= 0: be = k; break
                               if be is not None:
                                   lines[se] += (
@@ -2983,10 +3025,18 @@ jobs:
 
               new_body = ",".join(rebuilt_segments)
               if not has_color:
+                  color_arg = f"color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current, isPlayer = {is_player_lit})"
                   if new_body.strip():
-                      new_body = new_body.rstrip() + f", color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current, isPlayer = {is_player_lit})"
+                      m_trail = re.search(r'(,\s*)$', new_body)
+                      if m_trail:
+                          ws_after_comma = m_trail.group(1)[1:]
+                          prefix = new_body[:m_trail.start()]
+                          sep = ws_after_comma if "\n" in ws_after_comma else " "
+                          new_body = f"{prefix},{sep}{color_arg}{ws_after_comma}"
+                      else:
+                          new_body = new_body.rstrip() + f", {color_arg}"
                   else:
-                      new_body = f"color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current, isPlayer = {is_player_lit})"
+                      new_body = color_arg
                   modified = True
 
               if not modified:
@@ -3009,7 +3059,7 @@ jobs:
                                   p_cnt = 0
                                   open_l = None
                                   for j in range(back, min(len(lines), back + 16)):
-                                      s_no_c = lines[j].split("//")[0]
+                                      s_no_c = strip_line_strings_and_comments(lines[j])
                                       p_cnt += s_no_c.count("(") - s_no_c.count(")")
                                       if p_cnt <= 0 and "{" in s_no_c:
                                           open_l = j
@@ -3018,12 +3068,12 @@ jobs:
                                       b_cnt = 0
                                       close_l = None
                                       for j in range(open_l, len(lines)):
-                                          s_no_c = lines[j].split("//")[0]
+                                          s_no_c = strip_line_strings_and_comments(lines[j])
                                           b_cnt += s_no_c.count("{") - s_no_c.count("}")
                                           if b_cnt <= 0:
                                               close_l = j
                                               break
-                                      if close_l is not None and close_l >= idx:
+                                      if close_l is not None and close_l > open_l and close_l >= idx:
                                           span_body = "".join(lines[open_l:close_l + 1])
                                           if re.search(r'(?<![.\w])Text\s*\(', span_body):
                                               ind = re.match(r'^(\s*)', lines[open_l]).group(1)
@@ -3036,7 +3086,7 @@ jobs:
                       p_cnt = 0
                       open_l = None
                       for j in range(idx, min(len(lines), idx + 14)):
-                          s_no_c = lines[j].split("//")[0]
+                          s_no_c = strip_line_strings_and_comments(lines[j])
                           p_cnt += s_no_c.count("(") - s_no_c.count(")")
                           if p_cnt <= 0 and "{" in s_no_c:
                               open_l = j
@@ -3045,12 +3095,12 @@ jobs:
                           b_cnt = 0
                           close_l = None
                           for j in range(open_l, len(lines)):
-                              s_no_c = lines[j].split("//")[0]
+                              s_no_c = strip_line_strings_and_comments(lines[j])
                               b_cnt += s_no_c.count("{") - s_no_c.count("}")
                               if b_cnt <= 0:
                                   close_l = j
                                   break
-                          if close_l is not None and (close_l - open_l) <= 55:
+                          if close_l is not None and close_l > open_l and (close_l - open_l) <= 55:
                               span_txt = "".join(lines[idx:close_l + 1])
                               if (
                                   re.search(r'\b(?:currentLyric|lyricLine|lyricText|activeLyric|syncedLyric|karaoke|lyrics|inlineLyric|currentLine|wordByWord|swept)\b', span_txt, re.I)
@@ -3099,7 +3149,8 @@ jobs:
                           p_cnt = 0
                           t_end = k
                           for j in range(k, min(len(lines), k + 22)):
-                              p_cnt += lines[j].count("(") - lines[j].count(")")
+                              clj = strip_line_strings_and_comments(lines[j])
+                              p_cnt += clj.count("(") - clj.count(")")
                               if p_cnt <= 0:
                                   t_end = j
                                   break
@@ -3148,8 +3199,9 @@ jobs:
                               if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', lp):
                                   p_cnt = 0; se_p = None
                                   for j_p in range(idx_p, min(len(lines_p), idx_p + 25)):
-                                      p_cnt += lines_p[j_p].count("(") - lines_p[j_p].count(")")
-                                      if p_cnt <= 0 and "{" in lines_p[j_p]:
+                                      clp = strip_line_strings_and_comments(lines_p[j_p])
+                                      p_cnt += clp.count("(") - clp.count(")")
+                                      if p_cnt <= 0 and "{" in clp:
                                           se_p = j_p
                                           break
                                   if se_p is not None and re.search(r'\bisPlaying\s*:\s*Boolean\b', "".join(lines_p[idx_p:se_p + 1])):
@@ -3162,7 +3214,7 @@ jobs:
                   for idx_s, ls in enumerate(lines_s):
                       if re.search(r'Icons\.(?:Rounded|Outlined|Default|Filled)\.Shuffle', ls):
                           win_s = "".join(lines_s[max(0, idx_s - 18):min(len(lines_s), idx_s + 14)])
-                          m_shuf_var = re.search(r'\b([A-Za-z0-9_.]*(?:shuffleModeEnabled|isShuffleEnabled|shuffleEnabled|isShuffled|shuffleMode|shuffled)[A-Za-z0-9_.]*)\b', win_s)
+                          m_shuf_var = re.search(r'\b([A-Za-z0-9_.]*(?:shuffleModeEnabled|isShuffleEnabled|shuffleEnabled|isShuffled|shuffled)[A-Za-z0-9_.]*)\b', win_s)
                           shuf_expr = m_shuf_var.group(1) if m_shuf_var else None
                           for back_s in range(idx_s, max(-1, idx_s - 18), -1):
                               m_oc = re.search(r'\bonClick\s*=\s*\{', lines_s[back_s])
@@ -3172,7 +3224,8 @@ jobs:
                                   started_b = False
                                   for scan_j in range(back_s, min(len(lines_s), back_s + 15)):
                                       sub = lines_s[scan_j][m_oc.start():] if scan_j == back_s else lines_s[scan_j]
-                                      for ch in sub:
+                                      sub_c = strip_line_strings_and_comments(sub)
+                                      for ch in sub_c:
                                           if ch == '{': b_cnt += 1; started_b = True
                                           elif ch == '}': b_cnt -= 1
                                       if started_b and b_cnt <= 0:
@@ -3183,38 +3236,36 @@ jobs:
                                   b_close = raw_oc.rfind("}")
                                   oc_body = raw_oc[b_open + 1:b_close].strip() if (b_open != -1 and b_close > b_open) else ""
                                   if shuf_expr and oc_body:
+                                      # Find start of the IconButton / clickable statement containing onClick
+                                      stmt_start = back_s
+                                      for st_back in range(back_s, max(-1, back_s - 8), -1):
+                                          if re.search(r'\b(?:IconButton|FilledIconButton|OutlinedIconButton|Surface|Box|Icon)\s*\(', lines_s[st_back]):
+                                              stmt_start = st_back
+                                              break
+                                      ind_s = re.match(r'^(\s*)', lines_s[stmt_start]).group(1)
                                       lines_s[back_s] = re.sub(
                                           r'(\bonClick\s*=\s*\{)',
                                           rf'\1 com.music.spotui.ui.screens.VnShuffleGuard.onUserTappedShuffleButton({shuf_expr}, vnShufCtx);',
                                           lines_s[back_s],
                                           count=1
                                       )
-                                      for fn_back in range(back_s, -1, -1):
-                                          if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', lines_s[fn_back]):
-                                              p_c = 0; fn_open = None
-                                              for f_j in range(fn_back, min(len(lines_s), fn_back + 25)):
-                                                  p_c += lines_s[f_j].count("(") - lines_s[f_j].count(")")
-                                                  if p_c <= 0 and "{" in lines_s[f_j]:
-                                                      fn_open = f_j
-                                                      break
-                                              if fn_open is not None and fn_open < back_s:
-                                                  lines_s[fn_open] += (
-                                                      f"    val vnShufCtx = androidx.compose.ui.platform.LocalContext.current\n"
-                                                      f"    androidx.compose.runtime.LaunchedEffect({shuf_expr}, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle) {{\n"
-                                                      f"        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShufCtx, {shuf_expr}) {{ {oc_body} }}\n"
-                                                      f"        if (com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled && com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle && !{shuf_expr}) {{\n"
-                                                      f"            repeat(15) {{\n"
-                                                      f"                kotlinx.coroutines.delay(450L)\n"
-                                                      f"                if (com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled && com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle && !{shuf_expr}) {{\n"
-                                                      f"                    com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShufCtx, {shuf_expr}) {{ {oc_body} }}\n"
-                                                      f"                }} else {{\n"
-                                                      f"                    return@LaunchedEffect\n"
-                                                      f"                }}\n"
-                                                      f"            }}\n"
-                                                      f"        }}\n"
-                                                      f"    }}\n"
-                                                  )
-                                              break
+                                      shuf_guard_block = (
+                                          f"{ind_s}val vnShufCtx = androidx.compose.ui.platform.LocalContext.current\n"
+                                          f"{ind_s}androidx.compose.runtime.LaunchedEffect({shuf_expr}, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle) {{\n"
+                                          f"{ind_s}    com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShufCtx, {shuf_expr}) {{ {oc_body} }}\n"
+                                          f"{ind_s}    if (com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled && com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle && !{shuf_expr}) {{\n"
+                                          f"{ind_s}        repeat(15) {{\n"
+                                          f"{ind_s}            kotlinx.coroutines.delay(450L)\n"
+                                          f"{ind_s}            if (com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled && com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle && !{shuf_expr}) {{\n"
+                                          f"{ind_s}                com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShufCtx, {shuf_expr}) {{ {oc_body} }}\n"
+                                          f"{ind_s}            }} else {{\n"
+                                          f"{ind_s}                return@LaunchedEffect\n"
+                                          f"{ind_s}            }}\n"
+                                          f"{ind_s}        }}\n"
+                                          f"{ind_s}    }}\n"
+                                          f"{ind_s}}}\n"
+                                      )
+                                      lines_s.insert(stmt_start, shuf_guard_block)
                                       ct = "".join(lines_s)
                                   break
                           break
@@ -3232,7 +3283,8 @@ jobs:
                       m_cb = re.search(rf'(override\s+fun\s+{cb_name}\s*\([^)]*\)\s*\{{)', ct)
                       if m_cb:
                           player_cand = next(
-                              (cand for cand in ("player", "exoPlayer", "mediaController", "controller", "_player") if re.search(rf'\b{cand}\b', ct)),
+                              (cand for cand in ("player", "exoPlayer", "mediaController", "controller", "_player")
+                               if re.search(rf'(?:private\s+|internal\s+|protected\s+|public\s+|lateinit\s+)?(?:val|var)\s+{cand}\b', ct)),
                               "this" if re.search(r':\s*Player\b', ct) else None
                           )
                           if player_cand:
@@ -3252,8 +3304,9 @@ jobs:
                           if re.search(r'\bfun\s+(?:PlayerControls|ImmersivePlayer)\b', lm):
                               p_c = 0; fn_o = None
                               for f_j in range(idx_m, min(len(lines_m), idx_m + 30)):
-                                  p_c += lines_m[f_j].count("(") - lines_m[f_j].count(")")
-                                  if p_c <= 0 and "{" in lines_m[f_j]:
+                                  clj = strip_line_strings_and_comments(lines_m[f_j])
+                                  p_c += clj.count("(") - clj.count(")")
+                                  if p_c <= 0 and "{" in clj:
                                       fn_o = f_j
                                       break
                               if fn_o is not None:
@@ -3287,12 +3340,67 @@ jobs:
               u = re.sub(r'listOf\(((?:\s*Color\([^)]+\)\s*,?)+)\s*\)', lambda m: f"listOf({m.group(1).rstrip()}{'' if m.group(1).rstrip().endswith(',') else ','} {extra_c}\n)" if m.group(1).count("Color(") >= 3 and "0xFFE53935" not in m.group(1) else m.group(0), o)
               if u != o: kf.write_text(u)
 
+          def patch_material_theme_accent(src: str) -> str:
+              if "MaterialTheme(" not in src or "customAccentColorArgb" in src:
+                  return src
+              m = re.search(r'MaterialTheme\s*\(', src)
+              if not m:
+                  return src
+              start_paren = m.end() - 1
+              dp = 0
+              in_str = False
+              esc = False
+              end_paren = -1
+              for i in range(start_paren, len(src)):
+                  ch = src[i]
+                  if in_str:
+                      if esc: esc = False
+                      elif ch == '\\': esc = True
+                      elif ch == '"': in_str = False
+                      continue
+                  if ch == '"':
+                      in_str = True
+                      continue
+                  if ch == '(': dp += 1
+                  elif ch == ')':
+                      dp -= 1
+                      if dp == 0:
+                          end_paren = i
+                          break
+              if end_paren == -1:
+                  return src
+              inner = src[start_paren + 1:end_paren]
+              args = split_top_level_args(inner)
+              new_parts = []
+              changed = False
+              for idx_p, (_, _, part) in enumerate(args):
+                  stripped = part.strip()
+                  if not stripped:
+                      new_parts.append(part)
+                      continue
+                  lead_ws = part[:len(part) - len(part.lstrip())]
+                  trail_ws = part[len(part.rstrip()):]
+                  m_cs = re.match(r'^colorScheme\s*=\s*(.+)$', stripped, re.DOTALL)
+                  if m_cs:
+                      expr = m_cs.group(1).strip()
+                      wrapped = f"colorScheme = ({expr}).let {{ vnBaseScheme -> if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) vnBaseScheme.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else vnBaseScheme }}"
+                      new_parts.append(f"{lead_ws}{wrapped}{trail_ws}")
+                      changed = True
+                  elif idx_p == 0 and top_level_eq_pos(stripped) == -1:
+                      wrapped = f"({stripped}).let {{ vnBaseScheme -> if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) vnBaseScheme.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else vnBaseScheme }}"
+                      new_parts.append(f"{lead_ws}{wrapped}{trail_ws}")
+                      changed = True
+                  else:
+                      new_parts.append(part)
+              if not changed:
+                  return src
+              return src[:start_paren + 1] + ",".join(new_parts) + src[end_paren:]
+
           for tf in sorted(Path("app/src/main/java").rglob("*.kt")):
               if tf.name == "VnFrameRateManager.kt": continue
               tt = tf.read_text()
-              if "MaterialTheme(" in tt and "customAccentColorArgb" not in tt:
-                  tn, n = re.subn(r'MaterialTheme\s*\(\s*colorScheme\s*=\s*([A-Za-z0-9_]+)', r'MaterialTheme(\n        colorScheme = if (com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb != 0L) \1.copy(primary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb), secondary = androidx.compose.ui.graphics.Color(com.music.spotui.ui.screens.VnFpsPref.customAccentColorArgb)) else \1', tt, count=1)
-                  if n > 0: tf.write_text(tn)
+              tn = patch_material_theme_accent(tt)
+              if tn != tt: tf.write_text(tn)
 
           # Clean any previously scattered VNEra settings card injections so all 3 can be placed together right above Backup / Export
           scattered_rx = re.compile(
@@ -3352,9 +3460,9 @@ jobs:
                           s = s[:st_bc]
                           in_bc = True
                           break
-                  s = s.split("//")[0]
                   s = re.sub(r'"(?:\\.|[^"\\])*"', '""', s)
                   s = re.sub(r"'(?:\\.|[^'\\])'", "''", s)
+                  s = s.split("//")[0]
                   clean.append(s)
               return clean
 
@@ -3550,19 +3658,20 @@ jobs:
 
           def insert_all_above_backup(lines: list[str], cont: dict, comp_calls: list[str]) -> list[str]:
               new_lines = list(lines)
+              if not comp_calls:
+                  return new_lines
               if cont["kind"] == "LazyColumn":
                   items = cont["lazy_items"]
                   if items:
-                      target_item = next(
-                          ((s, e, ind) for (s, e, ind) in items if re.search(backup_anchor_rx, "".join(new_lines[s:e+1]), re.I)),
+                      target_idx = next(
+                          (idx_it for idx_it, (s, e, _) in enumerate(items) if re.search(backup_anchor_rx, "".join(new_lines[s:e+1]), re.I)),
                           None
                       )
-                      if target_item is not None:
-                          s_idx, e_idx, item_ind = target_item
+                      if target_idx is not None:
+                          s_idx, e_idx, item_ind = items[target_idx]
                           # If immediately preceded by a section header item (e.g. "Backup" / "Αντίγραφα ασφαλείας" / "Εφαρμογή"), insert right before that header
-                          prev_idx = next((idx_it for idx_it, (ps, pe, _) in enumerate(items) if pe + 1 == s_idx or ps < s_idx), None)
-                          if prev_idx is not None:
-                              ps, pe, pind = items[prev_idx]
+                          if target_idx > 0:
+                              ps, pe, pind = items[target_idx - 1]
                               prev_txt = "".join(new_lines[ps:pe+1])
                               if (pe - ps) <= 8 and re.search(r'(?:Backup|Αντίγραφα ασφαλείας|Import\s*/\s*Export|Εφαρμογή|App)', prev_txt, re.I) and not re.search(r'Switch|onClick|Button', prev_txt, re.I):
                                   s_idx, item_ind = ps, pind
@@ -3634,20 +3743,14 @@ jobs:
                       lines = insert_all_above_backup(lines, backup_cont, all_vnera_cards)
                       cur_joined = "".join(lines)
                       if "VnSettingsBackup(" not in cur_joined and "VnCopyBackupExtensionsButton" not in cur_joined:
-                          lines = insert_all_above_backup(lines, backup_cont, [])
-                          # Append extensions button right at the bottom of the backup container
-                          if backup_cont["kind"] == "LazyColumn":
-                              upd_conts = extract_layout_containers(lines)
-                              b_cont2 = next((c for c in reversed(upd_conts) if c["is_scrollable"] and re.search(backup_anchor_rx, "".join(lines[c["start_li"]:c["close_li"] + 1]), re.I)), None)
-                              if b_cont2 and b_cont2["lazy_items"]:
-                                  _, last_e, last_ind = b_cont2["lazy_items"][-1]
-                                  lines.insert(last_e + 1, f"{last_ind}item {{ com.music.spotui.ui.screens.VnCopyBackupExtensionsButton() }}\n")
-                          else:
-                              upd_conts = extract_layout_containers(lines)
-                              b_cont2 = next((c for c in reversed(upd_conts) if c["is_scrollable"] and re.search(backup_anchor_rx, "".join(lines[c["start_li"]:c["close_li"] + 1]), re.I)), None)
-                              if b_cont2:
-                                  c_ind = b_cont2["base_indent"] + "    "
-                                  lines.insert(b_cont2["close_li"], f"{c_ind}com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
+                          upd_conts = extract_layout_containers(lines)
+                          b_cont2 = next((c for c in reversed(upd_conts) if c["is_scrollable"] and re.search(backup_anchor_rx, "".join(lines[c["start_li"]:c["close_li"] + 1]), re.I)), None)
+                          if b_cont2 and b_cont2["kind"] == "LazyColumn" and b_cont2["lazy_items"]:
+                              _, last_e, last_ind = b_cont2["lazy_items"][-1]
+                              lines.insert(last_e + 1, f"{last_ind}item {{ com.music.spotui.ui.screens.VnCopyBackupExtensionsButton() }}\n")
+                          elif b_cont2:
+                              c_ind = b_cont2["base_indent"] + "    "
+                              lines.insert(b_cont2["close_li"], f"{c_ind}com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
                       kt_file.write_text("".join(lines))
                       placed_groups.add(target_group)
                       print(f"Placed ALL VNEra settings cards above Backup/Export in {kt_file}")
@@ -3711,7 +3814,10 @@ jobs:
                   if "onBackupImported" not in bt:
                       bt = re.sub(r'\bJSONObject\(\s*([A-Za-z0-9_]+)\s*\)', rf'JSONObject(com.music.spotui.ui.screens.VnFpsPref.onBackupImported({cv}, \1))', bt, count=1)
                   if "enrichBackupJson" not in bt:
-                      bt = re.sub(r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)?\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1)
+                      if re.search(r'\b[A-Za-z0-9_]+\.toString\(\s*(?:2|4)\s*\)', bt):
+                          bt = re.sub(r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1)
+                      else:
+                          bt = re.sub(r'\b([A-Za-z0-9_]*json[A-Za-z0-9_]*\.toString\(\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1, flags=re.I)
 
               # If VnSettingsBackup was NOT placed via SettingsScreen/ImmersiveSettingsScreen, place all 3 cards right at the top of VnSettingsBackup above Backup/Export
               if not placed_groups and "VnAppearanceSettingsCard" not in bt:
@@ -3733,8 +3839,9 @@ jobs:
                   if col is not None:
                       d = 0; op = False
                       for i in range(col, len(lines)):
-                          d += lines[i].count("{") - lines[i].count("}")
-                          if "{" in lines[i]: op = True
+                          cli = strip_line_strings_and_comments(lines[i])
+                          d += cli.count("{") - cli.count("}")
+                          if "{" in cli: op = True
                           if op and d <= 0:
                               ind_b = re.match(r'^(\s*)', lines[i]).group(1)
                               lines.insert(i, ind_b + "    com.music.spotui.ui.screens.VnCopyBackupExtensionsButton()\n")
