@@ -3722,8 +3722,97 @@ jobs:
           ui_kt_files.sort(key=file_priority)
 
           placed_groups: set[str] = set()
+          placed_at_backup_caller = False
+          had_any_backup_caller = False
 
+          # 1. Προτεραιότητα: Τοποθέτηση ακριβώς πάνω από κάθε κλήση του VnSettingsBackup(...) σε όλη την εφαρμογή
+          for kt_file in ui_kt_files:
+              src_text = kt_file.read_text()
+              if not re.search(r'\bVnSettingsBackup\s*\(', src_text):
+                  continue
+              had_any_backup_caller = True
+              if "VnAppearanceSettingsCard" in src_text:
+                  placed_at_backup_caller = True
+                  placed_groups.add("immersive" if "immersive" in str(kt_file).lower() else "standard")
+                  continue
+
+              lines = src_text.splitlines(keepends=True)
+              clean_lines = strip_comments_and_strings(lines)
+              call_indices = [idx for idx, cl in enumerate(clean_lines) if re.search(r'\bVnSettingsBackup\s*\(', cl)]
+              if not call_indices:
+                  continue
+
+              containers = extract_layout_containers(lines)
+              modified_this_file = False
+
+              for call_li in sorted(call_indices, reverse=True):
+                  enclosing_lazy = next(
+                      (c for c in reversed(containers) if c["kind"] == "LazyColumn" and c["open_li"] < call_li < c["close_li"]),
+                      None
+                  )
+                  if enclosing_lazy is not None:
+                      items = enclosing_lazy["lazy_items"]
+                      target_idx = next(
+                          (idx_it for idx_it, (s, e, _) in enumerate(items) if s <= call_li <= e),
+                          None
+                      )
+                      if target_idx is not None:
+                          s_idx, _, item_ind = items[target_idx]
+                          if target_idx > 0:
+                              ps, pe, pind = items[target_idx - 1]
+                              prev_txt = "".join(lines[ps:pe + 1])
+                              if (pe - ps) <= 8 and re.search(r'(?:Backup|Αντίγραφα ασφαλείας|Import\s*/\s*Export|Εφαρμογή|App)', prev_txt, re.I) and not re.search(r'Switch|onClick|Button', prev_txt, re.I):
+                                  s_idx, item_ind = ps, pind
+                          ins_block = [f"{item_ind}item {{ {call} }}\n" for call in all_vnera_cards]
+                          lines[s_idx:s_idx] = ins_block
+                          modified_this_file = True
+                          continue
+
+                      # Αν το item { VnSettingsBackup() } είναι μέσα σε if (...)
+                      item_line = next(
+                          (back for back in range(call_li, enclosing_lazy["open_li"], -1)
+                           if re.match(r'^\s*(?:item|items|itemsIndexed|stickyHeader)\b', clean_lines[back])),
+                          None
+                      )
+                      if item_line is not None:
+                          item_ind = re.match(r'^(\s*)', lines[item_line]).group(1)
+                          ins_block = [f"{item_ind}item {{ {call} }}\n" for call in all_vnera_cards]
+                          lines[item_line:item_line] = ins_block
+                          modified_this_file = True
+                          continue
+
+                  enclosing_col = next(
+                      (c for c in reversed(containers) if c["kind"] == "Column" and c["open_li"] < call_li < c["close_li"]),
+                      None
+                  )
+                  if enclosing_col is not None:
+                      ins_li = call_li
+                      # Αν βρίσκεται μέσα σε οριζόντιο Row, ανεβαίνουμε πάνω από το Row
+                      for back in range(call_li - 1, enclosing_col["open_li"], -1):
+                          if re.match(r'^\s*Row\s*\(', clean_lines[back]):
+                              ins_li = back
+                              break
+                      # Αν υπάρχει επικεφαλίδα Backup ακριβώς από πάνω, μπαίνουμε πάνω από αυτή
+                      for back in range(ins_li - 1, max(enclosing_col["open_li"], ins_li - 8), -1):
+                          if re.match(r'^\s*(?:Text|Surface|Card|ElevatedCard|OutlinedCard)\s*\(', clean_lines[back]):
+                              if re.search(r'(?:Backup|Αντίγραφα ασφαλείας|Import\s*/\s*Export)', lines[back], re.I):
+                                  ins_li = back
+                              break
+                      ind = re.match(r'^(\s*)', lines[ins_li]).group(1)
+                      ins_block = [f"{ind}{call}\n" for call in all_vnera_cards]
+                      lines[ins_li:ins_li] = ins_block
+                      modified_this_file = True
+
+              if modified_this_file:
+                  kt_file.write_text("".join(lines))
+                  placed_at_backup_caller = True
+                  placed_groups.add("immersive" if "immersive" in str(kt_file).lower() else "standard")
+                  print(f"Placed ALL VNEra settings cards directly above VnSettingsBackup() in {kt_file}")
+
+          # 2. Δευτερεύον: Για όποιο mode (standard / immersive) δεν είχε κλήση VnSettingsBackup, ψάχνουμε το Settings container
           for target_group in ["standard", "immersive"]:
+              if target_group in placed_groups:
+                  continue
               for kt_file in ui_kt_files:
                   is_imm_file = "immersive" in str(kt_file).lower()
                   if (target_group == "immersive") != is_imm_file:
@@ -3818,7 +3907,8 @@ jobs:
                       else:
                           bt = re.sub(r'\b([A-Za-z0-9_]*json[A-Za-z0-9_]*\.toString\(\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1, flags=re.I)
 
-              if not placed_groups and "VnAppearanceSettingsCard" not in bt:
+              # 3. Εγγυημένο fallback μέσα στο VnSettingsBackup.kt αν δεν τοποθετήθηκαν ήδη πάνω από την κλήση του VnSettingsBackup()
+              if (not placed_at_backup_caller) and "VnAppearanceSettingsCard" not in bt:
                   lines_b = bt.splitlines(keepends=True)
                   cs_b = next((i for i, l in enumerate(lines_b) if "@Composable" in l), None)
                   col_b = next((i for i in range(cs_b, len(lines_b)) if re.search(r'\bColumn\b', lines_b[i])), None) if cs_b is not None else None
@@ -3829,6 +3919,7 @@ jobs:
                           top_cards = "".join(f"{ind_top}{call}\n" for call in all_vnera_cards)
                           lines_b[open_brace_b] += top_cards
                           bt = "".join(lines_b)
+                          print("Placed ALL VNEra settings cards at top of VnSettingsBackup.kt")
 
               if "VnCopyBackupExtensionsButton" not in bt:
                   lines = bt.splitlines(keepends=True)
