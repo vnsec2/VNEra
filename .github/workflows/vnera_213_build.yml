@@ -183,7 +183,7 @@ jobs:
           [ -d "$SDK_ROOT/platforms/android-37" ] && export HAS_SDK_37="true"
           export FALLBACK_SDK="35"
           [ -d "$SDK_ROOT/platforms/android-36" ] && export FALLBACK_SDK="36"
-          export BUILD_VERSION_CODE=$((217000 + ${GITHUB_RUN_NUMBER:-1}))
+          export BUILD_VERSION_CODE=$((218000 + ${GITHUB_RUN_NUMBER:-1}))
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
           echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
 
@@ -200,7 +200,6 @@ jobs:
           import androidx.activity.compose.BackHandler
           import androidx.compose.animation.AnimatedVisibility
           import androidx.compose.animation.animateColorAsState
-          import androidx.compose.animation.animateContentSize
           import androidx.compose.animation.core.*
           import androidx.compose.animation.fadeIn
           import androidx.compose.animation.fadeOut
@@ -504,10 +503,12 @@ jobs:
 
                   val single = rawLines.first()
                   val cur = savedPlayerLyricLines
-                  if (cur.none { it.equals(single, ignoreCase = true) }) {
+                  // Keep lyric order and repeated lines (choruses). Only suppress an
+                  // immediate duplicate caused by recomposition of the same active line.
+                  if (cur.lastOrNull()?.equals(single, ignoreCase = true) != true) {
                       val nextList = cur.toMutableList()
                       nextList.add(single)
-                      if (nextList.size > 300) nextList.removeAt(0)
+                      if (nextList.size > 500) nextList.removeAt(0)
                       savedPlayerLyricLines = nextList
                   }
 
@@ -1221,8 +1222,9 @@ jobs:
                       val hasCustomActive = vnHasCustomLyricColorEnabled()
                       val fontScale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
 
-                      var lastScrolledTargetIdx by remember { mutableIntStateOf(-1) }
                       var manualScrollUntilMs by remember { mutableLongStateOf(0L) }
+                      var lastResolvedLyricText by remember { mutableStateOf("") }
+                      var lastResolvedLyricIndex by remember { mutableIntStateOf(-1) }
 
                       val userScrollTracker = remember {
                           object : NestedScrollConnection {
@@ -1257,20 +1259,33 @@ jobs:
                               .navigationBarsPadding()
                       ) {
 
-                          LaunchedEffect(activeText, lines.size) {
-                              if (activeText.isEmpty() || lines.isEmpty()) return@LaunchedEffect
-                              val activeIdx = lines.indexOfFirst { it.equals(activeText, ignoreCase = true) }
-                              if (activeIdx >= 0 && activeIdx != lastScrolledTargetIdx) {
-                                  val now = SystemClock.elapsedRealtime()
-                                  if (now >= manualScrollUntilMs) {
-                                      // Animate one transition per newly active line. A short debounce
-                                      // coalesces rapid lyric updates and avoids competing scroll jobs.
-                                      lastScrolledTargetIdx = activeIdx
-                                      kotlinx.coroutines.delay(90L)
-                                      if (activeIdx == lines.indexOfFirst { it.equals(VnFpsPref.savedPlayerLyricText.trim(), ignoreCase = true) } && SystemClock.elapsedRealtime() >= manualScrollUntilMs) {
-                                          runCatching { listState.animateScrollToItem(activeIdx) }
-                                      }
+                          val activeIdx = remember(activeText, lines, lastResolvedLyricText, lastResolvedLyricIndex) {
+                              if (activeText.isBlank()) {
+                                  -1
+                              } else if (
+                                  activeText.equals(lastResolvedLyricText, ignoreCase = true) &&
+                                  lastResolvedLyricIndex in lines.indices &&
+                                  lines[lastResolvedLyricIndex].trim().equals(activeText, ignoreCase = true)
+                              ) {
+                                  lastResolvedLyricIndex
+                              } else {
+                                  val matches = lines.indices.filter {
+                                      lines[it].trim().equals(activeText, ignoreCase = true)
                                   }
+                                  matches.firstOrNull { it > lastResolvedLyricIndex }
+                                      ?: matches.firstOrNull()
+                                      ?: -1
+                              }
+                          }
+
+                          LaunchedEffect(activeIdx, activeText, manualScrollUntilMs) {
+                              if (activeIdx < 0 || lines.isEmpty()) return@LaunchedEffect
+                              val waitMs = (manualScrollUntilMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+                              if (waitMs > 0L) kotlinx.coroutines.delay(waitMs)
+                              if (activeIdx >= 0 && SystemClock.elapsedRealtime() >= manualScrollUntilMs) {
+                                  lastResolvedLyricText = activeText
+                                  lastResolvedLyricIndex = activeIdx
+                                  runCatching { listState.animateScrollToItem(activeIdx) }
                               }
                           }
 
@@ -1288,7 +1303,7 @@ jobs:
                                       items = lines,
                                       key = { idx, line -> "${idx}_${line.hashCode()}" }
                                   ) { idx, line ->
-                                      val isCurrent = activeText.isNotEmpty() && line.equals(activeText, ignoreCase = true)
+                                      val isCurrent = idx == activeIdx
                                       val targetTextColor = when {
                                           isCurrent && hasCustomActive -> accentColor.copy(alpha = 1.0f)
                                           isCurrent -> Color.White
@@ -1300,22 +1315,26 @@ jobs:
                                           animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
                                           label = "vn_fullscreen_lyric_color_$idx"
                                       )
+                                      val targetRowColor = if (isCurrent) accentColor.copy(alpha = 0.16f) else Color.Transparent
+                                      val animatedRowColor by animateColorAsState(
+                                          targetValue = targetRowColor,
+                                          animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                                          label = "vn_fullscreen_lyric_row_$idx"
+                                      )
                                       Text(
                                           text = line,
                                           style = MaterialTheme.typography.headlineSmall.copy(
-                                              fontSize = ((if (isCurrent) 29f else 21f) * fontScale).sp,
-                                              lineHeight = ((if (isCurrent) 37f else 29f) * fontScale).sp,
+                                              // Fixed metrics prevent list remeasurement and scroll jumps.
+                                              fontSize = (24f * fontScale).sp,
+                                              lineHeight = (33f * fontScale).sp,
                                               fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium
                                           ),
                                           color = animatedTextColor,
                                           textAlign = TextAlign.Center,
                                           modifier = Modifier
                                               .fillMaxWidth()
-                                              .animateContentSize(animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing))
                                               .clip(RoundedCornerShape(18.dp))
-                                              .background(
-                                                  if (isCurrent) accentColor.copy(alpha = 0.13f) else Color.Transparent
-                                              )
+                                              .background(animatedRowColor)
                                               .padding(horizontal = 12.dp, vertical = 10.dp)
                                       )
                                   }
@@ -1503,14 +1522,9 @@ jobs:
               }
 
               fun onUserTappedShuffleButton(wasShuffleOn: Boolean, c: Context? = null) {
+                  // Legacy icon-level hook: do not infer the target state from a possibly stale
+                  // Compose snapshot. PlayerControlsBlock.onToggleShuffle is authoritative.
                   lastUserTapMs = SystemClock.elapsedRealtime()
-                  val targetState = !wasShuffleOn
-                  userWantsShuffle = targetState
-                  lastKnownShuffleOn = targetState
-                  userExplicitlyDisabledUntilTrackChange = !targetState
-                  manualShuffleOffUntilPlayerClose = !targetState
-                  userOverrideUntilPlayerClose = true
-                  VnFpsPref.saveRememberedShuffleState(c, targetState)
               }
 
               fun onSettingChanged(enabled: Boolean, remembered: Boolean) {
@@ -1546,10 +1560,10 @@ jobs:
 
               fun onPlayerClosed() {
                   userOverrideUntilPlayerClose = false
-                  manualShuffleOffUntilPlayerClose = false
+                  // An explicit OFF choice survives player/composable disposal. It is cleared
+                  // only by an explicit ON toggle or by changing the Keep Shuffle setting.
                   smartShuffleActive = false
-                  userExplicitlyDisabledUntilTrackChange = false
-                  // Keep the remembered preference; it may be restored on the next player session.
+                  // Keep manualShuffleOffUntilPlayerClose and userExplicitlyDisabledUntilTrackChange.
               }
 
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
@@ -2710,7 +2724,7 @@ jobs:
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.7"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.8"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -4092,12 +4106,12 @@ jobs:
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.7" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.8" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.1.7-Debug
+          name: VNEra-2.1.8-Debug
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
