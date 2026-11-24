@@ -565,22 +565,51 @@ jobs:
               }
               fun toggleSystemBars(act: Activity?) = setSystemBarsHidden(act, !lyricsBarsHidden)
 
+              // Export only VNEra-owned, user-configurable preferences. The base
+              // Revera backup already handles its own supported application settings.
+              // Never serialize every SharedPreferences file: those may contain tokens,
+              // account data, identifiers, caches, or unrelated internal state.
+              private val vneraBackupKeys = setOf(
+                  KEY_TARGET_FPS,
+                  KEY_LYRICS_IMMERSIVE,
+                  KEY_CUSTOM_COLOR,
+                  KEY_ANIM_ENABLED,
+                  KEY_ANIM_MODE,
+                  KEY_ANIM_PAUSE_ON_PAUSE,
+                  KEY_PLAYBACK_ALERTS,
+                  KEY_KEEP_SHUFFLE,
+                  KEY_REMEMBER_SHUFFLE,
+                  KEY_REMEMBERED_SHUFFLE_STATE,
+                  KEY_LYRICS_BEAUTIFUL,
+                  KEY_LYRICS_COLOR,
+                  KEY_PLAYER_KARAOKE_BG_COLOR,
+                  KEY_LYRICS_FONT_SCALE,
+                  KEY_PLAYER_LYRICS_FONT_SCALE
+              )
+
+              private fun isVneraBackupKeyAllowed(key: String): Boolean =
+                  key in vneraBackupKeys &&
+                  key != KEY_LAST_BACKUP_JSON &&
+                  key != KEY_LAST_BACKUP_EXTENSIONS &&
+                  key != KEY_RESTORED_EXTENSIONS
+
               fun exportAllPrefsJson(c: Context): JSONObject = JSONObject().also { all ->
-                  File(c.applicationInfo.dataDir, "shared_prefs").listFiles()?.filter { it.name.endsWith(".xml") }?.forEach { f ->
-                      val spName = f.name.removeSuffix(".xml")
-                      val entries = JSONObject()
-                      c.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE).all.forEach { (k, v) ->
-                          when (v) {
-                              is Boolean -> entries.put(k, JSONObject().put("t", "b").put("v", v))
-                              is Int -> entries.put(k, JSONObject().put("t", "i").put("v", v))
-                              is Long -> entries.put(k, JSONObject().put("t", "l").put("v", v))
-                              is Float -> entries.put(k, JSONObject().put("t", "f").put("v", v.toDouble()))
-                              is String -> entries.put(k, JSONObject().put("t", "s").put("v", v))
-                              is Set<*> -> entries.put(k, JSONObject().put("t", "set").put("v", JSONArray().apply { v.filterNotNull().forEach { put(it.toString()) } }))
-                          }
+                  val source = prefs(c).all
+                  val entries = JSONObject()
+                  vneraBackupKeys.forEach { key ->
+                      if (!isVneraBackupKeyAllowed(key)) return@forEach
+                      when (val v = source[key]) {
+                          is Boolean -> entries.put(key, JSONObject().put("t", "b").put("v", v))
+                          is Int -> entries.put(key, JSONObject().put("t", "i").put("v", v))
+                          is Long -> entries.put(key, JSONObject().put("t", "l").put("v", v))
+                          is Float -> entries.put(key, JSONObject().put("t", "f").put("v", v.toDouble()))
+                          is String -> entries.put(key, JSONObject().put("t", "s").put("v", v))
+                          is Set<*> -> entries.put(key, JSONObject().put("t", "set").put("v", JSONArray().apply {
+                              v.filterNotNull().forEach { put(it.toString()) }
+                          }))
                       }
-                      all.put(spName, entries)
                   }
+                  if (entries.length() > 0) all.put(PREFS_NAME, entries)
               }
 
               fun enrichBackupJson(c: Context, jsonStr: String): String = try {
@@ -592,49 +621,40 @@ jobs:
                   try {
                       val root = JSONObject(rawText)
                       val allPrefs = root.optJSONObject("__vnera_all_prefs__")
-                      if (allPrefs != null) {
-                          allPrefs.keys().forEach { spName ->
-                              val entries = allPrefs.optJSONObject(spName) ?: return@forEach
-                              val ed = c.applicationContext.getSharedPreferences(spName, Context.MODE_PRIVATE).edit()
-                              entries.keys().forEach { k ->
-                                  if (k == KEY_LAST_BACKUP_JSON || k == KEY_LAST_BACKUP_EXTENSIONS || k == KEY_RESTORED_EXTENSIONS) return@forEach
-                                  val item = entries.optJSONObject(k) ?: return@forEach
-                                  when (item.optString("t")) {
-                                      "b" -> ed.putBoolean(k, item.optBoolean("v"))
-                                      "i" -> ed.putInt(k, item.optInt("v"))
-                                      "l" -> ed.putLong(k, item.optLong("v"))
-                                      "f" -> ed.putFloat(k, item.optDouble("v").toFloat())
-                                      "s" -> ed.putString(k, item.optString("v"))
-                                      "set" -> item.optJSONArray("v")?.let { arr -> ed.putStringSet(k, (0 until arr.length()).mapTo(LinkedHashSet()) { arr.optString(it) }) }
+                      val entries = allPrefs?.optJSONObject(PREFS_NAME)
+                      if (entries != null) {
+                          val ed = prefs(c).edit()
+                          entries.keys().forEach { k ->
+                              if (!isVneraBackupKeyAllowed(k)) return@forEach
+                              val item = entries.optJSONObject(k) ?: return@forEach
+                              when (item.optString("t")) {
+                                  "b" -> ed.putBoolean(k, item.optBoolean("v"))
+                                  "i" -> ed.putInt(k, item.optInt("v"))
+                                  "l" -> ed.putLong(k, item.optLong("v"))
+                                  "f" -> ed.putFloat(k, item.optDouble("v").toFloat())
+                                  "s" -> ed.putString(k, item.optString("v"))
+                                  "set" -> item.optJSONArray("v")?.let { arr ->
+                                      ed.putStringSet(k, (0 until arr.length()).mapTo(LinkedHashSet()) { arr.optString(it) })
                                   }
                               }
-                              ed.commit()
                           }
-                      } else {
-                          File(c.applicationInfo.dataDir, "shared_prefs").listFiles()?.filter { it.name.endsWith(".xml") }?.forEach { f ->
-                              val sp = c.applicationContext.getSharedPreferences(f.name.removeSuffix(".xml"), Context.MODE_PRIVATE)
-                              val existing = sp.all; val ed = sp.edit(); var mod = false
-                              root.keys().forEach { k ->
-                                  when (val cur = existing[k]) {
-                                      is Boolean -> { ed.putBoolean(k, root.optBoolean(k, cur)); mod = true }
-                                      is Int -> { ed.putInt(k, root.optInt(k, cur)); mod = true }
-                                      is Long -> { ed.putLong(k, root.optLong(k, cur)); mod = true }
-                                      is Float -> { ed.putFloat(k, root.optDouble(k, cur.toDouble()).toFloat()); mod = true }
-                                      is String -> { ed.putString(k, root.optString(k, cur)); mod = true }
-                                  }
-                              }
-                              if (mod) ed.commit()
-                          }
+                          check(ed.commit()) { "Could not save VNEra preferences" }
                       }
-                  } catch (_: Exception) {}
+                  } catch (e: Exception) {
+                      throw IllegalArgumentException("Backup import failed: ${e.message ?: e.javaClass.simpleName}", e)
+                  }
                   reload(c)
                   c.findActivity()?.let { act -> Handler(Looper.getMainLooper()).postDelayed({ if (!act.isFinishing && !act.isDestroyed) act.recreate() }, 350L) }
                   return rawText
               }
 
               fun recordBackupAndExtractExtensions(c: Context, raw: String) {
+                  // Keep only the extension list used by the existing copy/restore helper.
+                  // Never retain the complete imported/exported JSON locally: it may contain
+                  // unrelated application data that is not part of VNEra user preferences.
                   val ext = extractExtensionsFromBackup(raw).also { cachedExtensionsText = it }
-                  prefs(c).edit().putString(KEY_LAST_BACKUP_JSON, raw).putString(KEY_LAST_BACKUP_EXTENSIONS, ext).commit()
+                  prefs(c).edit().remove(KEY_LAST_BACKUP_JSON)
+                      .putString(KEY_LAST_BACKUP_EXTENSIONS, ext).commit()
               }
 
               private val ignoredSettingTokens = setOf(
@@ -2574,7 +2594,7 @@ jobs:
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.2.3"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.2.4"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -3976,12 +3996,12 @@ jobs:
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.2.3" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.2.4" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.2.3-Debug
+          name: VNEra-2.2.4-Debug
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
