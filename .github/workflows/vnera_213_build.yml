@@ -183,7 +183,7 @@ jobs:
           [ -d "$SDK_ROOT/platforms/android-37" ] && export HAS_SDK_37="true"
           export FALLBACK_SDK="35"
           [ -d "$SDK_ROOT/platforms/android-36" ] && export FALLBACK_SDK="36"
-          export BUILD_VERSION_CODE=$((216000 + ${GITHUB_RUN_NUMBER:-1}))
+          export BUILD_VERSION_CODE=$((217000 + ${GITHUB_RUN_NUMBER:-1}))
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
           echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
 
@@ -200,6 +200,7 @@ jobs:
           import androidx.activity.compose.BackHandler
           import androidx.compose.animation.AnimatedVisibility
           import androidx.compose.animation.animateColorAsState
+          import androidx.compose.animation.animateContentSize
           import androidx.compose.animation.core.*
           import androidx.compose.animation.fadeIn
           import androidx.compose.animation.fadeOut
@@ -1255,8 +1256,6 @@ jobs:
                               .statusBarsPadding()
                               .navigationBarsPadding()
                       ) {
-                          val viewportHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
-                          val centerOffsetPx = -(viewportHeightPx * 0.34f).roundToInt()
 
                           LaunchedEffect(activeText, lines.size) {
                               if (activeText.isEmpty() || lines.isEmpty()) return@LaunchedEffect
@@ -1264,10 +1263,13 @@ jobs:
                               if (activeIdx >= 0 && activeIdx != lastScrolledTargetIdx) {
                                   val now = SystemClock.elapsedRealtime()
                                   if (now >= manualScrollUntilMs) {
-                                      // Immediate positioning avoids overlapping scroll animations
-                                      // every time the singer advances to the next lyric line.
+                                      // Animate one transition per newly active line. A short debounce
+                                      // coalesces rapid lyric updates and avoids competing scroll jobs.
                                       lastScrolledTargetIdx = activeIdx
-                                      runCatching { listState.scrollToItem(activeIdx, centerOffsetPx) }
+                                      kotlinx.coroutines.delay(90L)
+                                      if (activeIdx == lines.indexOfFirst { it.equals(VnFpsPref.savedPlayerLyricText.trim(), ignoreCase = true) } && SystemClock.elapsedRealtime() >= manualScrollUntilMs) {
+                                          runCatching { listState.animateScrollToItem(activeIdx) }
+                                      }
                                   }
                               }
                           }
@@ -1293,6 +1295,11 @@ jobs:
                                           hasCustomActive -> accentColor.copy(alpha = 0.34f)
                                           else -> Color.White.copy(alpha = 0.34f)
                                       }
+                                      val animatedTextColor by animateColorAsState(
+                                          targetValue = targetTextColor,
+                                          animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                                          label = "vn_fullscreen_lyric_color_$idx"
+                                      )
                                       Text(
                                           text = line,
                                           style = MaterialTheme.typography.headlineSmall.copy(
@@ -1300,10 +1307,11 @@ jobs:
                                               lineHeight = ((if (isCurrent) 37f else 29f) * fontScale).sp,
                                               fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium
                                           ),
-                                          color = targetTextColor,
+                                          color = animatedTextColor,
                                           textAlign = TextAlign.Center,
                                           modifier = Modifier
                                               .fillMaxWidth()
+                                              .animateContentSize(animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing))
                                               .clip(RoundedCornerShape(18.dp))
                                               .background(
                                                   if (isCurrent) accentColor.copy(alpha = 0.13f) else Color.Transparent
@@ -1476,7 +1484,9 @@ jobs:
               private var lastReenableMs = 0L
               private var lastUserTapMs = 0L
               private var userExplicitlyDisabledUntilTrackChange = false
-              // Manual taps and Smart Shuffle are explicit user choices; never fight them.
+              // Explicit user changes and Smart Shuffle suppress automatic re-enable until player closes.
+              private var manualShuffleOffUntilPlayerClose = false
+              private var smartShuffleActive = false
               var userOverrideUntilPlayerClose by mutableStateOf(false)
 
               fun dismissBanner() {
@@ -1498,12 +1508,16 @@ jobs:
                   userWantsShuffle = targetState
                   lastKnownShuffleOn = targetState
                   userExplicitlyDisabledUntilTrackChange = !targetState
+                  manualShuffleOffUntilPlayerClose = !targetState
                   userOverrideUntilPlayerClose = true
                   VnFpsPref.saveRememberedShuffleState(c, targetState)
               }
 
               fun onSettingChanged(enabled: Boolean, remembered: Boolean) {
                   userOverrideUntilPlayerClose = false
+                  manualShuffleOffUntilPlayerClose = false
+                  smartShuffleActive = false
+                  userExplicitlyDisabledUntilTrackChange = false
                   if (enabled) {
                       userWantsShuffle = remembered
                       lastKnownShuffleOn = remembered
@@ -1520,23 +1534,27 @@ jobs:
                   userWantsShuffle = newShuffleState
                   lastKnownShuffleOn = newShuffleState
                   userExplicitlyDisabledUntilTrackChange = !newShuffleState
+                  manualShuffleOffUntilPlayerClose = !newShuffleState
                   userOverrideUntilPlayerClose = true
                   VnFpsPref.saveRememberedShuffleState(c, newShuffleState)
               }
 
               fun onSmartShuffleActivated(isSmart: Boolean) {
+                  smartShuffleActive = isSmart
                   if (isSmart) userOverrideUntilPlayerClose = true
               }
 
               fun onPlayerClosed() {
                   userOverrideUntilPlayerClose = false
+                  manualShuffleOffUntilPlayerClose = false
+                  smartShuffleActive = false
                   userExplicitlyDisabledUntilTrackChange = false
                   // Keep the remembered preference; it may be restored on the next player session.
               }
 
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
                   if (playerObj == null) return
-                  if (userOverrideUntilPlayerClose) return
+                  if (userOverrideUntilPlayerClose || manualShuffleOffUntilPlayerClose || smartShuffleActive) return
                   VnFpsPref.ensureInitAuto()
                   if (!VnFpsPref.keepShuffleEnabled) return
                   if (userExplicitlyDisabledUntilTrackChange) return
@@ -1581,10 +1599,12 @@ jobs:
               ) {
                   VnFpsPref.ensureInit(c)
                   if (isSmartShuffle) {
+                      smartShuffleActive = true
                       userOverrideUntilPlayerClose = true
                       return
                   }
-                  if (userOverrideUntilPlayerClose) return
+                  smartShuffleActive = false
+                  if (userOverrideUntilPlayerClose || manualShuffleOffUntilPlayerClose) return
                   onForceEnableShuffle = reEnableWithoutBreakingQueue
                   val now = SystemClock.elapsedRealtime()
                   val recentlyTappedByUser = (now - lastUserTapMs) in 0L..1400L
@@ -1605,7 +1625,7 @@ jobs:
                       return
                   }
 
-                  if ((recentlyTappedByUser || userExplicitlyDisabledUntilTrackChange) && !userWantsShuffle) {
+                  if ((recentlyTappedByUser || userExplicitlyDisabledUntilTrackChange || manualShuffleOffUntilPlayerClose) && !userWantsShuffle) {
                       lastKnownShuffleOn = false
                       VnFpsPref.saveRememberedShuffleState(c, false)
                       return
@@ -2690,7 +2710,7 @@ jobs:
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.6"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.7"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -4072,12 +4092,12 @@ jobs:
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.6" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.7" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.1.6-Debug
+          name: VNEra-2.1.7-Debug
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
