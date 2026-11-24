@@ -1495,13 +1495,13 @@ jobs:
                       return
                   }
 
-                  val now = SystemClock.elapsedRealtime()
-                  if ((now - lastUserTapMs) in 0L..1200L) return
+                  val observedAt = SystemClock.elapsedRealtime()
+                  if ((observedAt - lastUserTapMs) in 0L..1200L) return
                   lastKnownShuffleOn = false
                   userWantsShuffle = true
                   reEnableWithoutBreakingQueue()
-                  if (now - lastReenableMs > 1800L) {
-                      lastReenableMs = now
+                  if (observedAt - lastReenableMs > 1800L) {
+                      lastReenableMs = observedAt
                       activeBannerMessage = "Επαναφέρθηκε η τυχαία σειρά από τον player"
                   }
               }
