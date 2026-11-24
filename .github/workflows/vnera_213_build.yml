@@ -43,11 +43,11 @@ jobs:
           ref: work/source-review
           fetch-depth: 0
 
-      - name: Merge VNEra Custom Changes onto Revera 1.0.8 Base
+      - name: Merge VNEra Custom Changes onto Revera 1.0.9 Base
         run: |
           set -euo pipefail
-          rm -rf /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old /tmp/merge_repo
-          mkdir -p /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_108 /tmp/revera_old
+          rm -rf /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_109 /tmp/revera_old /tmp/merge_repo
+          mkdir -p /tmp/vnera_gradle /tmp/vnera_res /tmp/vnera_custom /tmp/revera_109 /tmp/revera_old
 
           [ -f "gradlew" ] && cp -f "gradlew" /tmp/vnera_gradle/
           [ -f "gradlew.bat" ] && cp -f "gradlew.bat" /tmp/vnera_gradle/
@@ -65,9 +65,9 @@ jobs:
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
-          git archive refs/tags/v1.0.8 | tar -x -C /tmp/revera_108
-          NEW_SETTINGS=$(find /tmp/revera_108 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1)
-          [ -n "$NEW_SETTINGS" ] || { echo "ERROR: Δεν βρέθηκε Gradle root στο Revera v1.0.8"; exit 1; }
+          git archive refs/tags/v1.0.9 | tar -x -C /tmp/revera_109
+          NEW_SETTINGS=$(find /tmp/revera_109 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1)
+          [ -n "$NEW_SETTINGS" ] || { echo "ERROR: Δεν βρέθηκε Gradle root στο Revera v1.0.9"; exit 1; }
           NEW_BASE_ROOT=$(dirname "$NEW_SETTINGS")
 
           python3 <<'PY'
@@ -80,7 +80,7 @@ jobs:
               for p in Path("/tmp/vnera_custom").rglob("*")
               if p.is_file() and p.suffix in exts and ".git" not in p.parts and ".github" not in p.parts
           }
-          tags = [t for t in sorted(subprocess.check_output(["git", "tag", "-l", "v1.0.*"], text=True).splitlines()) if t != "v1.0.8"]
+          tags = [t for t in sorted(subprocess.check_output(["git", "tag", "-l", "v1.0.*"], text=True).splitlines()) if t != "v1.0.9"]
           best_label, best_ref, best_score = "v1.0.7", "refs/tags/v1.0.7", -1
           for t in tags:
               tmp_dir = Path("/tmp/rev_cand")
@@ -1396,20 +1396,21 @@ jobs:
               }
 
               fun onUserExplicitShuffleToggle(newShuffleState: Boolean, c: Context? = null) {
-                  lastUserTapMs = SystemClock.elapsedRealtime()
+                  val now = SystemClock.elapsedRealtime()
+                  lastUserTapMs = now
                   userWantsShuffle = newShuffleState
                   lastKnownShuffleOn = newShuffleState
+                  // An explicit OFF is authoritative until the player is closed. It must
+                  // never be interpreted as a player-originated OFF transition.
                   manualShuffleOffUntilPlayerClose = !newShuffleState
                   userOverrideUntilPlayerClose = !newShuffleState
-                  // The media session can publish its pre-click value after the UI callback.
-                  // Hold the user's target until the matching state arrives; never treat that
-                  // stale emission as a player-originated OFF transition.
                   pendingUserTarget = newShuffleState
-                  pendingUserTargetUntilMs = lastUserTapMs + 3_000L
+                  pendingUserTargetUntilMs = now + 1_500L
                   if (newShuffleState) {
                       smartShuffleActive = false
                       userOverrideUntilPlayerClose = false
                   }
+                  lastObservedShuffleState = if (newShuffleState) false else true
                   c?.let { VnFpsPref.saveRememberedShuffleState(it, newShuffleState) }
               }
 
@@ -2573,7 +2574,7 @@ jobs:
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.2.2"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.2.3"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -3323,6 +3324,8 @@ jobs:
                           "    }\n"
                       )
                       src_shuffle = src_shuffle[:m_shuffle_fn.end()] + guard + src_shuffle[m_shuffle_fn.end():]
+                      # Record only the user's actual tap before dispatching the real player action.
+                      # Do not infer user intent from observed state changes.
                       src_shuffle, n_shuffle_cb = re.subn(
                           r'onToggleShuffle\s*=\s*actions\.toggleShuffle\s*,',
                           'onToggleShuffle = {\n            com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!state.shuffle, vnShuffleContext)\n            actions.toggleShuffle()\n        },',
@@ -3973,12 +3976,12 @@ jobs:
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.2.2" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.2.3" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.2.2-Debug
+          name: VNEra-2.2.3-Debug
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
