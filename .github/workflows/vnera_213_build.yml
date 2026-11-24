@@ -1263,14 +1263,11 @@ jobs:
                               val activeIdx = lines.indexOfFirst { it.equals(activeText, ignoreCase = true) }
                               if (activeIdx >= 0 && activeIdx != lastScrolledTargetIdx) {
                                   val now = SystemClock.elapsedRealtime()
-                                  if (now >= manualScrollUntilMs && !listState.isScrollInProgress) {
+                                  if (now >= manualScrollUntilMs) {
+                                      // Immediate positioning avoids overlapping scroll animations
+                                      // every time the singer advances to the next lyric line.
                                       lastScrolledTargetIdx = activeIdx
-                                      runCatching {
-                                          listState.animateScrollToItem(
-                                              index = activeIdx,
-                                              scrollOffset = centerOffsetPx
-                                          )
-                                      }
+                                      runCatching { listState.scrollToItem(activeIdx, centerOffsetPx) }
                                   }
                               }
                           }
@@ -1296,16 +1293,6 @@ jobs:
                                           hasCustomActive -> accentColor.copy(alpha = 0.34f)
                                           else -> Color.White.copy(alpha = 0.34f)
                                       }
-                                      val animatedColor by animateColorAsState(
-                                          targetValue = targetTextColor,
-                                          animationSpec = spring(dampingRatio = 0.88f, stiffness = 240f),
-                                          label = "vn_fs_lyric_color"
-                                      )
-                                      val animatedScale by animateFloatAsState(
-                                          targetValue = if (isCurrent) 1.045f else 0.975f,
-                                          animationSpec = spring(dampingRatio = 0.82f, stiffness = 300f),
-                                          label = "vn_fs_lyric_scale"
-                                      )
                                       Text(
                                           text = line,
                                           style = MaterialTheme.typography.headlineSmall.copy(
@@ -1313,7 +1300,7 @@ jobs:
                                               lineHeight = ((if (isCurrent) 37f else 29f) * fontScale).sp,
                                               fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium
                                           ),
-                                          color = animatedColor,
+                                          color = targetTextColor,
                                           textAlign = TextAlign.Center,
                                           modifier = Modifier
                                               .fillMaxWidth()
@@ -1322,11 +1309,6 @@ jobs:
                                                   if (isCurrent) accentColor.copy(alpha = 0.13f) else Color.Transparent
                                               )
                                               .padding(horizontal = 12.dp, vertical = 10.dp)
-                                              .graphicsLayer {
-                                                  scaleX = animatedScale
-                                                  scaleY = animatedScale
-                                                  transformOrigin = TransformOrigin(0.5f, 0.5f)
-                                              }
                                       )
                                   }
                               }
@@ -1494,6 +1476,8 @@ jobs:
               private var lastReenableMs = 0L
               private var lastUserTapMs = 0L
               private var userExplicitlyDisabledUntilTrackChange = false
+              // Manual taps and Smart Shuffle are explicit user choices; never fight them.
+              var userOverrideUntilPlayerClose by mutableStateOf(false)
 
               fun dismissBanner() {
                   activeBannerMessage = null
@@ -1514,10 +1498,12 @@ jobs:
                   userWantsShuffle = targetState
                   lastKnownShuffleOn = targetState
                   userExplicitlyDisabledUntilTrackChange = !targetState
+                  userOverrideUntilPlayerClose = true
                   VnFpsPref.saveRememberedShuffleState(c, targetState)
               }
 
               fun onSettingChanged(enabled: Boolean, remembered: Boolean) {
+                  userOverrideUntilPlayerClose = false
                   if (enabled) {
                       userWantsShuffle = remembered
                       lastKnownShuffleOn = remembered
@@ -1534,11 +1520,23 @@ jobs:
                   userWantsShuffle = newShuffleState
                   lastKnownShuffleOn = newShuffleState
                   userExplicitlyDisabledUntilTrackChange = !newShuffleState
+                  userOverrideUntilPlayerClose = true
                   VnFpsPref.saveRememberedShuffleState(c, newShuffleState)
+              }
+
+              fun onSmartShuffleActivated(isSmart: Boolean) {
+                  if (isSmart) userOverrideUntilPlayerClose = true
+              }
+
+              fun onPlayerClosed() {
+                  userOverrideUntilPlayerClose = false
+                  userExplicitlyDisabledUntilTrackChange = false
+                  // Keep the remembered preference; it may be restored on the next player session.
               }
 
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
                   if (playerObj == null) return
+                  if (userOverrideUntilPlayerClose) return
                   VnFpsPref.ensureInitAuto()
                   if (!VnFpsPref.keepShuffleEnabled) return
                   if (userExplicitlyDisabledUntilTrackChange) return
@@ -1578,9 +1576,15 @@ jobs:
               fun observeShuffleState(
                   c: Context,
                   isShuffleOn: Boolean,
+                  isSmartShuffle: Boolean = false,
                   reEnableWithoutBreakingQueue: () -> Unit
               ) {
                   VnFpsPref.ensureInit(c)
+                  if (isSmartShuffle) {
+                      userOverrideUntilPlayerClose = true
+                      return
+                  }
+                  if (userOverrideUntilPlayerClose) return
                   onForceEnableShuffle = reEnableWithoutBreakingQueue
                   val now = SystemClock.elapsedRealtime()
                   val recentlyTappedByUser = (now - lastUserTapMs) in 0L..1400L
@@ -3428,8 +3432,11 @@ jobs:
                   if m_shuffle_fn:
                       guard = (
                           "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
-                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle) {\n"
-                          "        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
+                          "    androidx.compose.runtime.DisposableEffect(Unit) {\n"
+                          "        onDispose { com.music.spotui.ui.screens.VnShuffleGuard.onPlayerClosed() }\n"
+                          "    }\n"
+                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, state.smart, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle, com.music.spotui.ui.screens.VnShuffleGuard.userOverrideUntilPlayerClose) {\n"
+                          "        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShuffleContext, state.shuffle, state.smart) { actions.toggleShuffle() }\n"
                           "    }\n"
                       )
                       src_shuffle = src_shuffle[:m_shuffle_fn.end()] + guard + src_shuffle[m_shuffle_fn.end():]
