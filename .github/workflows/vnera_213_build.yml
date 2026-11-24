@@ -496,10 +496,9 @@ jobs:
                       if (savedPlayerLyricLines != rawLines) {
                           savedPlayerLyricLines = rawLines
                       }
-                      if (isActive) {
-                          savedPlayerActiveLineIndex = 0
-                          savedPlayerLyricText = rawLines.first()
-                      }
+                      // A multiline payload is the ordered lyrics document, not a playback
+                      // position update. Keep the active-line index from the single-line
+                      // playback capture; resetting it here makes fullscreen jump to line 1.
                       return
                   }
 
@@ -1286,15 +1285,10 @@ jobs:
                                       }
                                       val animatedTextColor by animateColorAsState(
                                           targetValue = targetTextColor,
-                                          animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+                                          animationSpec = tween(durationMillis = 180, easing = LinearOutSlowInEasing),
                                           label = "vn_fullscreen_lyric_color_$idx"
                                       )
-                                      val targetRowColor = if (isCurrent) accentColor.copy(alpha = 0.16f) else Color.Transparent
-                                      val animatedRowColor by animateColorAsState(
-                                          targetValue = targetRowColor,
-                                          animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
-                                          label = "vn_fullscreen_lyric_row_$idx"
-                                      )
+                                      val rowColor = if (isCurrent) accentColor.copy(alpha = 0.12f) else Color.Transparent
                                       Text(
                                           text = line,
                                           style = MaterialTheme.typography.headlineSmall.copy(
@@ -1308,7 +1302,7 @@ jobs:
                                           modifier = Modifier
                                               .fillMaxWidth()
                                               .clip(RoundedCornerShape(18.dp))
-                                              .background(animatedRowColor)
+                                              .background(rowColor)
                                               .padding(horizontal = 12.dp, vertical = 10.dp)
                                       )
                                   }
@@ -1496,9 +1490,16 @@ jobs:
               }
 
               fun onUserTappedShuffleButton(wasShuffleOn: Boolean, c: Context? = null) {
-                  // Legacy icon-level hook: do not infer the target state from a possibly stale
-                  // Compose snapshot. PlayerControlsBlock.onToggleShuffle is authoritative.
+                  // Capture user intent synchronously at the actual shuffle icon. The player
+                  // may publish its previous Compose state for another frame after the tap.
                   lastUserTapMs = SystemClock.elapsedRealtime()
+                  val targetState = !wasShuffleOn
+                  userWantsShuffle = targetState
+                  lastKnownShuffleOn = targetState
+                  manualShuffleOffUntilPlayerClose = !targetState
+                  userExplicitlyDisabledUntilTrackChange = !targetState
+                  userOverrideUntilPlayerClose = false
+                  c?.let { VnFpsPref.saveRememberedShuffleState(it, targetState) }
               }
 
               fun onSettingChanged(enabled: Boolean, remembered: Boolean) {
@@ -3308,7 +3309,7 @@ jobs:
                                       ct = "".join(lines_p)
                                       break
 
-              if False and "observeShuffleState" not in ct and re.search(r'Icons\.(?:Rounded|Outlined|Default|Filled)\.Shuffle', ct):
+              if True and "observeShuffleState" not in ct and re.search(r'Icons\.(?:Rounded|Outlined|Default|Filled)\.Shuffle', ct):
                   lines_s = ct.splitlines(keepends=True)
                   for idx_s, ls in enumerate(lines_s):
                       if re.search(r'Icons\.(?:Rounded|Outlined|Default|Filled)\.Shuffle', ls):
