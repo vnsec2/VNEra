@@ -1176,8 +1176,7 @@ jobs:
                   if (!isClosing) {
                       isClosing = true
                       scope.launch {
-                          // Let the exit transition finish before removing the Dialog.
-                          delay(380L)
+                          delay(260L)
                           VnFpsPref.closeLyricsFullscreen(act)
                           isClosing = false
                       }
@@ -1188,150 +1187,33 @@ jobs:
                   VnFpsPref.setSystemBarsHidden(act, VnFpsPref.lyricsImmersiveEnabled)
               }
               DisposableEffect(Unit) {
-                  onDispose {
-                      VnFpsPref.setSystemBarsHidden(act, false)
-                  }
+                  onDispose { VnFpsPref.setSystemBarsHidden(act, false) }
               }
 
               Dialog(
                   onDismissRequest = closeOverlay,
-                  properties = DialogProperties(
-                      usePlatformDefaultWidth = false,
-                      decorFitsSystemWindows = false
-                  )
+                  properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
               ) {
                   CompositionLocalProvider(LocalVnIsPlayerInlineLyric provides false) {
                       BackHandler(onBack = closeOverlay)
-                      val lines = VnFpsPref.savedPlayerLyricLines
-                      val activeText = VnFpsPref.savedPlayerLyricText.trim()
-                      val listState = rememberLazyListState()
-                      val accentColor = vnResolveSelectedLyricColor()
-                      val hasCustomActive = vnHasCustomLyricColorEnabled()
-                      val fontScale = VnFpsPref.lyricsFontScale.coerceIn(0.70f, 1.70f)
-
-                      var manualScrollUntilMs by remember { mutableLongStateOf(0L) }
-
-                      val userScrollTracker = remember {
-                          object : NestedScrollConnection {
-                              override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                                  if (source == NestedScrollSource.UserInput && abs(available.y) > 0.5f) {
-                                      manualScrollUntilMs = SystemClock.elapsedRealtime() + 3200L
-                                  }
-                                  return Offset.Zero
-                              }
-                          }
-                      }
-
-                      BoxWithConstraints(
+                      Box(
                           modifier = Modifier
                               .fillMaxSize()
                               .vnFullscreenSlideContainer(isClosing = isClosing, matchPlayerBackground = false)
-                              .background(
-                                  Brush.verticalGradient(
-                                      colors = listOf(
-                                          Color(0xFF080A10),
-                                          Color(0xFF171B28),
-                                          Color(0xFF0B0D14)
-                                      )
-                                  )
-                              )
-                              .vnSmartLyricsSwipe(
-                                  act = act,
-                                  isExpanded = true,
-                                  onCollapseToPlayer = closeOverlay
-                              )
+                              .background(Brush.verticalGradient(listOf(Color(0xFF080A10), Color(0xFF171B28), Color(0xFF0B0D14))))
+                              .vnSmartLyricsSwipe(act = act, isExpanded = true, onCollapseToPlayer = closeOverlay)
                               .statusBarsPadding()
                               .navigationBarsPadding()
                       ) {
-
-                          val activeIdx = remember(VnFpsPref.savedPlayerActiveLineIndex, activeText, lines) {
-                              val captured = VnFpsPref.savedPlayerActiveLineIndex
-                              when {
-                                  captured in lines.indices -> captured
-                                  activeText.isBlank() -> -1
-                                  else -> lines.indexOfFirst { it.trim().equals(activeText, ignoreCase = true) }
-                              }
-                          }
-
-                          LaunchedEffect(activeIdx, lines.size, manualScrollUntilMs) {
-                              if (activeIdx !in lines.indices) return@LaunchedEffect
-                              val waitMs = (manualScrollUntilMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
-                              if (waitMs > 0L) kotlinx.coroutines.delay(waitMs)
-                              if (SystemClock.elapsedRealtime() >= manualScrollUntilMs && activeIdx in lines.indices) {
-                                  runCatching { listState.animateScrollToItem(activeIdx) }
-                              }
-                          }
-
-                          if (lines.isNotEmpty()) {
-                              LazyColumn(
-                                  state = listState,
-                                  modifier = Modifier
-                                      .fillMaxSize()
-                                      .nestedScroll(userScrollTracker)
-                                      .padding(horizontal = 24.dp),
-                                  contentPadding = PaddingValues(top = 84.dp, bottom = 140.dp),
-                                  verticalArrangement = Arrangement.spacedBy(20.dp)
-                              ) {
-                                  itemsIndexed(
-                                      items = lines,
-                                      key = { idx, line -> "${idx}_${line.hashCode()}" }
-                                  ) { idx, line ->
-                                      val isCurrent = idx == activeIdx
-                                      val targetTextColor = when {
-                                          isCurrent && hasCustomActive -> accentColor.copy(alpha = 1.0f)
-                                          isCurrent -> Color.White
-                                          hasCustomActive -> accentColor.copy(alpha = 0.34f)
-                                          else -> Color.White.copy(alpha = 0.34f)
-                                      }
-                                      val animatedTextColor by animateColorAsState(
-                                          targetValue = targetTextColor,
-                                          animationSpec = tween(durationMillis = 180, easing = LinearOutSlowInEasing),
-                                          label = "vn_fullscreen_lyric_color_$idx"
-                                      )
-                                      val rowColor = if (isCurrent) accentColor.copy(alpha = 0.12f) else Color.Transparent
-                                      Text(
-                                          text = line,
-                                          style = MaterialTheme.typography.headlineSmall.copy(
-                                              // Fixed metrics prevent list remeasurement and scroll jumps.
-                                              fontSize = (24f * fontScale).sp,
-                                              lineHeight = (33f * fontScale).sp,
-                                              fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium
-                                          ),
-                                          color = animatedTextColor,
-                                          textAlign = TextAlign.Center,
-                                          modifier = Modifier
-                                              .fillMaxWidth()
-                                              .clip(RoundedCornerShape(18.dp))
-                                              .background(rowColor)
-                                              .padding(horizontal = 12.dp, vertical = 10.dp)
-                                      )
-                                  }
-                              }
-                          } else {
-                              Box(
-                                  modifier = Modifier
-                                      .fillMaxSize()
-                                      .padding(horizontal = 28.dp),
-                                  contentAlignment = Alignment.Center
-                              ) {
-                                  Text(
-                                      text = activeText.ifBlank { "Δεν υπάρχουν διαθέσιμοι στίχοι για αυτό το κομμάτι" },
-                                      style = MaterialTheme.typography.headlineSmall.copy(
-                                          fontSize = (22f * fontScale).sp,
-                                          lineHeight = (30f * fontScale).sp,
-                                          fontWeight = FontWeight.SemiBold
-                                      ),
-                                      color = if (hasCustomActive) accentColor.copy(alpha = 1.0f) else Color.White,
-                                      textAlign = TextAlign.Center
-                                  )
-                              }
-                          }
-
+                          // Use the real timed lyrics model rather than reconstructing lyrics
+                          // from transient Text emissions. This preserves source order, repeated
+                          // lines, the current timestamp, smooth follow, and line-tap seeking.
+                          com.music.spotui.ui.immersive.lyrics.ImmersiveLyricsPanel(
+                              modifier = Modifier.fillMaxSize(),
+                              contentPadding = PaddingValues(top = 56.dp, bottom = 76.dp)
+                          )
                           Box(
-                              modifier = Modifier
-                                  .align(Alignment.TopEnd)
-                                  .padding(top = 14.dp, end = 16.dp)
-                                  .zIndex(99f)
+                              modifier = Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 12.dp).zIndex(99f)
                           ) {
                               VnLyricsFullscreenButton(
                                   isFullscreen = true,
@@ -1466,68 +1348,59 @@ jobs:
               var activeBannerMessage by mutableStateOf<String?>(null)
               var userWantsShuffle by mutableStateOf(false)
               var lastKnownShuffleOn by mutableStateOf(false)
-              val shuffleLockedByUser: Boolean get() = VnFpsPref.keepShuffleEnabled && userWantsShuffle
+              val shuffleLockedByUser: Boolean get() = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffUntilPlayerClose
               var onForceEnableShuffle: (() -> Unit)? = null
               private var lastReenableMs = 0L
               private var lastUserTapMs = 0L
-              private var userExplicitlyDisabledUntilTrackChange = false
-              // Explicit user changes and Smart Shuffle suppress automatic re-enable until player closes.
+              private var lastObservedShuffleState: Boolean? = null
+              private var prefsInitialized = false
               private var manualShuffleOffUntilPlayerClose = false
               private var smartShuffleActive = false
               var userOverrideUntilPlayerClose by mutableStateOf(false)
 
-              fun dismissBanner() {
-                  activeBannerMessage = null
-              }
+              fun dismissBanner() { activeBannerMessage = null }
 
               fun syncFromPrefs(remembered: Boolean) {
-                  userWantsShuffle = remembered
-                  if (remembered) lastKnownShuffleOn = true
+                  // loadFromPrefs also runs from a SharedPreferences listener. Initialize
+                  // only once: resetting here after the user's OFF tap would erase the
+                  // manual override before the player publishes its new state.
+                  if (prefsInitialized) return
+                  prefsInitialized = true
+                  userWantsShuffle = false
+                  lastKnownShuffleOn = false
+                  lastObservedShuffleState = null
+                  manualShuffleOffUntilPlayerClose = false
+                  smartShuffleActive = false
+                  userOverrideUntilPlayerClose = false
               }
 
-              fun markUserShuffleInteraction() {
-                  lastUserTapMs = SystemClock.elapsedRealtime()
-              }
+              fun markUserShuffleInteraction() { lastUserTapMs = SystemClock.elapsedRealtime() }
 
               fun onUserTappedShuffleButton(wasShuffleOn: Boolean, c: Context? = null) {
-                  // Capture user intent synchronously at the actual shuffle icon. The player
-                  // may publish its previous Compose state for another frame after the tap.
-                  lastUserTapMs = SystemClock.elapsedRealtime()
-                  val targetState = !wasShuffleOn
-                  userWantsShuffle = targetState
-                  lastKnownShuffleOn = targetState
-                  manualShuffleOffUntilPlayerClose = !targetState
-                  userExplicitlyDisabledUntilTrackChange = !targetState
-                  userOverrideUntilPlayerClose = false
-                  c?.let { VnFpsPref.saveRememberedShuffleState(it, targetState) }
+                  onUserExplicitShuffleToggle(!wasShuffleOn, c)
               }
 
               fun onSettingChanged(enabled: Boolean, remembered: Boolean) {
                   userOverrideUntilPlayerClose = false
                   manualShuffleOffUntilPlayerClose = false
                   smartShuffleActive = false
-                  userExplicitlyDisabledUntilTrackChange = false
-                  if (enabled) {
-                      userWantsShuffle = remembered
-                      lastKnownShuffleOn = remembered
-                      if (userWantsShuffle) {
-                          onForceEnableShuffle?.invoke()
-                      }
-                  } else {
-                      userWantsShuffle = false
-                  }
+                  lastObservedShuffleState = null
+                  userWantsShuffle = false
+                  lastKnownShuffleOn = false
+                  if (!enabled) VnFpsPref.saveRememberedShuffleState(null, false)
               }
 
               fun onUserExplicitShuffleToggle(newShuffleState: Boolean, c: Context? = null) {
                   lastUserTapMs = SystemClock.elapsedRealtime()
                   userWantsShuffle = newShuffleState
                   lastKnownShuffleOn = newShuffleState
-                  userExplicitlyDisabledUntilTrackChange = !newShuffleState
                   manualShuffleOffUntilPlayerClose = !newShuffleState
-                  // The real button callback is authoritative. Do not block the observer
-                  // after ON; Keep Shuffle must resume watching player-driven OFF changes.
-                  userOverrideUntilPlayerClose = false
-                  VnFpsPref.saveRememberedShuffleState(c, newShuffleState)
+                  userOverrideUntilPlayerClose = !newShuffleState
+                  if (newShuffleState) {
+                      smartShuffleActive = false
+                      userOverrideUntilPlayerClose = false
+                  }
+                  c?.let { VnFpsPref.saveRememberedShuffleState(it, newShuffleState) }
               }
 
               fun onSmartShuffleActivated(isSmart: Boolean) {
@@ -1536,50 +1409,16 @@ jobs:
               }
 
               fun onPlayerClosed() {
+                  lastObservedShuffleState = null
                   userOverrideUntilPlayerClose = false
-                  // An explicit OFF choice survives player/composable disposal. It is cleared
-                  // only by an explicit ON toggle or by changing the Keep Shuffle setting.
                   smartShuffleActive = false
-                  // Keep manualShuffleOffUntilPlayerClose and userExplicitlyDisabledUntilTrackChange.
+                  // Keep manual OFF across player close/reopen.
               }
 
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
-                  if (playerObj == null) return
-                  if (userOverrideUntilPlayerClose || manualShuffleOffUntilPlayerClose || smartShuffleActive) return
-                  VnFpsPref.ensureInitAuto()
-                  if (!VnFpsPref.keepShuffleEnabled) return
-                  if (userExplicitlyDisabledUntilTrackChange) return
-                  val shouldKeep = VnFpsPref.rememberedShuffleState || userWantsShuffle
-                  if (!shouldKeep) return
-                  val now = SystemClock.elapsedRealtime()
-                  if ((now - lastUserTapMs) in 0L..1400L && !userWantsShuffle) return
-
-                  runCatching {
-                      val cls = playerObj.javaClass
-                      val getShuffle = cls.methods.firstOrNull {
-                          it.parameterCount == 0 && (it.name == "getShuffleModeEnabled" || it.name == "isShuffleModeEnabled")
-                      } ?: return@runCatching
-                      val current = getShuffle.invoke(playerObj) as? Boolean ?: return@runCatching
-                      if (!current) {
-                          val setShuffle = cls.methods.firstOrNull {
-                              it.parameterCount == 1 && it.name == "setShuffleModeEnabled" &&
-                                  (it.parameterTypes[0] == Boolean::class.javaPrimitiveType || it.parameterTypes[0] == Boolean::class.java)
-                          }
-                          if (setShuffle != null) {
-                              setShuffle.invoke(playerObj, true)
-                              userWantsShuffle = true
-                              lastKnownShuffleOn = true
-                              VnFpsPref.saveRememberedShuffleState(null, true)
-                              if (now - lastReenableMs > 1800L) {
-                                  lastReenableMs = now
-                                  activeBannerMessage = "Ενεργοποιήθηκε ξανά η τυχαία σειρά"
-                              }
-                          }
-                      } else {
-                          lastKnownShuffleOn = true
-                          userWantsShuffle = true
-                      }
-                  }
+                  // Deliberately no startup/reflection enforcement. Restoration is driven
+                  // exclusively by an observed ON -> OFF transition in observeShuffleState.
+                  return
               }
 
               fun observeShuffleState(
@@ -1589,48 +1428,51 @@ jobs:
                   reEnableWithoutBreakingQueue: () -> Unit
               ) {
                   VnFpsPref.ensureInit(c)
+                  onForceEnableShuffle = reEnableWithoutBreakingQueue
                   if (isSmartShuffle) {
                       smartShuffleActive = true
                       userOverrideUntilPlayerClose = true
+                      lastObservedShuffleState = isShuffleOn
                       return
                   }
-                  smartShuffleActive = false
-                  if (userOverrideUntilPlayerClose || manualShuffleOffUntilPlayerClose) return
-                  onForceEnableShuffle = reEnableWithoutBreakingQueue
-                  val now = SystemClock.elapsedRealtime()
-                  val recentlyTappedByUser = (now - lastUserTapMs) in 0L..1400L
+                  if (smartShuffleActive) smartShuffleActive = false
 
-                  if (!VnFpsPref.keepShuffleEnabled) {
-                      userExplicitlyDisabledUntilTrackChange = false
+                  val previous = lastObservedShuffleState
+                  lastObservedShuffleState = isShuffleOn
+
+                  // First emission is a baseline only. In particular, startup OFF must
+                  // never be interpreted as the player turning OFF a remembered ON state.
+                  if (previous == null) {
                       lastKnownShuffleOn = isShuffleOn
-                      userWantsShuffle = isShuffleOn
+                      if (isShuffleOn) {
+                          userWantsShuffle = true
+                          if (VnFpsPref.keepShuffleEnabled) VnFpsPref.saveRememberedShuffleState(c, true)
+                      }
                       return
                   }
 
                   if (isShuffleOn) {
                       lastKnownShuffleOn = true
                       userWantsShuffle = true
-                      if (!VnFpsPref.rememberedShuffleState) {
-                          VnFpsPref.saveRememberedShuffleState(c, true)
-                      }
+                      if (VnFpsPref.keepShuffleEnabled) VnFpsPref.saveRememberedShuffleState(c, true)
                       return
                   }
 
-                  if ((recentlyTappedByUser || userExplicitlyDisabledUntilTrackChange || manualShuffleOffUntilPlayerClose) && !userWantsShuffle) {
+                  // Ignore OFF transitions caused by the user's own button press or
+                  // Smart Shuffle. Only a player-originated ON -> OFF edge is restored.
+                  if (!previous || manualShuffleOffUntilPlayerClose || userOverrideUntilPlayerClose || !VnFpsPref.keepShuffleEnabled) {
                       lastKnownShuffleOn = false
-                      VnFpsPref.saveRememberedShuffleState(c, false)
                       return
                   }
 
-                  if (VnFpsPref.rememberedShuffleState || userWantsShuffle) {
-                      userWantsShuffle = true
-                      reEnableWithoutBreakingQueue()
-                      if (now - lastReenableMs > 1800L) {
-                          lastReenableMs = now
-                          activeBannerMessage = "Ενεργοποιήθηκε ξανά η τυχαία σειρά"
-                      }
-                  } else {
-                      lastKnownShuffleOn = false
+                  val now = SystemClock.elapsedRealtime()
+                  if ((now - lastUserTapMs) in 0L..1200L) return
+                  lastKnownShuffleOn = false
+                  userWantsShuffle = true
+                  reEnableWithoutBreakingQueue()
+                  if (now - lastReenableMs > 1800L) {
+                      lastReenableMs = now
+                      activeBannerMessage = "Επαναφέρθηκε η τυχαία σειρά από τον player"
                   }
               }
           }
@@ -3377,7 +3219,7 @@ jobs:
                       count=1
                   )
 
-              if "enforceOnPlayerIfNeeded" not in ct:
+              if False and "enforceOnPlayerIfNeeded" not in ct:
                   for cb_name in ("onPlaybackStateChanged", "onIsPlayingChanged", "onMediaItemTransition", "onTimelineChanged"):
                       m_cb = re.search(rf'(override\s+fun\s+{cb_name}\s*\([^)]*\)\s*\{{)', ct)
                       if m_cb:
