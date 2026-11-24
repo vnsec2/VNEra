@@ -21,19 +21,38 @@ jobs:
           path: _keystore_repo
           fetch-depth: 1
 
-      - name: Prepare Debug Keystore (read-only checkout)
+      - name: Prepare Signing Keystore (Update-Safe)
+        env:
+          VN_KEYSTORE_B64: ${{ secrets.VN_KEYSTORE_B64 }}
+          VN_STORE_PASS: ${{ secrets.VN_STORE_PASS }}
+          VN_KEY_ALIAS: ${{ secrets.VN_KEY_ALIAS }}
+          VN_KEY_PASS: ${{ secrets.VN_KEY_PASS }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.android" "_keystore_repo/.github"
           KEYSTORE="_keystore_repo/.github/vnera-debug.keystore"
-          if [ ! -f "$KEYSTORE" ]; then
-            echo "No existing debug keystore found on main; generating an ephemeral key for this run."
+          STORE_PASS="android"
+          KEY_ALIAS="androiddebugkey"
+          KEY_PASS="android"
+
+          if [ -n "${VN_KEYSTORE_B64:-}" ]; then
+            echo "Using custom signing keystore from VN_KEYSTORE_B64 secret for in-place update."
+            printf '%s' "$VN_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
+            [ -n "${VN_STORE_PASS:-}" ] && STORE_PASS="$VN_STORE_PASS"
+            [ -n "${VN_KEY_ALIAS:-}" ] && KEY_ALIAS="$VN_KEY_ALIAS"
+            [ -n "${VN_KEY_PASS:-}" ] && KEY_PASS="$VN_KEY_PASS"
+          elif [ ! -f "$KEYSTORE" ]; then
+            echo "No existing debug keystore found on main; generating a key for this run."
             keytool -genkeypair -v \
               -keystore "$KEYSTORE" \
-              -storepass android -alias androiddebugkey -keypass android \
+              -storepass "$STORE_PASS" -alias "$KEY_ALIAS" -keypass "$KEY_PASS" \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=VNEra Debug,O=VNEra,C=GR"
           fi
+
+          echo "VN_STORE_PASS=$STORE_PASS" >> "$GITHUB_ENV"
+          echo "VN_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "VN_KEY_PASS=$KEY_PASS" >> "$GITHUB_ENV"
           cp -f "$KEYSTORE" "$HOME/.android/debug.keystore"
           cp -f "$KEYSTORE" "/tmp/vnera-debug.keystore"
 
@@ -2526,6 +2545,9 @@ jobs:
           fallback_sdk = os.environ.get("FALLBACK_SDK", "35")
           build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "222001"))
           target_agp = "9.1.0" if has_sdk_37 else "8.7.2"
+          store_pass = os.environ.get("VN_STORE_PASS", "android")
+          key_alias = os.environ.get("VN_KEY_ALIAS", "androiddebugkey")
+          key_pass = os.environ.get("VN_KEY_PASS", "android")
 
           for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
               if p.exists():
@@ -2553,8 +2575,8 @@ jobs:
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
-              if "vnera-debug.keystore" not in t:
-                  t += '\nandroid {\n    signingConfigs { getByName("debug") { storeFile = file("vnera-debug.keystore"); storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android" } }\n    buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("debug") } }\n}\n'
+              t = re.sub(r'\nandroid \{\n\s*signingConfigs \{ getByName\("debug"\) \{[^}]+\} \}\n\s*buildTypes \{ getByName\("debug"\) \{[^}]+\} \}\n\}\n', '\n', t)
+              t += f'\nandroid {{\n    signingConfigs {{ getByName("debug") {{ storeFile = file("vnera-debug.keystore"); storePassword = "{store_pass}"; keyAlias = "{key_alias}"; keyPassword = "{key_pass}" }} }}\n    buildTypes {{ getByName("debug") {{ signingConfig = signingConfigs.getByName("debug") }} }}\n}}\n'
               if "META-INF/versions/9/OSGI-INF/MANIFEST.MF" not in t:
                   t += '\nandroid { packaging { resources { excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"; excludes += "META-INF/versions/9/module-info.class" } } }\n'
               gradle.write_text(t)
