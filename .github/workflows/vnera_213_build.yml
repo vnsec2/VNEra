@@ -183,7 +183,7 @@ jobs:
           [ -d "$SDK_ROOT/platforms/android-37" ] && export HAS_SDK_37="true"
           export FALLBACK_SDK="35"
           [ -d "$SDK_ROOT/platforms/android-36" ] && export FALLBACK_SDK="36"
-          export BUILD_VERSION_CODE=$((218000 + ${GITHUB_RUN_NUMBER:-1}))
+          export BUILD_VERSION_CODE=$((222000 + ${GITHUB_RUN_NUMBER:-1}))
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
           echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
 
@@ -247,6 +247,7 @@ jobs:
           import kotlin.math.*
 
           val LocalVnIsPlayerInlineLyric = compositionLocalOf { false }
+          val LocalVnFullscreenOverlayContent = compositionLocalOf { false }
 
           object VnFpsPref {
               const val PREFS_NAME = "vnera_display_prefs"
@@ -1194,7 +1195,7 @@ jobs:
                   onDismissRequest = closeOverlay,
                   properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
               ) {
-                  CompositionLocalProvider(LocalVnIsPlayerInlineLyric provides false) {
+                  CompositionLocalProvider(LocalVnIsPlayerInlineLyric provides false, LocalVnFullscreenOverlayContent provides true) {
                       BackHandler(onBack = closeOverlay)
                       Box(
                           modifier = Modifier
@@ -1356,6 +1357,8 @@ jobs:
               private var prefsInitialized = false
               private var manualShuffleOffUntilPlayerClose = false
               private var smartShuffleActive = false
+              private var pendingUserTarget: Boolean? = null
+              private var pendingUserTargetUntilMs = 0L
               var userOverrideUntilPlayerClose by mutableStateOf(false)
 
               fun dismissBanner() { activeBannerMessage = null }
@@ -1385,6 +1388,8 @@ jobs:
                   manualShuffleOffUntilPlayerClose = false
                   smartShuffleActive = false
                   lastObservedShuffleState = null
+                  pendingUserTarget = null
+                  pendingUserTargetUntilMs = 0L
                   userWantsShuffle = false
                   lastKnownShuffleOn = false
                   if (!enabled) VnFpsPref.saveRememberedShuffleState(null, false)
@@ -1396,6 +1401,11 @@ jobs:
                   lastKnownShuffleOn = newShuffleState
                   manualShuffleOffUntilPlayerClose = !newShuffleState
                   userOverrideUntilPlayerClose = !newShuffleState
+                  // The media session can publish its pre-click value after the UI callback.
+                  // Hold the user's target until the matching state arrives; never treat that
+                  // stale emission as a player-originated OFF transition.
+                  pendingUserTarget = newShuffleState
+                  pendingUserTargetUntilMs = lastUserTapMs + 3_000L
                   if (newShuffleState) {
                       smartShuffleActive = false
                       userOverrideUntilPlayerClose = false
@@ -1410,6 +1420,8 @@ jobs:
 
               fun onPlayerClosed() {
                   lastObservedShuffleState = null
+                  pendingUserTarget = null
+                  pendingUserTargetUntilMs = 0L
                   userOverrideUntilPlayerClose = false
                   smartShuffleActive = false
                   // Keep manual OFF across player close/reopen.
@@ -1429,6 +1441,24 @@ jobs:
               ) {
                   VnFpsPref.ensureInit(c)
                   onForceEnableShuffle = reEnableWithoutBreakingQueue
+                  val now = SystemClock.elapsedRealtime()
+                  val pendingTarget = pendingUserTarget
+                  if (pendingTarget != null) {
+                      if (now <= pendingUserTargetUntilMs && isShuffleOn != pendingTarget) {
+                          lastObservedShuffleState = isShuffleOn
+                          return
+                      }
+                      if (now <= pendingUserTargetUntilMs && isShuffleOn == pendingTarget) {
+                          pendingUserTarget = null
+                          pendingUserTargetUntilMs = 0L
+                          lastObservedShuffleState = isShuffleOn
+                          lastKnownShuffleOn = isShuffleOn
+                          userWantsShuffle = isShuffleOn
+                          return
+                      }
+                      pendingUserTarget = null
+                      pendingUserTargetUntilMs = 0L
+                  }
                   if (isSmartShuffle) {
                       smartShuffleActive = true
                       userOverrideUntilPlayerClose = true
@@ -2518,7 +2548,7 @@ jobs:
 
           has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
           fallback_sdk = os.environ.get("FALLBACK_SDK", "35")
-          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "216001"))
+          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "222001"))
           target_agp = "9.1.0" if has_sdk_37 else "8.7.2"
 
           for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
@@ -2543,7 +2573,7 @@ jobs:
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.1.9"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.2.2"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -2803,7 +2833,7 @@ jobs:
                                       "        com.music.spotui.ui.screens.VnFpsPref.immersivePanelActive = true\n"
                                       "        onDispose { com.music.spotui.ui.screens.VnFpsPref.immersivePanelActive = false }\n"
                                       "    }\n"
-                                      "    com.music.spotui.ui.screens.VnFullscreenLyricsOverlay(fromImmersivePanel = true)\n"
+                                      "    if (!com.music.spotui.ui.screens.LocalVnFullscreenOverlayContent.current) com.music.spotui.ui.screens.VnFullscreenLyricsOverlay(fromImmersivePanel = true)\n"
                                       "    val vnOnOpenFs: () -> Unit = {\n"
                                       "        vnImmClosingDown = false\n"
                                       "        com.music.spotui.ui.screens.VnFpsPref.openLyricsFullscreen(vnImmLyricsActivity)\n"
@@ -2828,7 +2858,7 @@ jobs:
                                       "        androidx.compose.foundation.layout.Box(\n"
                                       "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).statusBarsPadding().padding(top = 14.dp, end = 16.dp).zIndex(99f)\n"
                                       "        ) {\n"
-                                      "            com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, ownerId = \"immersive_panel\", onClick = { if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() })\n"
+                                      "            if (!com.music.spotui.ui.screens.LocalVnFullscreenOverlayContent.current) com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, ownerId = \"immersive_panel\", onClick = { if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() })\n"
                                       "        }\n"
                                       "    }\n"
                                       "    }\n"
@@ -3151,7 +3181,7 @@ jobs:
                                       ct = "".join(lines_p)
                                       break
 
-              if True and "observeShuffleState" not in ct and re.search(r'Icons\.(?:Rounded|Outlined|Default|Filled)\.Shuffle', ct):
+              if False and "observeShuffleState" not in ct and re.search(r'Icons\.(?:Rounded|Outlined|Default|Filled)\.Shuffle', ct):
                   lines_s = ct.splitlines(keepends=True)
                   for idx_s, ls in enumerate(lines_s):
                       if re.search(r'Icons\.(?:Rounded|Outlined|Default|Filled)\.Shuffle', ls):
@@ -3211,7 +3241,7 @@ jobs:
                                   break
                           break
 
-              if "onShuffleModeEnabledChanged" in ct and "VnShuffleGuard" not in ct:
+              if False and "onShuffleModeEnabledChanged" in ct and "VnShuffleGuard" not in ct:
                   ct = re.sub(
                       r'(override\s+fun\s+onShuffleModeEnabledChanged\s*\(\s*([A-Za-z0-9_]+)\s*:\s*Boolean\s*\)\s*\{)',
                       r'\1\n        if (!\2 && com.music.spotui.ui.screens.VnShuffleGuard.shuffleLockedByUser) { runCatching { com.music.spotui.ui.screens.VnShuffleGuard.onForceEnableShuffle?.invoke() } }',
@@ -3920,17 +3950,35 @@ jobs:
               p2.write_text(re.sub(r'(?m)^([ \t]*fun\s+ImmersivePlayer\b[^{]*\{)\s*$', r'\1\n    com.music.spotui.ui.screens.VnFrameRateGuard()', p2.read_text(), count=1))
           PY
 
+          python3 <<'PY'
+          import re
+          from pathlib import Path
+          lyric_file = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
+          if lyric_file.exists():
+              src = lyric_file.read_text()
+              pattern = r"    // Where the panel is heading,[\s\S]*?    val focusLine = if \(leadLine >= 0\) leadLine else activeRow\n"
+              src2, count = re.subn(pattern,
+                  "    // Follow the actual timed line; predictive lead scrolling caused repeated target changes.\n    val focusLine = activeRow\n",
+                  src, count=1)
+              if count != 1:
+                  raise SystemExit("Could not safely patch fullscreen lyric follow target")
+              lyric_file.write_text(src2)
+              print("Patched fullscreen lyrics to follow the actual timed line")
+          else:
+              raise SystemExit("ImmersiveLyricsPanel.kt not found")
+          PY
+
       - name: Build Debug APK
         run: |
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.1.9" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.2.2" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.1.9-Debug
+          name: VNEra-2.2.2-Debug
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
