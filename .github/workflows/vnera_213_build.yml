@@ -1287,7 +1287,7 @@ jobs:
                                   itemsIndexed(
                                       items = lines,
                                       key = { idx, line -> "${idx}_${line.hashCode()}" }
-                                  ) { _, line ->
+                                  ) { idx, line ->
                                       val isCurrent = activeText.isNotEmpty() && line.equals(activeText, ignoreCase = true)
                                       val targetTextColor = when {
                                           isCurrent && hasCustomActive -> accentColor.copy(alpha = 1.0f)
