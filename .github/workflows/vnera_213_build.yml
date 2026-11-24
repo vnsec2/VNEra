@@ -261,6 +261,7 @@ jobs:
               const val KEY_KEEP_SHUFFLE = "keep_shuffle_enabled"
               const val KEY_REMEMBER_SHUFFLE = "remember_shuffle_enabled"
               const val KEY_REMEMBERED_SHUFFLE_STATE = "remembered_shuffle_state"
+              const val KEY_SHUFFLE_MANUAL_OFF = "shuffle_manual_off_by_user"
               const val KEY_LAST_BACKUP_JSON = "last_loaded_backup_json"
               const val KEY_LAST_BACKUP_EXTENSIONS = "last_loaded_backup_extensions"
               const val KEY_RESTORED_EXTENSIONS = "restored_extensions_list"
@@ -358,9 +359,10 @@ jobs:
                   val legacyRemember = sp.getBoolean(KEY_REMEMBER_SHUFFLE, false)
                   val keep = sp.getBoolean(KEY_KEEP_SHUFFLE, false) || legacyRemember
                   val rem = sp.getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, keep)
+                  val manualOff = sp.getBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
                   keepShuffleEnabled = keep
                   rememberedShuffleState = rem
-                  VnShuffleGuard.syncFromPrefs(keep && rem)
+                  VnShuffleGuard.syncFromPrefs(keep && rem, manualOff)
                   cachedExtensionsText = sp.getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
                   lyricsCustomColorArgb = sp.getLong(KEY_LYRICS_COLOR, 0L)
                   lyricsBeautifulEnabled = sp.getBoolean(KEY_LYRICS_BEAUTIFUL, false) || (lyricsCustomColorArgb != 0L)
@@ -431,6 +433,10 @@ jobs:
                           .putBoolean(KEY_REMEMBERED_SHUFFLE_STATE, state)
                           .commit()
                   }
+              }
+              fun saveManualShuffleOff(c: Context?, manualOff: Boolean) {
+                  val ctx = c ?: resolveAppContext()
+                  ctx?.let { prefs(it).edit().putBoolean(KEY_SHUFFLE_MANUAL_OFF, manualOff).commit() }
               }
               fun updateLyricsBeautiful(c: Context, en: Boolean) {
                   lyricsBeautifulEnabled = en
@@ -580,6 +586,7 @@ jobs:
                   KEY_KEEP_SHUFFLE,
                   KEY_REMEMBER_SHUFFLE,
                   KEY_REMEMBERED_SHUFFLE_STATE,
+                  KEY_SHUFFLE_MANUAL_OFF,
                   KEY_LYRICS_BEAUTIFUL,
                   KEY_LYRICS_COLOR,
                   KEY_PLAYER_KARAOKE_BG_COLOR,
@@ -639,6 +646,7 @@ jobs:
                               }
                           }
                           check(ed.commit()) { "Could not save VNEra preferences" }
+                          VnShuffleGuard.applyImportedManualOff(prefs(c).getBoolean(KEY_SHUFFLE_MANUAL_OFF, false))
                       }
                   } catch (e: Exception) {
                       throw IllegalArgumentException("Backup import failed: ${e.message ?: e.javaClass.simpleName}", e)
@@ -1369,13 +1377,13 @@ jobs:
               var activeBannerMessage by mutableStateOf<String?>(null)
               var userWantsShuffle by mutableStateOf(false)
               var lastKnownShuffleOn by mutableStateOf(false)
-              val shuffleLockedByUser: Boolean get() = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffUntilPlayerClose
+              val shuffleLockedByUser: Boolean get() = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
               var onForceEnableShuffle: (() -> Unit)? = null
               private var lastReenableMs = 0L
               private var lastUserTapMs = 0L
               private var lastObservedShuffleState: Boolean? = null
               private var prefsInitialized = false
-              private var manualShuffleOffUntilPlayerClose = false
+              private var manualShuffleOffByUser = false
               private var smartShuffleActive = false
               private var pendingUserTarget: Boolean? = null
               private var pendingUserTargetUntilMs = 0L
@@ -1383,18 +1391,27 @@ jobs:
 
               fun dismissBanner() { activeBannerMessage = null }
 
-              fun syncFromPrefs(remembered: Boolean) {
+              fun syncFromPrefs(remembered: Boolean, manualOff: Boolean) {
                   // loadFromPrefs also runs from a SharedPreferences listener. Initialize
-                  // only once: resetting here after the user's OFF tap would erase the
-                  // manual override before the player publishes its new state.
+                  // only once; explicit user OFF is persisted across player/app recreation.
                   if (prefsInitialized) return
                   prefsInitialized = true
-                  userWantsShuffle = false
-                  lastKnownShuffleOn = false
+                  userWantsShuffle = remembered && !manualOff
+                  lastKnownShuffleOn = remembered && !manualOff
                   lastObservedShuffleState = null
-                  manualShuffleOffUntilPlayerClose = false
+                  manualShuffleOffByUser = manualOff
                   smartShuffleActive = false
-                  userOverrideUntilPlayerClose = false
+                  userOverrideUntilPlayerClose = manualOff
+              }
+
+              fun applyImportedManualOff(manualOff: Boolean) {
+                  manualShuffleOffByUser = manualOff
+                  userOverrideUntilPlayerClose = manualOff
+                  userWantsShuffle = !manualOff && VnFpsPref.rememberedShuffleState
+                  lastKnownShuffleOn = userWantsShuffle
+                  lastObservedShuffleState = null
+                  pendingUserTarget = null
+                  pendingUserTargetUntilMs = 0L
               }
 
               fun markUserShuffleInteraction() { lastUserTapMs = SystemClock.elapsedRealtime() }
@@ -1404,9 +1421,9 @@ jobs:
               }
 
               fun onSettingChanged(enabled: Boolean, remembered: Boolean) {
-                  userOverrideUntilPlayerClose = false
-                  manualShuffleOffUntilPlayerClose = false
+                  // Changing the restore preference must not erase an explicit OFF tap.
                   smartShuffleActive = false
+                  userOverrideUntilPlayerClose = manualShuffleOffByUser
                   lastObservedShuffleState = null
                   pendingUserTarget = null
                   pendingUserTargetUntilMs = 0L
@@ -1420,10 +1437,11 @@ jobs:
                   lastUserTapMs = now
                   userWantsShuffle = newShuffleState
                   lastKnownShuffleOn = newShuffleState
-                  // An explicit OFF is authoritative until the player is closed. It must
-                  // never be interpreted as a player-originated OFF transition.
-                  manualShuffleOffUntilPlayerClose = !newShuffleState
+                  // An explicit OFF is authoritative until the user explicitly turns it ON.
+                  // It must never be interpreted as a player-originated OFF transition.
+                  manualShuffleOffByUser = !newShuffleState
                   userOverrideUntilPlayerClose = !newShuffleState
+                  VnFpsPref.saveManualShuffleOff(c, !newShuffleState)
                   pendingUserTarget = newShuffleState
                   pendingUserTargetUntilMs = now + 1_500L
                   if (newShuffleState) {
@@ -1445,7 +1463,7 @@ jobs:
                   pendingUserTargetUntilMs = 0L
                   userOverrideUntilPlayerClose = false
                   smartShuffleActive = false
-                  // Keep manual OFF across player close/reopen.
+                  // Keep manual OFF across player close/reopen and app recreation.
               }
 
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
@@ -1480,6 +1498,14 @@ jobs:
                       pendingUserTarget = null
                       pendingUserTargetUntilMs = 0L
                   }
+                  if (manualShuffleOffByUser) {
+                      // A user-issued OFF has priority over player emissions and automatic restore.
+                      // Never infer a fresh user preference from a stale/automatic ON state.
+                      lastObservedShuffleState = isShuffleOn
+                      lastKnownShuffleOn = false
+                      userWantsShuffle = false
+                      return
+                  }
                   if (isSmartShuffle) {
                       smartShuffleActive = true
                       userOverrideUntilPlayerClose = true
@@ -1511,7 +1537,7 @@ jobs:
 
                   // Ignore OFF transitions caused by the user's own button press or
                   // Smart Shuffle. Only a player-originated ON -> OFF edge is restored.
-                  if (!previous || manualShuffleOffUntilPlayerClose || userOverrideUntilPlayerClose || !VnFpsPref.keepShuffleEnabled) {
+                  if (!previous || manualShuffleOffByUser || userOverrideUntilPlayerClose || !VnFpsPref.keepShuffleEnabled) {
                       lastKnownShuffleOn = false
                       return
                   }
