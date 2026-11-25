@@ -1,4 +1,4 @@
-name: Build VNEra 2.2.8 Debug APK
+name: Build VNEra 2.2.9 Debug APK
 
 on:
   push:
@@ -377,8 +377,8 @@ jobs:
                   playbackAlertsEnabled = sp.getBoolean(KEY_PLAYBACK_ALERTS, true)
                   val legacyRemember = sp.getBoolean(KEY_REMEMBER_SHUFFLE, false)
                   val keep = sp.getBoolean(KEY_KEEP_SHUFFLE, false) || legacyRemember
-                  val rem = sp.getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, keep)
                   val manualOff = sp.getBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
+                  val rem = if (manualOff) false else sp.getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
                   keepShuffleEnabled = keep
                   rememberedShuffleState = rem
                   VnShuffleGuard.syncFromPrefs(keep && rem, manualOff)
@@ -436,25 +436,31 @@ jobs:
                   ensureInit(c)
                   keepShuffleEnabled = en
                   val shouldRemember = en && !VnShuffleGuard.isManualShuffleOff && (rememberedShuffleState || VnShuffleGuard.userWantsShuffle || VnShuffleGuard.lastKnownShuffleOn)
+                  rememberedShuffleState = if (en) shouldRemember else false
                   prefs(c).edit()
                       .putBoolean(KEY_KEEP_SHUFFLE, en)
                       .putBoolean(KEY_REMEMBER_SHUFFLE, false)
                       .putBoolean(KEY_REMEMBERED_SHUFFLE_STATE, if (en) shouldRemember else false)
+                      .putBoolean(KEY_SHUFFLE_MANUAL_OFF, if (en) VnShuffleGuard.isManualShuffleOff else false)
                       .commit()
                   VnShuffleGuard.onSettingChanged(en, if (en) shouldRemember else false, c)
               }
-              fun saveRememberedShuffleState(c: Context?, state: Boolean) {
-                  rememberedShuffleState = state
+              fun saveShuffleStateAtomic(c: Context?, enabled: Boolean) {
+                  val manualOff = !enabled
+                  rememberedShuffleState = enabled
                   val ctx = c ?: resolveAppContext()
                   ctx?.let {
                       prefs(it).edit()
-                          .putBoolean(KEY_REMEMBERED_SHUFFLE_STATE, state)
+                          .putBoolean(KEY_REMEMBERED_SHUFFLE_STATE, enabled)
+                          .putBoolean(KEY_SHUFFLE_MANUAL_OFF, manualOff)
                           .commit()
                   }
               }
+              fun saveRememberedShuffleState(c: Context?, state: Boolean) {
+                  saveShuffleStateAtomic(c, state)
+              }
               fun saveManualShuffleOff(c: Context?, manualOff: Boolean) {
-                  val ctx = c ?: resolveAppContext()
-                  ctx?.let { prefs(it).edit().putBoolean(KEY_SHUFFLE_MANUAL_OFF, manualOff).commit() }
+                  saveShuffleStateAtomic(c, !manualOff)
               }
               fun updateLyricsBeautiful(c: Context, en: Boolean) {
                   lyricsBeautifulEnabled = en
@@ -605,6 +611,128 @@ jobs:
                   key != KEY_LAST_BACKUP_EXTENSIONS &&
                   key != KEY_RESTORED_EXTENSIONS
 
+              private val nonSettingExactKeys = setOf(
+                  PREFS_NAME,
+                  "__vnera_all_prefs__",
+                  "__vnera_extensions__",
+                  "vnera_extensions",
+                  "extensions",
+                  "installed_extensions",
+                  "repositories",
+                  "repos",
+                  "plugins",
+                  "addons",
+                  "history",
+                  "playback_history",
+                  "search_history",
+                  "recently_played",
+                  "recent_tracks",
+                  "recent_songs",
+                  "queue",
+                  "current_queue",
+                  "playback_queue",
+                  "current_track",
+                  "current_song",
+                  "last_track",
+                  "last_song",
+                  "playback_state",
+                  "lyrics_cache",
+                  "image_cache",
+                  "cache",
+                  "logs",
+                  "crash_logs",
+                  "cookies",
+                  "tokens",
+                  "session"
+              )
+
+              private val nonSettingSubstrings = listOf(
+                  "vnera_display_prefs",
+                  "__vnera_",
+                  "androidx.",
+                  "com.google.",
+                  "firebase",
+                  "workmanager",
+                  "webview",
+                  "chromium",
+                  "coil",
+                  "okhttp",
+                  "exoplayer",
+                  "media3",
+                  "acra",
+                  "leakcanary",
+                  "extension",
+                  "repositor",
+                  "plugin",
+                  "addon",
+                  "history",
+                  "recent",
+                  "queue",
+                  "current_track",
+                  "current_song",
+                  "last_track",
+                  "last_song",
+                  "playback_state",
+                  "seek_pos",
+                  "resume_pos",
+                  "lyrics_cache",
+                  "image_cache",
+                  "crash_log",
+                  "telemetry",
+                  "analytics",
+                  "cookie",
+                  "token",
+                  "oauth",
+                  "credential",
+                  "password"
+              )
+
+              private fun isJunkBackupKey(key: String): Boolean {
+                  val kl = key.trim().lowercase()
+                  if (kl.isEmpty()) return true
+                  if (kl in nonSettingExactKeys) return true
+                  if (kl == "cache" || kl.endsWith("_cache") || kl.startsWith("cache_")) return true
+                  if (kl == "log" || kl == "logs" || kl.endsWith("_log") || kl.endsWith("_logs")) return true
+                  if (kl == "repo" || kl == "repos" || kl.endsWith("_repo") || kl.endsWith("_repos")) return true
+                  return nonSettingSubstrings.any { kl.contains(it) }
+              }
+
+              private fun sanitizeBackupNode(node: Any?, depth: Int = 0): Any? {
+                  if (depth > 8 || node == null) return node
+                  return when (node) {
+                      is JSONObject -> {
+                          val cleanObj = JSONObject()
+                          val it = node.keys()
+                          while (it.hasNext()) {
+                              val k = it.next()
+                              if (isJunkBackupKey(k)) continue
+                              val v = node.opt(k)
+                              val cleanedVal = sanitizeBackupNode(v, depth + 1)
+                              if (cleanedVal != null && cleanedVal != JSONObject.NULL) {
+                                  if (cleanedVal is JSONObject && cleanedVal.length() == 0 && (v as? JSONObject)?.length() != 0) {
+                                      continue
+                                  }
+                                  cleanObj.put(k, cleanedVal)
+                              }
+                          }
+                          cleanObj
+                      }
+                      is JSONArray -> {
+                          val cleanArr = JSONArray()
+                          for (i in 0 until node.length()) {
+                              val el = node.opt(i)
+                              val cleanedEl = sanitizeBackupNode(el, depth + 1)
+                              if (cleanedEl != null && cleanedEl != JSONObject.NULL) {
+                                  if (cleanedEl is JSONObject && cleanedEl.length() == 0) continue
+                                  cleanArr.put(cleanedEl)
+                              }
+                          }
+                          cleanArr
+                      }
+                      else -> node
+                  }
+              }
+
               fun exportAllPrefsJson(c: Context): JSONObject = JSONObject().also { all ->
                   val source = prefs(c).all
                   val entries = JSONObject()
@@ -626,18 +754,22 @@ jobs:
 
               fun enrichBackupJson(c: Context, jsonStr: String): String = try {
                   val baseObj = JSONObject(jsonStr)
-                  baseObj.remove("__vnera_extensions__")
-                  baseObj.remove("vnera_extensions")
-                  baseObj.put("__vnera_all_prefs__", exportAllPrefsJson(c)).toString(2)
+                  val sanitizedRevera = (sanitizeBackupNode(baseObj) as? JSONObject) ?: JSONObject()
+                  sanitizedRevera.put("__vnera_all_prefs__", exportAllPrefsJson(c)).toString(2)
               } catch (_: Exception) { jsonStr }
 
               fun onBackupImported(c: Context, rawText: String): String {
+                  val sanitizedReveraStr: String
                   try {
                       val root = JSONObject(rawText)
                       val allPrefs = root.optJSONObject("__vnera_all_prefs__")
                       val entries = allPrefs?.optJSONObject(PREFS_NAME)
+                      val ed = prefs(c).edit()
+                      ed.remove(KEY_REMEMBER_SHUFFLE)
+                      ed.remove(KEY_LAST_BACKUP_JSON)
+                      ed.remove(KEY_LAST_BACKUP_EXTENSIONS)
+                      ed.remove(KEY_RESTORED_EXTENSIONS)
                       if (entries != null) {
-                          val ed = prefs(c).edit()
                           entries.keys().forEach { k ->
                               if (!isVneraBackupKeyAllowed(k)) return@forEach
                               val item = entries.optJSONObject(k) ?: return@forEach
@@ -652,18 +784,19 @@ jobs:
                                   }
                               }
                           }
-                          check(ed.commit()) { "Could not save VNEra preferences" }
-                          VnShuffleGuard.applyImportedManualOff(
-                              prefs(c).getBoolean(KEY_SHUFFLE_MANUAL_OFF, false),
-                              prefs(c).getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
-                          )
                       }
+                      check(ed.commit()) { "Could not save VNEra preferences" }
+                      val importedManualOff = prefs(c).getBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
+                      val importedRemembered = if (importedManualOff) false else prefs(c).getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
+                      VnShuffleGuard.applyImportedManualOff(importedManualOff, importedRemembered)
+                      val sanitizedRevera = (sanitizeBackupNode(root) as? JSONObject) ?: JSONObject()
+                      sanitizedReveraStr = sanitizedRevera.toString()
                   } catch (e: Exception) {
                       throw IllegalArgumentException("Backup import failed: ${e.message ?: e.javaClass.simpleName}", e)
                   }
                   reload(c)
                   c.findActivity()?.let { act -> Handler(Looper.getMainLooper()).postDelayed({ if (!act.isFinishing && !act.isDestroyed) act.recreate() }, 350L) }
-                  return rawText
+                  return sanitizedReveraStr
               }
 
               fun recordBackupAndExtractExtensions(c: Context, raw: String) {
@@ -1289,8 +1422,7 @@ jobs:
               var lastKnownShuffleOn by mutableStateOf(false)
               private var manualShuffleOffByUser = false
               val isManualShuffleOff: Boolean get() = manualShuffleOffByUser
-              // When the preference is enabled, both ON and OFF are managed states.
-              val shuffleLockedByUser: Boolean get() = VnFpsPref.keepShuffleEnabled
+              val shuffleLockedByUser: Boolean get() = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
               var onForceEnableShuffle: (() -> Unit)? = null
               private var lastReenableMs = 0L
               private var lastUserTapMs = 0L
@@ -1305,13 +1437,14 @@ jobs:
 
               fun syncFromPrefs(remembered: Boolean, manualOff: Boolean) {
                   manualShuffleOffByUser = manualOff
-                  userWantsShuffle = remembered
-                  lastKnownShuffleOn = remembered
+                  val effective = if (manualOff) false else remembered
+                  userWantsShuffle = effective
+                  lastKnownShuffleOn = effective
                   if (!prefsInitialized) {
                       prefsInitialized = true
                       lastObservedShuffleState = null
                       smartShuffleActive = false
-                      userOverrideUntilPlayerClose = false
+                      userOverrideUntilPlayerClose = manualOff
                       pendingUserTarget = null
                       pendingUserTargetUntilMs = 0L
                   }
@@ -1319,12 +1452,12 @@ jobs:
 
               fun applyImportedManualOff(manualOff: Boolean, remembered: Boolean = VnFpsPref.rememberedShuffleState) {
                   manualShuffleOffByUser = manualOff
-                  val desired = remembered
+                  val desired = if (manualOff) false else remembered
                   userWantsShuffle = desired
                   lastKnownShuffleOn = desired
                   lastObservedShuffleState = null
                   smartShuffleActive = false
-                  userOverrideUntilPlayerClose = false
+                  userOverrideUntilPlayerClose = manualOff
                   pendingUserTarget = desired
                   pendingUserTargetUntilMs = SystemClock.elapsedRealtime() + 3_500L
               }
@@ -1338,16 +1471,19 @@ jobs:
               fun onSettingChanged(enabled: Boolean, remembered: Boolean, c: Context? = null) {
                   smartShuffleActive = false
                   lastObservedShuffleState = null
-                  pendingUserTarget = if (enabled) remembered else null
-                  pendingUserTargetUntilMs = if (enabled) SystemClock.elapsedRealtime() + 3_500L else 0L
                   if (!enabled) {
                       userWantsShuffle = false
                       lastKnownShuffleOn = false
                       userOverrideUntilPlayerClose = false
+                      pendingUserTarget = null
+                      pendingUserTargetUntilMs = 0L
                   } else {
-                      userWantsShuffle = remembered
-                      lastKnownShuffleOn = remembered
-                      userOverrideUntilPlayerClose = false
+                      val desired = if (manualShuffleOffByUser) false else remembered
+                      userWantsShuffle = desired
+                      lastKnownShuffleOn = desired
+                      userOverrideUntilPlayerClose = !desired
+                      pendingUserTarget = desired
+                      pendingUserTargetUntilMs = SystemClock.elapsedRealtime() + 3_500L
                   }
               }
 
@@ -1355,41 +1491,43 @@ jobs:
                   val now = SystemClock.elapsedRealtime()
                   lastUserTapMs = now
                   manualShuffleOffByUser = !newShuffleState
-                  userOverrideUntilPlayerClose = false
+                  userOverrideUntilPlayerClose = !newShuffleState
                   userWantsShuffle = newShuffleState
                   lastKnownShuffleOn = newShuffleState
-                  VnFpsPref.saveManualShuffleOff(c, !newShuffleState)
                   pendingUserTarget = newShuffleState
                   pendingUserTargetUntilMs = now + 3_500L
                   activeBannerMessage = null
                   lastObservedShuffleState = newShuffleState
-                  c?.let { VnFpsPref.saveRememberedShuffleState(it, newShuffleState) }
+                  VnFpsPref.saveShuffleStateAtomic(c, newShuffleState)
               }
 
               fun onSmartShuffleActivated(isSmart: Boolean) {
                   smartShuffleActive = isSmart
                   if (isSmart) userOverrideUntilPlayerClose = true
-                  else userOverrideUntilPlayerClose = false
+                  else if (userWantsShuffle && !manualShuffleOffByUser) userOverrideUntilPlayerClose = false
               }
 
               fun onPlayerClosed() {
                   lastObservedShuffleState = null
-                  pendingUserTarget = if (VnFpsPref.keepShuffleEnabled) userWantsShuffle else null
-                  pendingUserTargetUntilMs = if (pendingUserTarget != null) SystemClock.elapsedRealtime() + 3_500L else 0L
-                  userOverrideUntilPlayerClose = false
+                  val keepActive = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
+                  pendingUserTarget = if (keepActive) true else null
+                  pendingUserTargetUntilMs = if (keepActive) SystemClock.elapsedRealtime() + 3_500L else 0L
+                  userOverrideUntilPlayerClose = !keepActive
                   smartShuffleActive = false
               }
 
               fun shouldRestorePlayerState(currentState: Boolean): Boolean {
                   return VnFpsPref.keepShuffleEnabled &&
+                      !manualShuffleOffByUser &&
+                      userWantsShuffle &&
+                      !currentState &&
                       !smartShuffleActive &&
                       !userOverrideUntilPlayerClose &&
-                      currentState != userWantsShuffle &&
                       (SystemClock.elapsedRealtime() - lastUserTapMs) > 2_500L
               }
 
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
-                  if (!VnFpsPref.keepShuffleEnabled || smartShuffleActive || userOverrideUntilPlayerClose) return
+                  if (!VnFpsPref.keepShuffleEnabled || manualShuffleOffByUser || !userWantsShuffle || smartShuffleActive || userOverrideUntilPlayerClose) return
                   val now = SystemClock.elapsedRealtime()
                   if (pendingUserTarget != null && now <= pendingUserTargetUntilMs) return
                   if ((now - lastUserTapMs) in 0L..2_500L) return
@@ -1402,14 +1540,14 @@ jobs:
                           it.parameterCount == 1 && (it.name == "setShuffleModeEnabled" || it.name == "setShuffleEnabled")
                       }
                       val currentVal = getter?.invoke(playerObj) as? Boolean
-                      if (currentVal != null && currentVal != userWantsShuffle && setter != null) {
-                          setter.invoke(playerObj, userWantsShuffle)
-                          lastKnownShuffleOn = userWantsShuffle
-                          pendingUserTarget = userWantsShuffle
+                      if (currentVal == false && setter != null) {
+                          setter.invoke(playerObj, true)
+                          lastKnownShuffleOn = true
+                          pendingUserTarget = true
                           pendingUserTargetUntilMs = now + 3_500L
                           if (now - lastReenableMs > 1_800L) {
                               lastReenableMs = now
-                              activeBannerMessage = "Επαναφέρθηκε η τελευταία χειροκίνητη επιλογή Shuffle"
+                              activeBannerMessage = "Επαναφέρθηκε η Τυχαία Σειρά (έκλεισε αυτόματα)"
                           }
                       }
                   }
@@ -1455,22 +1593,37 @@ jobs:
                       pendingUserTargetUntilMs = 0L
                   }
 
+                  val prevObserved = lastObservedShuffleState
                   lastObservedShuffleState = isShuffleOn
-                  if (isShuffleOn == userWantsShuffle) {
-                      lastKnownShuffleOn = isShuffleOn
+
+                  if (manualShuffleOffByUser || !userWantsShuffle) {
+                      if (prevObserved == false && isShuffleOn && (now - lastUserTapMs) in 0L..2_500L) {
+                          manualShuffleOffByUser = false
+                          userOverrideUntilPlayerClose = false
+                          userWantsShuffle = true
+                          lastKnownShuffleOn = true
+                          VnFpsPref.saveShuffleStateAtomic(c, true)
+                      } else {
+                          lastKnownShuffleOn = isShuffleOn
+                      }
                       return
                   }
 
-                  // Ignore transient state changes immediately caused by a user's tap.
+                  if (isShuffleOn) {
+                      lastKnownShuffleOn = true
+                      return
+                  }
+
+                  // Ignore state changes immediately caused by a user's tap.
                   if ((now - lastUserTapMs) in 0L..2_500L) return
 
-                  // The player changed the state on its own: restore the last manual choice.
+                  // The player turned Shuffle OFF on its own while the user had it ON: restore it.
                   if (now - lastReenableMs > 1_000L) {
                       lastReenableMs = now
-                      pendingUserTarget = userWantsShuffle
+                      pendingUserTarget = true
                       pendingUserTargetUntilMs = now + 3_500L
                       reEnableWithoutBreakingQueue()
-                      activeBannerMessage = "Επαναφέρθηκε η τελευταία χειροκίνητη επιλογή Shuffle"
+                      activeBannerMessage = "Επαναφέρθηκε η Τυχαία Σειρά (έκλεισε αυτόματα)"
                   }
               }
           }
@@ -2220,7 +2373,7 @@ jobs:
               VnSectionBlock(sectionTitle = "VNERA · ΑΝΑΠΑΡΑΓΩΓΗ", modifier = modifier) {
                   VnNativeSwitchRow(
                       title = "Διατήρηση Τυχαίας Σειράς",
-                      subtitle = "Θυμάται την τελευταία χειροκίνητη επιλογή ON ή OFF και την επαναφέρει μόνο αν την αλλάξει αυτόματα ο player",
+                      subtitle = "Επαναφέρει αυτόματα τη Τυχαία Σειρά αν την κλείσει μόνος του ο player, χωρίς να επεμβαίνει όταν την κλείνεις εσύ",
                       checked = VnFpsPref.keepShuffleEnabled,
                       onCheckedChange = { VnFpsPref.updateKeepShuffle(c, it) }
                   )
@@ -2543,7 +2696,7 @@ jobs:
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.2.8"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.2.9"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -3232,7 +3385,7 @@ jobs:
                       )
                       src_shuffle = src_shuffle[:m_shuffle_fn.end()] + guard + src_shuffle[m_shuffle_fn.end():]
                       src_shuffle, n_shuffle_cb = re.subn(
-                          r'onToggleShuffle\s*=\s*actions\.toggleShuffle\s*,',
+                          r'onToggleShuffle\s*=\s*(?:actions\.toggleShuffle|\{\s*actions\.toggleShuffle\(\)\s*\})\s*,',
                           'onToggleShuffle = {\n            com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!state.shuffle, vnShuffleContext)\n            actions.toggleShuffle()\n        },',
                           src_shuffle,
                           count=1,
@@ -3244,6 +3397,19 @@ jobs:
               if src_shuffle != old_shuffle:
                   immersive_player.write_text(src_shuffle)
                   print("Patched shuffle persistence in ImmersivePlayer PlayerControlsBlock")
+
+          for shuffle_ui_kt in sorted(Path("app/src/main/java").rglob("*.kt")):
+              if shuffle_ui_kt.name in ("VnFrameRateManager.kt", "ImmersivePlayer.kt"):
+                  continue
+              st_ui = shuffle_ui_kt.read_text()
+              if "onUserExplicitShuffleToggle" not in st_ui and re.search(r'onToggleShuffle\s*=\s*(?:actions\.toggleShuffle|\{\s*actions\.toggleShuffle\(\)\s*\})', st_ui):
+                  st_ui_new, n_ui_shuf = re.subn(
+                      r'onToggleShuffle\s*=\s*(?:actions\.toggleShuffle|\{\s*actions\.toggleShuffle\(\)\s*\})',
+                      'onToggleShuffle = { com.music.spotui.ui.screens.VnShuffleGuard.onUserExplicitShuffleToggle(!state.shuffle, com.music.spotui.ui.screens.VnFpsPref.resolveAppContext()); actions.toggleShuffle() }',
+                      st_ui
+                  )
+                  if n_ui_shuf > 0:
+                      shuffle_ui_kt.write_text(st_ui_new)
 
           extra_c = ", ".join(f"Color(0xFF{c})" for c in ["E53935","FF5722","FF9800","FFC107","00BFA5","00BCD4","3F51B5","7C4DFF","E040FB","FF4081","64FFDA","FFAB91","B388FF","ECEFF1"])
           for kf in sorted(Path("app/src/main/java").rglob("*.kt")):
@@ -3803,7 +3969,7 @@ jobs:
                       if re.search(r'\b[A-Za-z0-9_]+\.toString\(\s*(?:2|4)\s*\)', bt):
                           bt = re.sub(r'\b([A-Za-z0-9_]+\.toString\(\s*(?:2|4)\s*\))', rf'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, \1)', bt, count=1)
                       else:
-                          m_json = re.search(r'\b([A-Za-z0-9_]*(?:json|backup|export)[A-Za-z0-9_]*\.toString\(\s*\))', bt, re.I)
+                          m_json = re.search(r'\b([A-Za-z0-9_]*(?:json|backup|export|root|obj|payload)[A-Za-z0-9_]*\.toString\(\s*\))', bt, re.I)
                           if m_json:
                               bt = bt[:m_json.start()] + f'com.music.spotui.ui.screens.VnFpsPref.enrichBackupJson({cv}, {m_json.group(1)})' + bt[m_json.end():]
 
@@ -3854,12 +4020,12 @@ jobs:
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.2.8" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.2.9" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.2.8-Debug
+          name: VNEra-2.2.9-Debug
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
