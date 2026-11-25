@@ -1410,11 +1410,13 @@ jobs:
                   val effective = if (manualOff) false else remembered
                   userWantsShuffle = effective
                   lastKnownShuffleOn = effective
+                  // Rebuild the startup restore permission from the persisted user choice.
+                  // If the user last left shuffle ON, allow the player to restore it after restart.
+                  userOverrideUntilPlayerClose = manualOff
                   if (!prefsInitialized) {
                       prefsInitialized = true
                       lastObservedShuffleState = null
                       smartShuffleActive = false
-                      userOverrideUntilPlayerClose = manualOff
                   }
               }
 
@@ -1485,6 +1487,11 @@ jobs:
                   userTogglePendingUntilMs = 0L
                   pendingAutoRestoreUntilMs = 0L
                   val keepActive = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
+                  // Persist the user's last ON choice when the player screen/app is closed.
+                  // This is what lets startup restoration survive a full app restart.
+                  if (keepActive) {
+                      VnFpsPref.saveShuffleStateAtomic(VnFpsPref.resolveAppContext(), true)
+                  }
                   userOverrideUntilPlayerClose = !keepActive
                   smartShuffleActive = false
               }
