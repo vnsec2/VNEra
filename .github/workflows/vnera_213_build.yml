@@ -688,71 +688,47 @@ jobs:
               }
 
               fun enrichBackupJson(c: Context, jsonStr: String): String = try {
-                  // Export only the explicitly allow-listed VNEra preferences.
-                  // Never pass the app's unrelated preferences into the backup file.
-                  JSONObject().put("__vnera_all_prefs__", exportAllPrefsJson(c)).toString()
-              } catch (_: Exception) { throw IllegalArgumentException("VNEra settings export failed") }
+                  val baseObj = JSONObject(jsonStr)
+                  pruneBackupJsonInPlace(baseObj)
+                  baseObj.put("__vnera_all_prefs__", exportAllPrefsJson(c))
+                  baseObj.toString()
+              } catch (_: Exception) { jsonStr }
 
-              private fun restoreBackupEntry(ed: SharedPreferences.Editor, key: String, item: JSONObject) {
-                  val value = item.opt("v")
-                  when (key) {
-                      KEY_TARGET_FPS, KEY_ANIM_MODE -> {
-                          if (item.optString("t") == "i" && value is Number) {
-                              val raw = value.toInt()
-                              if (key == KEY_TARGET_FPS) ed.putInt(key, if (raw in 0..240) raw else 0)
-                              else ed.putInt(key, raw.coerceIn(1, 3))
-                          }
-                      }
-                      KEY_CUSTOM_COLOR, KEY_LYRICS_COLOR, KEY_PLAYER_KARAOKE_BG_COLOR -> {
-                          if (item.optString("t") == "l" && value is Number) ed.putLong(key, value.toLong())
-                      }
-                      KEY_LYRICS_FONT_SCALE, KEY_PLAYER_LYRICS_FONT_SCALE -> {
-                          if (item.optString("t") == "f" && value is Number) {
-                              val raw = value.toDouble().toFloat()
-                              if (raw.isFinite()) {
-                                  val min = if (key == KEY_LYRICS_FONT_SCALE) 0.70f else 0.60f
-                                  val max = if (key == KEY_LYRICS_FONT_SCALE) 1.70f else 1.60f
-                                  ed.putFloat(key, raw.coerceIn(min, max))
+              fun importAndParseBackupJson(c: Context, rawText: String): JSONObject {
+                  val root: JSONObject
+                  try {
+                      root = JSONObject(rawText)
+                      val allPrefs = root.optJSONObject("__vnera_all_prefs__")
+                      val entries = allPrefs?.optJSONObject(PREFS_NAME)
+                      val ed = prefs(c).edit()
+                      ed.remove(KEY_REMEMBER_SHUFFLE)
+                      ed.remove(KEY_LAST_BACKUP_JSON)
+                      ed.remove(KEY_LAST_BACKUP_EXTENSIONS)
+                      ed.remove(KEY_RESTORED_EXTENSIONS)
+                      if (entries != null) {
+                          val it = entries.keys()
+                          while (it.hasNext()) {
+                              val k = it.next()
+                              if (!isVneraBackupKeyAllowed(k)) continue
+                              val item = entries.optJSONObject(k) ?: continue
+                              when (item.optString("t")) {
+                                  "b" -> ed.putBoolean(k, item.optBoolean("v"))
+                                  "i" -> ed.putInt(k, item.optInt("v"))
+                                  "l" -> ed.putLong(k, item.optLong("v"))
+                                  "f" -> ed.putFloat(k, item.optDouble("v").toFloat())
+                                  "s" -> ed.putString(k, item.optString("v"))
+                                  "set" -> item.optJSONArray("v")?.let { arr ->
+                                      ed.putStringSet(k, (0 until arr.length()).mapTo(LinkedHashSet()) { arr.optString(it) })
+                                  }
                               }
                           }
                       }
-                      KEY_LYRICS_IMMERSIVE, KEY_ANIM_ENABLED, KEY_ANIM_PAUSE_ON_PAUSE,
-                      KEY_PLAYBACK_ALERTS, KEY_KEEP_SHUFFLE, KEY_REMEMBERED_SHUFFLE_STATE,
-                      KEY_SHUFFLE_MANUAL_OFF, KEY_LYRICS_BEAUTIFUL -> {
-                          if (item.optString("t") == "b" && value is Boolean) ed.putBoolean(key, value)
-                      }
-                  }
-              }
-
-              fun importAndParseBackupJson(c: Context, rawText: String): JSONObject {
-                  try {
-                      val root = JSONObject(rawText)
-                      val allPrefs = root.optJSONObject("__vnera_all_prefs__")
-                          ?: throw IllegalArgumentException("Το αρχείο δεν περιέχει ρυθμίσεις VNEra")
-                      val entries = allPrefs.optJSONObject(PREFS_NAME)
-                          ?: throw IllegalArgumentException("Δεν βρέθηκαν ρυθμίσεις VNEra στο αρχείο")
-
-                      val ed = prefs(c).edit()
-                      val it = entries.keys()
-                      while (it.hasNext()) {
-                          val key = it.next()
-                          if (!isVneraBackupKeyAllowed(key)) continue
-                          val item = entries.optJSONObject(key) ?: continue
-                          restoreBackupEntry(ed, key, item)
-                      }
-
-                      // Commit before reloading in-memory state; apply() is asynchronous
-                      // and could otherwise leave the old shuffle flags active.
-                      if (!ed.commit()) throw IllegalStateException("Δεν αποθηκεύτηκαν οι ρυθμίσεις")
+                      ed.apply()
                       loadFromPrefs(prefs(c))
-
                       val importedManualOff = prefs(c).getBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
-                      val importedRemembered = !importedManualOff &&
-                          prefs(c).getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
+                      val importedRemembered = if (importedManualOff) false else prefs(c).getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
                       VnShuffleGuard.applyImportedManualOff(importedManualOff, importedRemembered)
-
-                      // Return an empty object so the host app's generic importer cannot
-                      // accidentally apply unrelated or sensitive preferences.
+                      pruneBackupJsonInPlace(root)
                   } catch (e: Exception) {
                       throw IllegalArgumentException("Backup import failed: ${e.message ?: e.javaClass.simpleName}", e)
                   }
@@ -761,7 +737,7 @@ jobs:
                           if (!act.isFinishing && !act.isDestroyed) act.recreate()
                       }, 750L)
                   }
-                  return JSONObject()
+                  return root
               }
 
               fun onBackupImported(c: Context, rawText: String): String =
@@ -1512,10 +1488,8 @@ jobs:
                   userTogglePending = false
                   userTogglePendingUntilMs = 0L
                   pendingAutoRestoreUntilMs = 0L
-                  // Closing/reopening the player must never clear a manual OFF choice.
-                  // Only a fresh user ON action or an imported ON preference may do that.
                   val keepActive = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
-                  userOverrideUntilPlayerClose = manualShuffleOffByUser || !keepActive
+                  userOverrideUntilPlayerClose = !keepActive
                   smartShuffleActive = false
               }
 
@@ -1525,7 +1499,6 @@ jobs:
                   if ((now - lastUserTapMs) in 0L..2_500L) return false
                   return VnFpsPref.keepShuffleEnabled &&
                       !manualShuffleOffByUser &&
-                      !userOverrideUntilPlayerClose &&
                       userWantsShuffle &&
                       !currentState &&
                       !smartShuffleActive &&
@@ -1619,16 +1592,11 @@ jobs:
                       return
                   }
 
+                  // A manual OFF is authoritative: never interpret a later player/UI
+                  // callback as permission to turn shuffle back on. Only a fresh user
+                  // toggle (handled by userTogglePending above) can clear this state.
                   if (manualShuffleOffByUser || !userWantsShuffle) {
-                      if (prevObserved == false && isShuffleOn && (now - lastUserTapMs) in 0L..2_500L) {
-                          manualShuffleOffByUser = false
-                          userOverrideUntilPlayerClose = false
-                          userWantsShuffle = true
-                          lastKnownShuffleOn = true
-                          VnFpsPref.saveShuffleStateAtomic(c, true)
-                      } else {
-                          lastKnownShuffleOn = isShuffleOn
-                      }
+                      lastKnownShuffleOn = isShuffleOn
                       return
                   }
 
