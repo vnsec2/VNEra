@@ -1393,17 +1393,13 @@ jobs:
               fun onUserPressedToggleShuffle(c: Context? = null) {
                   if (isInternalRestoring) return
                   val now = SystemClock.elapsedRealtime()
+                  // Mark only the user action here. lastKnownShuffleOn can be stale
+                  // during player recreation, so never infer the requested state from it.
                   lastUserTapMs = now
                   userTogglePending = true
                   userTogglePendingUntilMs = now + 3_500L
                   pendingAutoRestoreUntilMs = 0L
                   activeBannerMessage = null
-                  if (lastKnownShuffleOn && !smartShuffleActive) {
-                      manualShuffleOffByUser = true
-                      userWantsShuffle = false
-                      userOverrideUntilPlayerClose = true
-                      VnFpsPref.saveShuffleStateAtomic(c, false)
-                  }
               }
 
               fun syncFromPrefs(remembered: Boolean, manualOff: Boolean) {
@@ -1496,7 +1492,6 @@ jobs:
               fun shouldRestorePlayerState(currentState: Boolean): Boolean {
                   val now = SystemClock.elapsedRealtime()
                   if (userTogglePending && now <= userTogglePendingUntilMs) return false
-                  if ((now - lastUserTapMs) in 0L..2_500L) return false
                   return VnFpsPref.keepShuffleEnabled &&
                       !manualShuffleOffByUser &&
                       userWantsShuffle &&
@@ -1508,7 +1503,6 @@ jobs:
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
                   val now = SystemClock.elapsedRealtime()
                   if (userTogglePending && now <= userTogglePendingUntilMs) return
-                  if ((now - lastUserTapMs) in 0L..2_500L) return
                   if (now <= pendingAutoRestoreUntilMs) return
                   if (!VnFpsPref.keepShuffleEnabled || manualShuffleOffByUser || !userWantsShuffle || smartShuffleActive || userOverrideUntilPlayerClose) return
                   if (playerObj == null) return
@@ -1592,10 +1586,9 @@ jobs:
                       return
                   }
 
-                  // A manual OFF is authoritative: never interpret a later player/UI
-                  // callback as permission to turn shuffle back on. Only a fresh user
-                  // toggle (handled by userTogglePending above) can clear this state.
                   if (manualShuffleOffByUser || !userWantsShuffle) {
+                      // Preserve an explicit manual OFF. Only a fresh user toggle,
+                      // resolved by userTogglePending above, can change this preference.
                       lastKnownShuffleOn = isShuffleOn
                       return
                   }
@@ -1605,14 +1598,6 @@ jobs:
                       return
                   }
 
-                  if ((now - lastUserTapMs) in 0L..2_500L) {
-                      manualShuffleOffByUser = true
-                      userOverrideUntilPlayerClose = true
-                      userWantsShuffle = false
-                      lastKnownShuffleOn = false
-                      VnFpsPref.saveShuffleStateAtomic(c, false)
-                      return
-                  }
 
                   if (now - lastReenableMs > 1_200L) {
                       lastReenableMs = now
