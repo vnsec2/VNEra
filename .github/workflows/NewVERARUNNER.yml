@@ -1187,27 +1187,36 @@ jobs:
               var activeBannerMessage by mutableStateOf<String?>(null)
               var lockedOn by mutableStateOf(false)
               @Volatile var lastObservedShuffleOn = false
-              @Volatile private var pendingManualTarget: Boolean? = null
-              @Volatile private var desiredLockedOn = false
+              @Volatile private var userTogglePending = false
+              @Volatile private var userTargetState: Boolean? = null
+              @Volatile private var manualOffHold = false
               @Volatile private var autoRestoreInFlight = false
 
               fun dismissBanner() { activeBannerMessage = null }
 
               fun onUserToggleShuffle(currentlyOn: Boolean = lastObservedShuffleOn) {
-                  val targetState = !currentlyOn
-                  val shouldLock = targetState && VnFpsPref.keepShuffleEnabled
                   activeBannerMessage = null
                   autoRestoreInFlight = false
-                  pendingManualTarget = targetState
-                  desiredLockedOn = shouldLock
-                  lockedOn = shouldLock
-                  VnFpsPref.saveShuffleLock(null, shouldLock)
+                  if (!userTogglePending) {
+                      userTogglePending = true
+                      val target = !currentlyOn
+                      userTargetState = target
+                      if (!target) {
+                          lockedOn = false
+                          manualOffHold = true
+                          VnFpsPref.saveShuffleLock(null, false)
+                      } else {
+                          manualOffHold = false
+                          val shouldLock = VnFpsPref.keepShuffleEnabled
+                          lockedOn = shouldLock
+                          VnFpsPref.saveShuffleLock(null, shouldLock)
+                      }
+                  }
               }
 
               fun syncFromPrefs(savedLockedOn: Boolean) {
-                  if (pendingManualTarget == null) {
+                  if (!userTogglePending && !manualOffHold) {
                       lockedOn = savedLockedOn
-                      desiredLockedOn = savedLockedOn
                   }
               }
 
@@ -1217,12 +1226,14 @@ jobs:
                   reEnable: () -> Unit
               ) {
                   VnFpsPref.ensureInit(c)
+                  val prevObserved = lastObservedShuffleOn
                   lastObservedShuffleOn = isShuffleOn
 
                   if (!VnFpsPref.keepShuffleEnabled) {
-                      pendingManualTarget = null
+                      userTogglePending = false
+                      userTargetState = null
+                      manualOffHold = false
                       autoRestoreInFlight = false
-                      desiredLockedOn = false
                       if (lockedOn) {
                           lockedOn = false
                           VnFpsPref.saveShuffleLock(c, false)
@@ -1230,22 +1241,37 @@ jobs:
                       return
                   }
 
-                  val manualTarget = pendingManualTarget
-                  if (manualTarget != null) {
-                      if (isShuffleOn == manualTarget) {
-                          pendingManualTarget = null
-                          lockedOn = desiredLockedOn
-                          VnFpsPref.saveShuffleLock(c, desiredLockedOn)
+                  if (userTogglePending) {
+                      if (isShuffleOn != prevObserved || isShuffleOn == userTargetState) {
+                          userTogglePending = false
+                          userTargetState = null
+                          if (isShuffleOn) {
+                              manualOffHold = false
+                              lockedOn = true
+                              VnFpsPref.saveShuffleLock(c, true)
+                          } else {
+                              lockedOn = false
+                              manualOffHold = true
+                              VnFpsPref.saveShuffleLock(c, false)
+                          }
                       }
                       return
                   }
 
                   if (isShuffleOn) {
+                      manualOffHold = false
                       autoRestoreInFlight = false
                       if (!lockedOn) {
                           lockedOn = true
-                          desiredLockedOn = true
                           VnFpsPref.saveShuffleLock(c, true)
+                      }
+                      return
+                  }
+
+                  if (manualOffHold) {
+                      if (lockedOn) {
+                          lockedOn = false
+                          VnFpsPref.saveShuffleLock(c, false)
                       }
                       return
                   }
@@ -2984,49 +3010,128 @@ jobs:
               pc_file.write_text(pc_new)
               print("Patched exact Shuffle PillSegment in PlayerControls.kt")
 
-          shuffle_hook_count = 0
+          def inject_all_shuffle_hooks(src: str) -> tuple[str, int]:
+              count = 0
+              out = src
+
+              # 1. Direct function identifier pass: onClick = onToggleShuffle / onClick = onShuffle
+              out, n1 = re.subn(
+                  r'(\bonClick\s*=\s*)(onToggleShuffle|onShuffle)\b(?!\s*\()',
+                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); \2() }',
+                  out
+              )
+              count += n1
+
+              # 2. Method/property references: onClick = foo::toggleShuffle or foo.toggleShuffle
+              out, n2 = re.subn(
+                  r'(\b(?:onClick|onToggleShuffle|onShuffle)\s*=\s*)([A-Za-z0-9_.]+)(?:::|\.)(toggleShuffle|onToggleShuffle|shuffleQueue|toggleQueueShuffle)\b(?!\s*\()',
+                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); \2.\3() }',
+                  out
+              )
+              count += n2
+
+              # 3. Lambda bodies (multiline + nested-brace safe) calling any shuffle action
+              lines = out.splitlines(keepends=True)
+              i = 0
+              while i < len(lines):
+                  m_lam = re.search(r'(\b(?:onClick|onToggleShuffle|onShuffle|clickable)\s*(?:=\s*)?\{)', lines[i])
+                  if m_lam:
+                      start_col = m_lam.end(1) - 1
+                      b_depth = 0
+                      end_li = None
+                      for j in range(i, min(len(lines), i + 25)):
+                          s_clean = strip_line_strings_and_comments(lines[j])
+                          c0 = start_col if j == i else 0
+                          for ch in s_clean[c0:]:
+                              if ch == '{':
+                                  b_depth += 1
+                              elif ch == '}':
+                                  b_depth -= 1
+                                  if b_depth == 0:
+                                      end_li = j
+                                      break
+                          if end_li is not None:
+                              break
+                      if end_li is not None:
+                          lam_body = "".join(lines[i:end_li + 1])
+                          if (
+                              "VnShuffleGuard" not in lam_body
+                              and re.search(r'\b(?:toggleShuffle|onToggleShuffle|onShuffle|shuffleQueue|setShuffle|toggleQueueShuffle)\s*\(', lam_body)
+                          ):
+                              pos = m_lam.end(1)
+                              lines[i] = lines[i][:pos] + " com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();" + lines[i][pos:]
+                              count += 1
+                              i = end_li + 1
+                              continue
+                  i += 1
+              out = "".join(lines)
+
+              # 4. Any button/clickable block rendering Icons.*.Shuffle or ShuffleOn (catches Queue header button)
+              lines = out.splitlines(keepends=True)
+              for idx, line in enumerate(lines):
+                  if re.search(r'\bIcons\.[A-Za-z0-9_]+\.Shuffle(?:On)?\b', line):
+                      hooked_this_icon = False
+                      for back in range(idx, max(-1, idx - 19), -1):
+                          win = "".join(lines[back:idx + 1])
+                          if "VnShuffleGuard" in win:
+                              hooked_this_icon = True
+                              break
+                          m_btn = re.search(r'(\b(?:onClick|clickable)\s*(?:=\s*)?\{)', lines[back])
+                          if m_btn and win.count("IconButton") <= 1 and win.count("Surface") <= 1:
+                              pos = m_btn.end(1)
+                              lines[back] = lines[back][:pos] + " com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();" + lines[back][pos:]
+                              count += 1
+                              hooked_this_icon = True
+                              break
+                          m_ref = re.search(r'(\bonClick\s*=\s*)([A-Za-z0-9_.]+)\b(?!\s*[\(\{])', lines[back])
+                          if m_ref and m_ref.group(2) not in ("true", "false", "null"):
+                              fn_ref = m_ref.group(2)
+                              lines[back] = lines[back][:m_ref.start()] + f"onClick = {{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); {fn_ref}() }}" + lines[back][m_ref.end():]
+                              count += 1
+                              hooked_this_icon = True
+                              break
+                      if not hooked_this_icon:
+                          for fwd in range(idx + 1, min(len(lines), idx + 12)):
+                              win_f = "".join(lines[idx:fwd + 1])
+                              if "VnShuffleGuard" in win_f:
+                                  break
+                              m_fbtn = re.search(r'(\bonClick\s*=\s*\{)', lines[fwd])
+                              if m_fbtn:
+                                  pos = m_fbtn.end(1)
+                                  lines[fwd] = lines[fwd][:pos] + " com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();" + lines[fwd][pos:]
+                                  count += 1
+                                  break
+                              m_fref = re.search(r'(\bonClick\s*=\s*)([A-Za-z0-9_.]+)\b(?!\s*[\(\{])', lines[fwd])
+                              if m_fref and m_fref.group(2) not in ("true", "false", "null"):
+                                  fn_ref = m_fref.group(2)
+                                  lines[fwd] = lines[fwd][:m_fref.start()] + f"onClick = {{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); {fn_ref}() }}" + lines[fwd][m_fref.end():]
+                                  count += 1
+                                  break
+              out = "".join(lines)
+
+              # 5. ViewModel / Controller toggleShuffle functions
+              out, n5 = re.subn(
+                  r'(?m)^([ \t]*(?:override\s+)?fun\s+(?:toggleShuffle|toggleQueueShuffle)\s*\([^)]*\)\s*(?::\s*[A-Za-z0-9_<>?]+\s*)?\{)',
+                  r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle()',
+                  out
+              )
+              count += n5
+
+              return out, count
+
+          shuffle_hook_files = 0
+          shuffle_hook_total = 0
           for kt_sh in sorted(Path("app/src/main/java").rglob("*.kt")):
               if kt_sh.name in ("VnFrameRateManager.kt", "PlayerControls.kt"):
                   continue
               sh_src = kt_sh.read_text()
-              sh_new = sh_src
-
-              sh_new = re.sub(
-                  r'(?m)^([ \t]*(?:override\s+)?fun\s+toggleShuffle\s*\(\s*\)\s*\{)',
-                  r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle()',
-                  sh_new
-              )
-              sh_new = re.sub(
-                  r'(\btoggleShuffle\s*=\s*\{)(?![^\n]*VnShuffleGuard)',
-                  r'\1 com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();',
-                  sh_new
-              )
-              sh_new = re.sub(
-                  r'(\b(?:onClick|onToggleShuffle)\s*=\s*)([A-Za-z0-9_.]+)::toggleShuffle\b',
-                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); \2.toggleShuffle() }',
-                  sh_new
-              )
-              sh_new = re.sub(
-                  r'(\b(?:onClick|onToggleShuffle)\s*=\s*)([A-Za-z0-9_.]+)\.toggleShuffle(?!\s*\()',
-                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); \2.toggleShuffle() }',
-                  sh_new
-              )
-              sh_new = re.sub(
-                  r'(\b(?:onClick|onToggleShuffle)\s*=\s*\{)(?![^}]*VnShuffleGuard)([^}]*\btoggleShuffle\s*\(\s*\))',
-                  r'\1 com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();\2',
-                  sh_new
-              )
-              sh_new = re.sub(
-                  r'(\b(?:onClick|onShuffle)\s*=\s*\{)(?![^}]*VnShuffleGuard)([^}]*\b(?:onShuffle|shuffleQueue)\s*\(\s*\))',
-                  r'\1 com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();\2',
-                  sh_new
-              )
-
-              if sh_new != sh_src:
+              sh_new, n_hooks = inject_all_shuffle_hooks(sh_src)
+              if n_hooks > 0 and sh_new != sh_src:
                   kt_sh.write_text(sh_new)
-                  shuffle_hook_count += 1
-                  print(f"Patched all Shuffle triggers in {kt_sh}")
-          print(f"Total files hooked for all Shuffle buttons (including Queue header): {shuffle_hook_count}")
+                  shuffle_hook_files += 1
+                  shuffle_hook_total += n_hooks
+                  print(f"Patched {n_hooks} Shuffle trigger(s) in {kt_sh}")
+          print(f"Total Shuffle hooks applied across other files: {shuffle_hook_total} in {shuffle_hook_files} file(s)")
 
           immersive_player = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if immersive_player.exists():
