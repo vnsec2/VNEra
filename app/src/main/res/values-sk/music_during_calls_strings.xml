@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Hudba počas hovorov</string>
+    <string name="music_during_calls_detail">Prehrávanie pokračuje, ak to Android umožňuje. Hovory môžu prehrávanie napriek tomu pozastaviť alebo stlmiť.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">پاک کردن رسانهٔ موقت در نشست بعدی</string>
+    <string name="settings_storage_clear_on_start_detail">به‌طور پیش‌فرض خاموش است. دانلودها حفظ می‌شوند.</string>
+</resources>

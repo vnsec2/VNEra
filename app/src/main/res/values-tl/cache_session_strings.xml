@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Burahin ang pansamantalang media sa susunod na session</string>
+    <string name="settings_storage_clear_on_start_detail">Naka-off bilang default. Pinapanatili ang mga download.</string>
+</resources>

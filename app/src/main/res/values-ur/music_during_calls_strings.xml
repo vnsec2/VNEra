@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">کال کے دوران موسیقی</string>
+    <string name="music_during_calls_detail">اگر Android اجازت دے تو موسیقی چلتی رہے گی۔ پھر بھی کال کی وجہ سے موسیقی رک سکتی ہے یا اس کی آواز بند ہو سکتی ہے۔</string>
+</resources>

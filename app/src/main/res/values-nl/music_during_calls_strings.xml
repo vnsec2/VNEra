@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Muziek tijdens gesprekken</string>
+    <string name="music_during_calls_detail">Het afspelen gaat door als Android dit toestaat. Gesprekken kunnen het afspelen alsnog pauzeren of het geluid dempen.</string>
+</resources>

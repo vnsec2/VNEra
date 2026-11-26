@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Aramalar sırasında müzik</string>
+    <string name="music_during_calls_detail">Android izin verdiğinde müzik çalmaya devam eder. Aramalar yine de müziği duraklatabilir veya sessize alabilir.</string>
+</resources>

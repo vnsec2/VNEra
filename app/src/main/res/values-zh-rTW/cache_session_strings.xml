@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">新工作階段時清除暫存媒體</string>
+    <string name="settings_storage_clear_on_start_detail">預設關閉。保留已下載檔案。</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Очищать временное медиа при новом сеансе</string>
+    <string name="settings_storage_clear_on_start_detail">По умолчанию выключено. Скачанные файлы сохраняются.</string>
+</resources>

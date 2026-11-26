@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">अगले सत्र में अस्थायी मीडिया साफ़ करें</string>
+    <string name="settings_storage_clear_on_start_detail">डिफ़ॉल्ट रूप से बंद। डाउनलोड सुरक्षित रहते हैं।</string>
+</resources>

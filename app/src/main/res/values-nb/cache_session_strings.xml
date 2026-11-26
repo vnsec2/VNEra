@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Tøm midlertidige medier ved neste økt</string>
+    <string name="settings_storage_clear_on_start_detail">Av som standard. Nedlastinger beholdes.</string>
+</resources>

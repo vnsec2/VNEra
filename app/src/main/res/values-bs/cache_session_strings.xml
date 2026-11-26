@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Očisti privremene medije u sljedećoj sesiji</string>
+    <string name="settings_storage_clear_on_start_detail">Podrazumijevano isključeno. Preuzimanja se čuvaju.</string>
+</resources>

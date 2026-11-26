@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Garbitu aldi baterako multimedia hurrengo saioan</string>
+    <string name="settings_storage_clear_on_start_detail">Lehenespenez desaktibatuta. Deskargak mantentzen dira.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Borrar medios temporales en la próxima sesión</string>
+    <string name="settings_storage_clear_on_start_detail">Desactivado de forma predeterminada. Se conservan las descargas.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Sonraki oturumda geçici medyayı temizle</string>
+    <string name="settings_storage_clear_on_start_detail">Varsayılan olarak kapalıdır. İndirilenler korunur.</string>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Muzika skambučių metu</string>
+    <string name="music_during_calls_detail">Atkūrimas tęsiamas, kai „Android“ tai leidžia. Skambučiai vis tiek gali pristabdyti atkūrimą arba nutildyti garsą.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">اگلے سیشن وچ عارضی میڈیا صاف کرو</string>
+    <string name="settings_storage_clear_on_start_detail">پہلاں توں بند اے۔ ڈاؤن لوڈ محفوظ رہندے نیں۔</string>
+</resources>
