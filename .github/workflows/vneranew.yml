@@ -976,6 +976,11 @@ jobs:
           fun vnApplyLyricOffset(posMs: Int): Int =
               if (posMs <= 0) posMs else (posMs + VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0)
 
+          fun vnApplyLyricOffset(provider: () -> Long): () -> Long = {
+              val raw = provider()
+              if (raw <= 0L) raw else (raw + VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L)
+          }
+
           fun vnCaptureLyricText(rawText: String, isActive: Boolean = true): String {
               VnFpsPref.captureLyricLine(rawText, isActive = isActive)
               return rawText
@@ -2860,17 +2865,38 @@ jobs:
                   r'com.music.spotui.ui.screens.vnApplyLyricOffset(\1)',
                   src
               )
-              # 2) Wrap local `val position = ...` or `val position by ...`
+              # 2) Wrap local `val position = ...` or `val position by ...` (supporting single-line & multi-line { ... } lambdas)
               lines = src.splitlines(keepends=True)
               out = []
               pos_names = r'(?:positionMs|currentPositionMs|currentPosition|position|currentTimeMs|elapsedMs)'
-              for ln in lines:
-                  m_eq = re.match(rf'^(\s*val\s+{pos_names}\s*(?::\s*(?:Long|Int)\s*)?=\s*)(.+)$', ln)
-                  if m_eq and "vnApplyLyricOffset" not in ln and "by " not in m_eq.group(1):
-                      rhs = m_eq.group(2).rstrip('\r\n')
-                      eol = ln[len(ln.rstrip('\r\n')):]
-                      out.append(f"{m_eq.group(1)}com.music.spotui.ui.screens.vnApplyLyricOffset({rhs}){eol}")
-                      continue
+              type_annot = r'(?::\s*(?:Long|Int|\(\s*\)\s*->\s*Long)\s*)?'
+              i = 0
+              while i < len(lines):
+                  ln = lines[i]
+                  m_eq = re.match(rf'^(\s*val\s+{pos_names}\s*{type_annot}=\s*)(.+)$', ln, re.DOTALL)
+                  if m_eq and "by " not in m_eq.group(1):
+                      lhs = m_eq.group(1)
+                      rhs_first = m_eq.group(2)
+                      cl0 = strip_line_strings_and_comments(rhs_first)
+                      dp = cl0.count("(") - cl0.count(")")
+                      db = cl0.count("{") - cl0.count("}")
+                      dc = cl0.count("[") - cl0.count("]")
+                      end_i = i
+                      while (dp > 0 or db > 0 or dc > 0) and end_i + 1 < len(lines):
+                          end_i += 1
+                          cln = strip_line_strings_and_comments(lines[end_i])
+                          dp += cln.count("(") - cln.count(")")
+                          db += cln.count("{") - cln.count("}")
+                          dc += cln.count("[") - cln.count("]")
+                      while end_i + 1 < len(lines) and lines[end_i + 1].lstrip().startswith((".", "?.", "?:")):
+                          end_i += 1
+                      full_rhs = rhs_first if end_i == i else (rhs_first + "".join(lines[i + 1:end_i + 1]))
+                      if "vnApplyLyricOffset" not in full_rhs and not re.search(r'\b(?:Offset|IntOffset|Dp|Alignment|Arrangement|Modifier|Color)\b', full_rhs):
+                          stripped_rhs = full_rhs.rstrip("\r\n")
+                          eol = full_rhs[len(stripped_rhs):]
+                          out.append(f"{lhs}com.music.spotui.ui.screens.vnApplyLyricOffset({stripped_rhs}){eol}")
+                          i = end_i + 1
+                          continue
                   m_by = re.match(rf'^(\s*)val\s+({pos_names})\s+by\s+(.+)$', ln)
                   if m_by and "vnApplyLyricOffset" not in ln:
                       ind, vname, del_expr = m_by.group(1), m_by.group(2), m_by.group(3).rstrip('\r\n')
@@ -2878,10 +2904,12 @@ jobs:
                       raw_v = f"vnRaw_{vname}"
                       out.append(f"{ind}val {raw_v} by {del_expr}{eol}")
                       out.append(f"{ind}val {vname} = com.music.spotui.ui.screens.vnApplyLyricOffset({raw_v}){eol}")
+                      i += 1
                       continue
                   out.append(ln)
+                  i += 1
               res = "".join(out)
-              # 3) If a composable takes position: Long / currentPosition: Long as a parameter, shadow it at top of body
+              # 3) Fallback only if no hook matched yet: shadow parameter in top-level composable
               if "vnApplyLyricOffset" not in res:
                   lines2 = res.splitlines(keepends=True)
                   for idx, l in enumerate(lines2):
@@ -2895,7 +2923,7 @@ jobs:
                                   break
                           if se is not None:
                               sig = "".join(lines2[idx:se + 1])
-                              m_p = re.search(rf'\b({pos_names})\s*:\s*(?:Long|Int)\b', sig)
+                              m_p = re.search(rf'\b({pos_names})\s*:\s*(?:Long|Int|\(\s*\)\s*->\s*Long)\b', sig)
                               if m_p:
                                   pname = m_p.group(1)
                                   d = 0; be = se
