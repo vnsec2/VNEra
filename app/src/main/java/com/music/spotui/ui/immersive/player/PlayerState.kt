@@ -143,6 +143,22 @@ internal class PlayerVolume(
     fun release() {
         dragging = false
     }
+
+    /** One tap on the player's volume glyph; the step is a percentage of the active route. */
+    fun bump(direction: Int, percent: Int) {
+        val delta = percent.coerceIn(1, 20) / 100f * direction.coerceIn(-1, 1)
+        val target = (read() + delta).coerceIn(0f, 1f)
+        if (remote) {
+            com.music.spotui.di.SongPlayer.setRemoteVolume((target * 100).roundToInt().coerceIn(0, 100))
+        } else {
+            audio.setStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                (target * max).roundToInt().coerceIn(0, max),
+                0,
+            )
+        }
+        scope.launch { level.animateTo(target, tween(durationMillis = 160, easing = FastOutSlowInEasing)) }
+    }
 }
 
 /** The system music volume as a bar value, following the hardware keys and the system panel. */

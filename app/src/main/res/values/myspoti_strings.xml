@@ -747,11 +747,12 @@
     <string name="settings_automix_length_short">Short</string>
     <string name="settings_automix_length_auto">Balanced</string>
     <string name="settings_automix_length_long">Long</string>
+    <string name="settings_automix_length_very_long">Very long</string>
     <string name="settings_automix_duration">Mix duration limits</string>
     <string name="settings_automix_duration_detail">Optional overlap bounds in seconds. Minimum 0 is automatic; maximum 0 has no limit.</string>
     <string name="settings_automix_duration_min">Minimum (s)</string>
     <string name="settings_automix_duration_max">Maximum (s)</string>
-    <string name="settings_automix_duration_error">Enter 0–90 seconds and keep the minimum at or below the maximum.</string>
+    <string name="settings_automix_duration_error">Enter 0–95 seconds and keep the minimum at or below the maximum.</string>
     <string name="settings_automix_duration_apply">Apply</string>
     <string name="settings_automix_performance">Prioritise performance</string>
     <string name="settings_automix_performance_detail">Uses one analysis thread and prepares at most the current and next song. The mix algorithm stays the same.</string>
@@ -770,7 +771,7 @@
     <string name="settings_automix_style_cut">Cut on the beat</string>
     <string name="settings_automix_style_fade">Smooth fade</string>
     <string name="settings_automix_style_detail">Beat blend matches the tempos where it can, else cuts on the beat or fades. Cut on the beat switches songs on a downbeat. Smooth fade fades without touching the tempo.</string>
-    <string name="settings_automix_length_detail">Short: 4 to 8 bars. Balanced: preferably 8 to 16. Long: preferably 12 to 32, up to 90 seconds. Shorter when the music needs it.</string>
+    <string name="settings_automix_length_detail">Short: 4 to 8 bars. Balanced: preferably 8 to 16. Long: preferably 12 to 32, up to 90 seconds. Very long: up to 95 seconds. Shorter when the music needs it.</string>
     <string name="settings_automix_harmonic">Harmonic mixing</string>
     <string name="settings_automix_harmonic_detail">Songs in clashing keys get short mixes, matching keys long ones. Off, keys are ignored.</string>
     <string name="settings_automix_podcasts">Mix podcasts</string>

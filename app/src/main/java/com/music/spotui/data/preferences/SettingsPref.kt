@@ -360,6 +360,47 @@ object PlayerLyricsCardPref {
     }
 }
 
+object LyricsSwipeExpandPref {
+    private const val KEY = "lyrics_swipe_expand_fullscreen"
+    var on by androidx.compose.runtime.mutableStateOf(prefs(com.music.spotui.di.Graph.app).getBoolean(KEY, true))
+        private set
+
+    fun set(c: Context, value: Boolean) {
+        on = value
+        prefs(c).edit().putBoolean(KEY, value).apply()
+    }
+}
+
+object PlayerLyricsWrapPref {
+    private const val KEY = "player_lyrics_wrap_long_line"
+    var on by androidx.compose.runtime.mutableStateOf(prefs(com.music.spotui.di.Graph.app).getBoolean(KEY, true))
+        private set
+
+    fun set(c: Context, value: Boolean) {
+        on = value
+        prefs(c).edit().putBoolean(KEY, value).apply()
+    }
+}
+
+object PlayerVolumeButtonsPref {
+    private const val KEY_ENABLED = "player_volume_buttons_enabled"
+    private const val KEY_STEP = "player_volume_buttons_step"
+    var enabled by androidx.compose.runtime.mutableStateOf(prefs(com.music.spotui.di.Graph.app).getBoolean(KEY_ENABLED, false))
+        private set
+    var step by androidx.compose.runtime.mutableIntStateOf(prefs(com.music.spotui.di.Graph.app).getInt(KEY_STEP, 5).coerceIn(1, 20))
+        private set
+
+    fun setEnabled(c: Context, value: Boolean) {
+        enabled = value
+        prefs(c).edit().putBoolean(KEY_ENABLED, value).apply()
+    }
+
+    fun setStep(c: Context, value: Int) {
+        step = value.coerceIn(1, 20)
+        prefs(c).edit().putInt(KEY_STEP, step).apply()
+    }
+}
+
 object PlayerLyricsPreviewLinesPref {
     private const val KEY = "player_lyrics_preview_lines"
     var lines by androidx.compose.runtime.mutableIntStateOf(

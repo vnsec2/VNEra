@@ -284,7 +284,9 @@ internal fun CurrentLyricStrip(
 
 @Composable
 internal fun lyricPreviewHeight() = with(androidx.compose.ui.platform.LocalDensity.current) {
-    maxOf(28.dp, 19.sp.toDp() + 8.dp) * com.music.spotui.data.preferences.PlayerLyricsPreviewLinesPref.lines
+    val configured = com.music.spotui.data.preferences.PlayerLyricsPreviewLinesPref.lines
+    val lines = if (com.music.spotui.data.preferences.PlayerLyricsWrapPref.on) maxOf(2, configured) else configured
+    maxOf(28.dp, 19.sp.toDp() + 8.dp) * lines
 }
 
 private data class ActiveInlineLyric(
@@ -373,7 +375,9 @@ internal fun CurrentLyricLine(
             ),
         contentAlignment = Alignment.CenterStart,
     ) {
-        val previewMaxLines = com.music.spotui.data.preferences.PlayerLyricsPreviewLinesPref.lines
+        val wrapLongLine = com.music.spotui.data.preferences.PlayerLyricsWrapPref.on
+        val configuredLines = com.music.spotui.data.preferences.PlayerLyricsPreviewLinesPref.lines
+        val previewMaxLines = if (wrapLongLine) maxOf(2, configuredLines) else configuredLines
         val lyricStyle = TextStyle(fontSize = 15.sp, lineHeight = 19.sp, fontWeight = FontWeight.SemiBold)
         AnimatedContent(
             modifier = Modifier.clipToBounds(),
@@ -398,8 +402,8 @@ internal fun CurrentLyricLine(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    val multiLineWindow = previewMaxLines >= 3
-                    val showNext = (previewMaxLines == 2 && item.nextText != null) || multiLineWindow
+                    val multiLineWindow = !wrapLongLine && previewMaxLines >= 3
+                    val showNext = !wrapLongLine && ((previewMaxLines == 2 && item.nextText != null) || multiLineWindow)
                     Column(Modifier.weight(1f, fill = false)) {
                         if (multiLineWindow) {
                             Text(
@@ -927,11 +931,15 @@ internal fun VolumeRow(volume: PlayerVolume) {
         modifier = Modifier.fillMaxWidth().height(VOLUME_ROW_HEIGHT),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        val buttonsEnabled = com.music.spotui.data.preferences.PlayerVolumeButtonsPref.enabled
+        val step = com.music.spotui.data.preferences.PlayerVolumeButtonsPref.step
         Icon(
             Icons.AutoMirrored.Rounded.VolumeDown,
             contentDescription = stringResource(R.string.immersive_player_volume_down),
-            tint = LocalPlayerTint.current.copy(alpha = 0.5f),
-            modifier = Modifier.size(20.dp),
+            tint = LocalPlayerTint.current.copy(alpha = if (buttonsEnabled) 0.9f else 0.5f),
+            modifier = Modifier
+                .size(20.dp)
+                .then(if (buttonsEnabled) Modifier.clickable { Haptics.click(); volume.bump(-1, step) } else Modifier),
         )
         Spacer(Modifier.width(10.dp))
         ThinSlider(
@@ -946,8 +954,10 @@ internal fun VolumeRow(volume: PlayerVolume) {
         Icon(
             Icons.AutoMirrored.Rounded.VolumeUp,
             contentDescription = stringResource(R.string.immersive_player_volume_up),
-            tint = LocalPlayerTint.current.copy(alpha = 0.5f),
-            modifier = Modifier.size(20.dp),
+            tint = LocalPlayerTint.current.copy(alpha = if (buttonsEnabled) 0.9f else 0.5f),
+            modifier = Modifier
+                .size(20.dp)
+                .then(if (buttonsEnabled) Modifier.clickable { Haptics.click(); volume.bump(1, step) } else Modifier),
         )
     }
 }
