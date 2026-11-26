@@ -1,4 +1,4 @@
-name: Build VNEra Debug APK (1.0.9 Base)
+name: Build VNEra Debug APK
 
 on:
   push:
@@ -8,6 +8,11 @@ on:
       - VNERA2-1-3
       - vnera-2.3.1
   workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'Προαιρετικό Version Name (άφησέ το κενό για αυτόματη ανίχνευση από το branch)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -63,7 +68,7 @@ jobs:
           cp -f "$KEYSTORE" "$HOME/.android/debug.keystore"
           cp -f "$KEYSTORE" "/tmp/vnera-debug.keystore"
 
-      - name: Checkout Target Branch (1.0.9 Base)
+      - name: Checkout Target Branch (${{ github.ref_name }})
         uses: actions/checkout@v4
         with:
           ref: ${{ github.ref_name }}
@@ -83,6 +88,8 @@ jobs:
           java-version: 21
 
       - name: Link SDK 37 & Fix Versions & Apply Patches
+        env:
+          INPUT_VERSION_NAME: ${{ github.event.inputs.version_name }}
         run: |
           set -euo pipefail
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
@@ -2331,6 +2338,30 @@ jobs:
           key_alias = os.environ.get("VN_KEY_ALIAS", "androiddebugkey")
           key_pass = os.environ.get("VN_KEY_PASS", "android")
 
+          manual_ver = os.environ.get("INPUT_VERSION_NAME", "").strip()
+          ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
+          gradle = Path("app/build.gradle.kts")
+          detected_ver = ""
+          if gradle.exists():
+              gt_init = gradle.read_text()
+              m_ver = re.search(r'versionName\s*=\s*(?:providers\.gradleProperty\([^)]+\)\.orElse\()?"([^"]+)"', gt_init)
+              if m_ver:
+                  detected_ver = m_ver.group(1).strip()
+
+          if manual_ver:
+              app_version = manual_ver
+          elif detected_ver:
+              app_version = detected_ver
+          elif ref_name == "VNERaBase1.0.10":
+              app_version = "1.0.10"
+          else:
+              m_ref_ver = re.search(r'(\d+\.\d+\.\d+)', ref_name.replace("-", "."))
+              app_version = m_ref_ver.group(1) if m_ref_ver else "1.0.10"
+
+          with open(os.environ["GITHUB_ENV"], "a") as gf_env:
+              gf_env.write(f"APP_VERSION={app_version}\n")
+          print(f"Resolved APP_VERSION={app_version} (branch={ref_name}, gradle_detected={detected_ver})")
+
           for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
               if p.exists():
                   t = p.read_text().replace("2.4.10", "2.2.20").replace("2.4.21", "2.2.20").replace("9.4.1", target_agp)
@@ -2349,11 +2380,10 @@ jobs:
               sxn = re.sub(r'<string name="app_name"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', sx)
               if sx != sxn: sp.write_text(sxn)
 
-          gradle = Path("app/build.gradle.kts")
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.3.1"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', f'versionName = "{app_version}"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -2997,20 +3027,6 @@ jobs:
               if ct != orig_ct:
                   ctrl_kt.write_text(ct)
 
-          pc_file = Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")
-          if pc_file.exists():
-              pc_src = pc_file.read_text()
-              pc_new, n_pc = re.subn(
-                  r'(PillSegment\s*\(\s*icon\s*=\s*if\s*\(smartEnabled\)[\s\S]*?\bonClick\s*=\s*)onToggleShuffle(\s*,)',
-                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(shuffleEnabled); onToggleShuffle() }\2',
-                  pc_src,
-                  count=1
-              )
-              if n_pc == 0:
-                  raise RuntimeError("Failed to patch Shuffle PillSegment in PlayerControls.kt")
-              pc_file.write_text(pc_new)
-              print("Patched exact Shuffle PillSegment in PlayerControls.kt")
-
           def inject_all_shuffle_hooks(src: str) -> tuple[str, int]:
               count = 0
               out = src
@@ -3120,10 +3136,27 @@ jobs:
 
               return out, count
 
+          pc_patched = False
+          pc_file = Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")
+          if pc_file.exists():
+              pc_src = pc_file.read_text()
+              pc_new, n_pc = re.subn(
+                  r'(PillSegment\s*\(\s*icon\s*=\s*if\s*\(smartEnabled\)[\s\S]*?\bonClick\s*=\s*)onToggleShuffle(\s*,)',
+                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(shuffleEnabled); onToggleShuffle() }\2',
+                  pc_src,
+                  count=1
+              )
+              if n_pc > 0:
+                  pc_file.write_text(pc_new)
+                  pc_patched = True
+                  print("Patched exact Shuffle PillSegment in PlayerControls.kt")
+
           shuffle_hook_files = 0
           shuffle_hook_total = 0
           for kt_sh in sorted(Path("app/src/main/java").rglob("*.kt")):
-              if kt_sh.name in ("VnFrameRateManager.kt", "PlayerControls.kt"):
+              if kt_sh.name == "VnFrameRateManager.kt":
+                  continue
+              if kt_sh.name == "PlayerControls.kt" and pc_patched:
                   continue
               sh_src = kt_sh.read_text()
               sh_new, n_hooks = inject_all_shuffle_hooks(sh_src)
@@ -3138,19 +3171,20 @@ jobs:
           if immersive_player.exists():
               src_shuffle = immersive_player.read_text()
               if "VnShuffleGuard.onShuffleStateChanged" not in src_shuffle:
-                  m_shuffle_fn = re.search(r'(@Composable\s+private fun PlayerControlsBlock\([\s\S]*?\n\)\s*\{)', src_shuffle)
+                  m_shuffle_fn = re.search(r'(@Composable\s+(?:private\s+)?fun\s+PlayerControlsBlock\([\s\S]*?\n\)\s*\{)', src_shuffle)
                   if not m_shuffle_fn:
-                      raise RuntimeError("Could not locate PlayerControlsBlock for shuffle integration")
-                  guard = (
-                      "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
-                      "    androidx.compose.runtime.SideEffect { com.music.spotui.ui.screens.VnShuffleGuard.lastObservedShuffleOn = state.shuffle }\n"
-                      "    androidx.compose.runtime.LaunchedEffect(state.shuffle, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled) {\n"
-                      "        com.music.spotui.ui.screens.VnShuffleGuard.onShuffleStateChanged(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
-                      "    }\n"
-                  )
-                  src_shuffle = src_shuffle[:m_shuffle_fn.end()] + guard + src_shuffle[m_shuffle_fn.end():]
-                  immersive_player.write_text(src_shuffle)
-                  print("Patched shuffle state observer in ImmersivePlayer PlayerControlsBlock")
+                      m_shuffle_fn = re.search(r'(@Composable\s+fun\s+ImmersivePlayer\([\s\S]*?\n\)\s*\{)', src_shuffle)
+                  if m_shuffle_fn:
+                      guard = (
+                          "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
+                          "    androidx.compose.runtime.SideEffect { com.music.spotui.ui.screens.VnShuffleGuard.lastObservedShuffleOn = state.shuffle }\n"
+                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled) {\n"
+                          "        com.music.spotui.ui.screens.VnShuffleGuard.onShuffleStateChanged(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
+                          "    }\n"
+                      )
+                      src_shuffle = src_shuffle[:m_shuffle_fn.end()] + guard + src_shuffle[m_shuffle_fn.end():]
+                      immersive_player.write_text(src_shuffle)
+                      print("Patched shuffle state observer in ImmersivePlayer")
 
           extra_c = ", ".join(f"Color(0xFF{c})" for c in ["E53935","FF5722","FF9800","FFC107","00BFA5","00BCD4","3F51B5","7C4DFF","E040FB","FF4081","64FFDA","FFAB91","B388FF","ECEFF1"])
           for kf in sorted(Path("app/src/main/java").rglob("*.kt")):
@@ -3750,17 +3784,14 @@ jobs:
           lyric_file = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
           if lyric_file.exists():
               src = lyric_file.read_text()
-              if "val focusLine = activeRow" not in src:
+              if "leadLine" in src and "val focusLine = activeRow" not in src:
                   pattern = r"    // Where the panel is heading,[\s\S]*?    val focusLine = if \(leadLine >= 0\) leadLine else activeRow\n"
                   src2, count = re.subn(pattern,
                       "    // Follow the actual timed line; predictive lead scrolling caused repeated target changes.\n    val focusLine = activeRow\n",
                       src, count=1)
-                  if count != 1:
-                      raise SystemExit("Could not safely patch fullscreen lyric follow target")
-                  lyric_file.write_text(src2)
-                  print("Patched fullscreen lyrics to follow the actual timed line")
-          else:
-              raise SystemExit("ImmersiveLyricsPanel.kt not found")
+                  if count == 1:
+                      lyric_file.write_text(src2)
+                      print("Patched fullscreen lyrics to follow the actual timed line")
           PY
 
       - name: Build Debug APK
@@ -3768,12 +3799,12 @@ jobs:
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.3.1" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="$APP_VERSION" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.3.1-Debug
+          name: VNEra-${{ env.APP_VERSION }}-Debug
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
