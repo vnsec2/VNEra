@@ -1878,7 +1878,7 @@ class SpotifyPlayer(private val bridge: Bridge, private val scope: CoroutineScop
     override suspend fun pauseSlowly(fadeMs: Long) = pauseOver(fadeMs)
 
     private suspend fun pauseOver(fadeMs: Long) {
-        outside()?.let { a -> pausedByUser = true; a.pause(); return }
+        outside()?.takeIf { it.holdsPlayback }?.let { a -> pausedByUser = true; a.pause(); return }
         // A long fade is still playing: the song is only marked paused once it is.
         if (fadeMs <= PAUSE_MS) pausedByUser = true
         endCrossfade(restore = true)

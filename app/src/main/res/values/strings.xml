@@ -75,4 +75,12 @@
     <string name="queue_mood_discover" tools:ignore="MissingTranslation">Discover</string>
     <string name="queue_mood_added" tools:ignore="MissingTranslation">Added %1$d %2$s tracks to queue</string>
     <string name="queue_mood_empty" tools:ignore="MissingTranslation">No new tracks found for this mood</string>
+    <string name="rec_provider_spotify" tools:ignore="MissingTranslation">Spotify</string>
+    <string name="rec_provider_ytmusic" tools:ignore="MissingTranslation">YT Music</string>
+    <string name="rec_provider_both" tools:ignore="MissingTranslation">Both</string>
+    <string name="queue_mood_similar" tools:ignore="MissingTranslation">Similar</string>
+    <string name="queue_mood_familiar" tools:ignore="MissingTranslation">Familiar</string>
+    <string name="save_queue_include_current" tools:ignore="MissingTranslation">Include currently playing track</string>
+    <string name="save_queue_include_upcoming" tools:ignore="MissingTranslation">Include upcoming context</string>
+    <string name="save_queue_track_count" tools:ignore="MissingTranslation">%1$d tracks will be saved</string>
 </resources>

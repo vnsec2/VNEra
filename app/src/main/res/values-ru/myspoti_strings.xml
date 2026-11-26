@@ -300,6 +300,9 @@
     <!-- A25: stop the queue, keep the songs already downloaded. -->
     <string name="downloads_stop_all_title">Остановить все загрузки</string>
     <string name="downloads_stop_all_detail">Отменяет оставшееся; уже скачанные треки сохраняются</string>
+    <string name="download_notify_channel">Загрузки</string>
+    <string name="download_notify_remaining">Осталось загрузить: %1$d</string>
+    <string name="download_notify_waiting">Ожидание загрузки</string>
     <string name="removed_from">Удалено из «%1$s»</string>
     <!-- Track options inside a playlist (A11/A12). -->
     <string name="context_menu_remove_from_playlist">Удалить из этого плейлиста</string>

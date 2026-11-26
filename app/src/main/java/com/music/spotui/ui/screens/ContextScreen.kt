@@ -26,6 +26,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -943,11 +945,8 @@ private fun ContextContent(navController: NavController, vm: ContextViewModel, p
                         }
                     }
                 }
+                @OptIn(ExperimentalLayoutApi::class)
                 val actions: @Composable () -> Unit = {
-                    // Action row: save, shuffle, big green play. Each small glyph answers in a 48 dp
-                    // square (26-28 dp targets were hard to hit); the start padding and the gaps give
-                    // back the difference, so the glyphs barely move (a few dp apart where their
-                    // centres were under 48 dp apart).
                     val addFirst = p.type == "playlist" && vm.editableContext.value && !p.isBlend
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -955,80 +954,82 @@ private fun ContextContent(navController: NavController, vm: ContextViewModel, p
                             .fillMaxWidth()
                             .padding(start = if (addFirst) 10.dp else 6.dp, end = 16.dp, top = 12.dp, bottom = 8.dp)
                     ) {
-                        // Own playlist: "Add to this playlist" (search, suggestions), where the small cover was.
-                        if (addFirst) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier.size(com.music.spotui.ui.components.MinTouch).pressable(0.9f) { addingSongs = true }
-                                    .wrapContentSize().size(36.dp).clip(CircleShape).background(AppText.copy(alpha = 0.12f)),
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add_songs_title), tint = AppText, modifier = Modifier.size(24.dp))
-                            }
-                            Spacer(Modifier.width(4.dp))
-                        }
-                        // Saving is for other people's playlists: the user's own are in the library already.
-                        // An album of another provider is read only: Spotify can neither save nor download it.
-                        val onSpotify = !com.music.spotui.data.catalog.CatalogRuntime.isCatalogUri(p.uri)
-                        if (onSpotify && p.type != "liked" && !(p.type == "playlist" && ownPlaylist)) {
-                            LikeButton(liked = SongPlayer.library[p.uri] ?: contextSaved, size = 28.dp, touch = com.music.spotui.ui.components.MinTouch) { vm.toggleContextSaved(p) }
-                        }
-                        // Once per list, not at every redraw of the header (6000 songs, mapped each time).
-                        val ids = remember(p.tracks) { p.tracks.map { it.spotifyTrackId }.filter { it.isNotBlank() }.distinct() }
-                        // Songs with no matching recording count as settled: the list can still be removed.
-                        val downloadedCount = ids.count {
-                            com.music.spotui.data.offline.OfflineStore.isDownloaded(it) ||
-                                com.music.spotui.data.offline.OfflineStore.status[it] == com.music.spotui.data.offline.OfflineStatus.Unavailable
-                        }
-                        val busy = ids.any {
-                            val st = com.music.spotui.data.offline.OfflineStore.status[it]
-                            st == com.music.spotui.data.offline.OfflineStatus.Queued || st is com.music.spotui.data.offline.OfflineStatus.Downloading
-                        }
-                        // A list downloaded as a whole stays in step with Spotify (new songs in, gone songs out).
-                        val listKept = com.music.spotui.data.offline.OfflineCollections.isDownloaded(p.uri)
-                        LaunchedEffect(listKept, p.complete, p.tracks.size) { if (listKept && p.complete) com.music.spotui.data.offline.OfflineCollections.sync(p) }
-                        if (onSpotify) com.music.spotui.ui.components.DownloadListButton(downloadedCount, ids.size, busy, kept = listKept, touch = com.music.spotui.ui.components.MinTouch) {
-                            if (listKept) askRemoveDownloads = true
-                            else {
-                                com.music.spotui.ui.components.DownloadAsk.start(context) { q ->
-                                    com.music.spotui.di.Haptics.confirm()
-                                    com.music.spotui.data.offline.OfflineCollections.download(p, q)
-                                    android.widget.Toast.makeText(context, context.getString(R.string.download_notification_downloading), android.widget.Toast.LENGTH_SHORT).show()
+                        // Reserve space for playback controls when playlist actions wrap.
+                        FlowRow(modifier = Modifier.weight(1f)) {
+                            // Own playlist: "Add to this playlist" (search, suggestions), where the small cover was.
+                            if (addFirst) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.padding(end = 4.dp).size(com.music.spotui.ui.components.MinTouch)
+                                        .pressable(0.9f) { addingSongs = true }
+                                        .wrapContentSize().size(36.dp).clip(CircleShape).background(AppText.copy(alpha = 0.12f)),
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add_songs_title), tint = AppText, modifier = Modifier.size(24.dp))
                                 }
                             }
-                        }
-                        if ((p.type == "playlist" || p.type == "album") && p.uri.isNotBlank()) {
-                            Icon(
-                                androidx.compose.material.icons.Icons.Outlined.Share,
-                                stringResource(R.string.context_menu_share),
-                                tint = AppText.copy(alpha = 0.8f),
-                                modifier = Modifier
-                                    .size(com.music.spotui.ui.components.MinTouch)
-                                    .pressable(0.9f) {
-                                        com.music.spotui.ui.components.SpotifyCode.show(
-                                            com.music.spotui.ui.components.ShareTarget(p.uri, p.name, p.ownerName, p.coverUri),
-                                        )
+                            // Saving is for other people's playlists: the user's own are in the library already.
+                            // An album of another provider is read only: Spotify can neither save nor download it.
+                            val onSpotify = !com.music.spotui.data.catalog.CatalogRuntime.isCatalogUri(p.uri)
+                            if (onSpotify && p.type != "liked" && !(p.type == "playlist" && ownPlaylist)) {
+                                LikeButton(liked = SongPlayer.library[p.uri] ?: contextSaved, size = 28.dp, touch = com.music.spotui.ui.components.MinTouch) { vm.toggleContextSaved(p) }
+                            }
+                            // Once per list, not at every redraw of the header (6000 songs, mapped each time).
+                            val ids = remember(p.tracks) { p.tracks.map { it.spotifyTrackId }.filter { it.isNotBlank() }.distinct() }
+                            // Songs with no matching recording count as settled: the list can still be removed.
+                            val downloadedCount = ids.count {
+                                com.music.spotui.data.offline.OfflineStore.isDownloaded(it) ||
+                                    com.music.spotui.data.offline.OfflineStore.status[it] == com.music.spotui.data.offline.OfflineStatus.Unavailable
+                            }
+                            val busy = ids.any {
+                                val st = com.music.spotui.data.offline.OfflineStore.status[it]
+                                st == com.music.spotui.data.offline.OfflineStatus.Queued || st is com.music.spotui.data.offline.OfflineStatus.Downloading
+                            }
+                            // A list downloaded as a whole stays in step with Spotify (new songs in, gone songs out).
+                            val listKept = com.music.spotui.data.offline.OfflineCollections.isDownloaded(p.uri)
+                            LaunchedEffect(listKept, p.complete, p.tracks.size) { if (listKept && p.complete) com.music.spotui.data.offline.OfflineCollections.sync(p) }
+                            if (onSpotify) com.music.spotui.ui.components.DownloadListButton(downloadedCount, ids.size, busy, kept = listKept, touch = com.music.spotui.ui.components.MinTouch) {
+                                if (listKept) askRemoveDownloads = true
+                                else {
+                                    com.music.spotui.ui.components.DownloadAsk.start(context) { q ->
+                                        com.music.spotui.di.Haptics.confirm()
+                                        com.music.spotui.data.offline.OfflineCollections.download(p, q)
+                                        android.widget.Toast.makeText(context, context.getString(R.string.download_notification_downloading), android.widget.Toast.LENGTH_SHORT).show()
                                     }
-                                    .wrapContentSize()
-                                    .size(24.dp),
-                            )
+                                }
+                            }
+                            if ((p.type == "playlist" || p.type == "album") && p.uri.isNotBlank()) {
+                                Icon(
+                                    androidx.compose.material.icons.Icons.Outlined.Share,
+                                    stringResource(R.string.context_menu_share),
+                                    tint = AppText.copy(alpha = 0.8f),
+                                    modifier = Modifier
+                                        .size(com.music.spotui.ui.components.MinTouch)
+                                        .pressable(0.9f) {
+                                            com.music.spotui.ui.components.SpotifyCode.show(
+                                                com.music.spotui.ui.components.ShareTarget(p.uri, p.name, p.ownerName, p.coverUri),
+                                            )
+                                        }
+                                        .wrapContentSize()
+                                        .size(24.dp),
+                                )
+                            }
+                            if (p.type == "playlist" || (onSpotify && (p.type == "album" || p.type == "liked" || p.type == "liked-artist"))) {
+                                Icon(Icons.Default.MoreVert, stringResource(R.string.content_description_context_menu), tint = AppText.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(com.music.spotui.ui.components.MinTouch).pressable(0.9f) { if (p.type == "playlist") playlistMenu = true else albumMenu = true }
+                                        .wrapContentSize().size(26.dp))
+                            }
+                            // Sorting stays in reach in the header (the search field above the songs is folded).
+                            if (findable && all.isNotEmpty()) {
+                                TrackSortButton(sort) { sort = it; TrackOrder.save(ctx, p.uri, it) }
+                            }
+                            // "Move": a handle on each song, to put them in another order (again: done).
+                            if (canMove) {
+                                Icon(Icons.Default.DragHandle,
+                                    contentDescription = stringResource(if (moving) R.string.done else R.string.edit_playlist_items_move_chip),
+                                    tint = if (moving) SpotifyGreen else AppText.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(com.music.spotui.ui.components.MinTouch).pressable(0.9f) { moving = !moving }.wrapContentSize().size(26.dp))
+                            }
                         }
-                        if (p.type == "playlist" || (onSpotify && (p.type == "album" || p.type == "liked" || p.type == "liked-artist"))) {
-                            Icon(Icons.Default.MoreVert, stringResource(R.string.content_description_context_menu), tint = AppText.copy(alpha = 0.8f),
-                                modifier = Modifier.size(com.music.spotui.ui.components.MinTouch).pressable(0.9f) { if (p.type == "playlist") playlistMenu = true else albumMenu = true }
-                                    .wrapContentSize().size(26.dp))
-                        }
-                        // Sorting stays in reach in the header (the search field above the songs is folded).
-                        if (findable && all.isNotEmpty()) {
-                            TrackSortButton(sort) { sort = it; TrackOrder.save(ctx, p.uri, it) }
-                        }
-                        // "Move": a handle on each song, to put them in another order (again: done).
-                        if (canMove) {
-                            Icon(Icons.Default.DragHandle,
-                                contentDescription = stringResource(if (moving) R.string.done else R.string.edit_playlist_items_move_chip),
-                                tint = if (moving) SpotifyGreen else AppText.copy(alpha = 0.8f),
-                                modifier = Modifier.size(com.music.spotui.ui.components.MinTouch).pressable(0.9f) { moving = !moving }.wrapContentSize().size(26.dp))
-                        }
-                        Spacer(Modifier.weight(1f))
                         val smart = SmartShuffle.on.value == p.uri
                         // The glyph and its dot light up in a short fade instead of in one frame.
                         val shuffleLit = shuffle || smart

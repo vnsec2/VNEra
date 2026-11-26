@@ -25,6 +25,14 @@ dependencyResolutionManagement {
     }
 }
 
+// NewPipe v0.26.5 calls the Java 10 URLEncoder/URLDecoder Charset overloads, which do not
+// exist on Android API 32 and below. Build the GPL-licensed, source-available patch in-tree.
+includeBuild("third_party/newpipe-extractor") {
+    dependencySubstitution {
+        substitute(module("com.github.TeamNewPipe:NewPipeExtractor")).using(project(":extractor"))
+    }
+}
+
 rootProject.name = "Myspoti"
 include(":app")
 include(":api")

@@ -402,6 +402,21 @@ object ImmersiveChromePref {
     fun canvas(value: Boolean) { canvas = value; store.edit().putBoolean("player_canvas_focus", value).apply() }
 }
 
+/**
+ * The portrait Immersive player's album art: full-screen by default, or a contained square.
+ * Large and landscape windows already use the square arrangement.
+ */
+object ImmersivePlayerCoverPref {
+    private const val KEY = "immersive_player_fullscreen_cover"
+    var fullScreen by androidx.compose.runtime.mutableStateOf(prefs(com.music.spotui.di.Graph.app).getBoolean(KEY, true))
+        private set
+
+    fun set(c: Context, value: Boolean) {
+        fullScreen = value
+        prefs(c).edit().putBoolean(KEY, value).apply()
+    }
+}
+
 object PlayerSourceLinePref {
     private const val KEY = "player_source_line"
     var on by androidx.compose.runtime.mutableStateOf(prefs(com.music.spotui.di.Graph.app).getBoolean(KEY, true))

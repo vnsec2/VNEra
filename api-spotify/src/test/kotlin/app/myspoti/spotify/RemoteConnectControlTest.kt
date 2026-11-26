@@ -17,13 +17,15 @@ class RemoteConnectControlTest {
     private class FakeHost : BridgeHost {
         override val messages = MutableSharedFlow<String>(extraBufferCapacity = 64)
         val calls = CopyOnWriteArrayList<String>()
+        var pagePlaying = false
 
         override suspend fun evaluate(script: String) {
             val m = Regex("""Myspoti\.call\((\d+), "([^"]+)", (.*)\)\.catch""", RegexOption.DOT_MATCHES_ALL).find(script) ?: return
             val method = m.groupValues[2]
             calls += method
+            if (method == "player.pause") pagePlaying = false
             val value = if (method == "media.state") {
-                """{"paused":true,"muted":false,"level":1,"own":1,"time":0,"active":false}"""
+                """{"paused":${!pagePlaying},"muted":false,"level":1,"own":1,"time":0,"active":$pagePlaying}"""
             } else "null"
             messages.emit("""{"type":"result","id":${m.groupValues[1]},"ok":true,"value":$value}""")
         }
@@ -99,6 +101,19 @@ class RemoteConnectControlTest {
         assertEquals(1, host.calls.count { it == "player.seek" })
         assertEquals(1, host.calls.count { it == "player.pause" })
         assertEquals(1, host.calls.count { it == "player.resume" })
+    }
+
+    @Test
+    fun `pause stops the Web Player when native audio is enabled but does not own playback`() = time.test {
+        host.pagePlaying = true
+        readyWithTrack()
+        time.waitFor("web audio sampled", 4_000) { "media.state" in host.calls }
+        delay(20)
+
+        player.pause()
+
+        assertEquals(false, host.pagePlaying)
+        assertEquals(emptyList<String>(), audio.localCalls)
     }
 
     @Test

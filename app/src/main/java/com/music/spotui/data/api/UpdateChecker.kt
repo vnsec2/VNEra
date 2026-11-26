@@ -5,13 +5,14 @@ import app.myspoti.engine.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * New version check against the GitHub releases of [BuildConfig.UPDATE_REPO]
- * (set by the CI build; empty in local builds, which never check).
+ * Checks Forgejo releases on the direct update host.
  * Automatic checks at most once an hour (launch/resume) and every 6 h while open. The release's
  * APK is downloaded and installed in the app ([AppUpdater]).
  */
@@ -51,11 +52,11 @@ object UpdateChecker {
      * and never erases the release already known.
      */
     suspend fun check(context: Context, manual: Boolean = false): Release? = withContext(Dispatchers.IO) {
-        val repo = BuildConfig.UPDATE_REPO
+        val repo = BuildConfig.UPDATE_BASE_URL
         if (repo.isBlank()) return@withContext null
         val prefs = context.getSharedPreferences("updates", Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
-        if (now - prefs.getLong("checked_at", 0L) < INTERVAL_MS || now - prefs.getLong("tried_at", 0L) < RETRY_MS) return@withContext pending(prefs, manual)
+        if (prefs.getString("source", null) == repo && (now - prefs.getLong("checked_at", 0L) < INTERVAL_MS || now - prefs.getLong("tried_at", 0L) < RETRY_MS)) return@withContext pending(prefs, manual)
         store(prefs, fetch(repo, force = false), now)
         pending(prefs, manual)
     }
@@ -65,7 +66,7 @@ object UpdateChecker {
      * cache, and says what happened.
      */
     suspend fun refresh(context: Context): Outcome = withContext(Dispatchers.IO) {
-        val repo = BuildConfig.UPDATE_REPO
+        val repo = BuildConfig.UPDATE_BASE_URL
         if (repo.isBlank()) return@withContext Outcome.UpToDate
         val prefs = context.getSharedPreferences("updates", Context.MODE_PRIVATE)
         val result = fetch(repo, force = true)
@@ -78,6 +79,10 @@ object UpdateChecker {
 
     private fun store(prefs: android.content.SharedPreferences, result: Fetch, now: Long) {
         val e = prefs.edit()
+        if (prefs.getString("source", null) != BuildConfig.UPDATE_BASE_URL) {
+            e.remove("version").remove("url").remove("notes").remove("apk")
+                .remove("checked_at").putString("source", BuildConfig.UPDATE_BASE_URL)
+        }
         when (result) {
             // A failure keeps the last answer: "up to date" must not come from a failed request.
             is Fetch.Err -> e.putLong("tried_at", now)
@@ -94,8 +99,8 @@ object UpdateChecker {
         // Both channels read the list: the repository also carries Myspoti's releases (2.x, whose
         // "latest" is one of them), never this app's.
         val bust = if (force) "&_=${System.currentTimeMillis()}" else ""
-        val url = "https://api.github.com/repos/$repo/releases?per_page=20$bust"
-        val request = Request.Builder().url(url).header("Accept", "application/vnd.github+json")
+        val url = "$repo/api/v1/repos/carunodev/Revera/releases?limit=20$bust"
+        val request = Request.Builder().url(url).header("Accept", "application/json")
             .apply { if (force) { header("Cache-Control", "no-cache, no-store, max-age=0"); header("Pragma", "no-cache") } }.build()
         http.newCall(request).execute().use { r ->
             if (!r.isSuccessful) return@use Fetch.Err(r.code == 429 || (r.code == 403 && r.header("x-ratelimit-remaining") == "0"))
@@ -104,7 +109,7 @@ object UpdateChecker {
             // Betas and releases are two apps (different package names, one cannot update the
             // other): each one is offered its own channel only.
             // A pre-release that is not a version of the app (a test build's tag) is never offered.
-            Fetch.Ok(newest(list))
+            Fetch.Ok(newest(list, directBase = repo))
         }
     } catch (e: Exception) { Fetch.Err(false) }
 
@@ -114,11 +119,26 @@ object UpdateChecker {
      * repository also holds Myspoti's releases (2.x, numbered above this app's 1.x, with Myspoti APKs
      * this app cannot install): read as this app's, they were offered as updates opening their page.
      */
-    internal fun newest(releases: List<JSONObject>, beta: Boolean = isBeta, abis: List<String> = deviceAbis, name: String = BuildConfig.APK_NAME): Release? =
+    internal fun newest(releases: List<JSONObject>, beta: Boolean = isBeta, abis: List<String> = deviceAbis, name: String = BuildConfig.APK_NAME, directBase: String? = null): Release? =
         releases.filter { !it.optBoolean("draft") && it.optBoolean("prerelease") == beta && isVersionTag(it.optString("tag_name")) }
-            .map { Release(it.getString("tag_name").removePrefix("v"), it.getString("html_url"), cleanNotes(it.optString("body")), apkAsset(it, beta, abis, name)) }
+            .map { release ->
+                val tag = release.getString("tag_name")
+                val asset = apkAsset(release, beta, abis, name)
+                Release(tag.removePrefix("v"), release.optString("html_url"), cleanNotes(release.optString("body")),
+                    if (directBase == null) asset else directAsset(asset, tag, directBase))
+            }
             .filter { it.apkUrl.isNotEmpty() }
             .reduceOrNull { best, next -> if (isNewer(next.version, best.version)) next else best }
+
+    internal fun directAsset(asset: String, tag: String, directBase: String): String {
+        val url = asset.toHttpUrlOrNull() ?: return ""
+        val project = BuildConfig.PROJECT_URL.toHttpUrl()
+        val path = url.pathSegments
+        val expected = project.pathSegments + listOf("releases", "download", tag)
+        if (url.scheme != project.scheme || url.host != project.host || url.port != project.port ||
+            path.dropLast(1) != expected || !Regex("[A-Za-z0-9._-]+\\.apk").matches(path.last())) return ""
+        return directBase.toHttpUrl().newBuilder().encodedPath(url.encodedPath).build().toString()
+    }
 
     /** The newer release last seen, dismissed or not (no request): what Settings > About shows. */
     fun known(context: Context): Release? =
@@ -126,6 +146,7 @@ object UpdateChecker {
 
     /** The latest release known, if newer than this build and (unless [manual]) not dismissed. */
     private fun pending(prefs: android.content.SharedPreferences, manual: Boolean = false): Release? {
+        if (prefs.getString("source", null) != BuildConfig.UPDATE_BASE_URL) return null
         val version = prefs.getString("version", null) ?: return null
         val url = prefs.getString("url", null) ?: return null
         if (!manual && prefs.getString("dismissed", null) == version) return null

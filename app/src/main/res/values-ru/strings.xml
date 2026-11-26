@@ -75,4 +75,12 @@
     <string name="queue_mood_discover">Открытия</string>
     <string name="queue_mood_added">Добавлено %1$d треков (%2$s) в очередь</string>
     <string name="queue_mood_empty">Новых треков для этого настроения не найдено</string>
+    <string name="rec_provider_spotify">Spotify</string>
+    <string name="rec_provider_ytmusic">YT Music</string>
+    <string name="rec_provider_both">Оба</string>
+    <string name="queue_mood_similar">Похожие</string>
+    <string name="queue_mood_familiar">Знакомые</string>
+    <string name="save_queue_include_current">Включить текущий трек</string>
+    <string name="save_queue_include_upcoming">Включить предстоящий контекст</string>
+    <string name="save_queue_track_count">Будет сохранено треков: %1$d</string>
 </resources>

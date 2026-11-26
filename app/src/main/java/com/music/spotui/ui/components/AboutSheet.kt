@@ -35,7 +35,7 @@ import app.myspoti.engine.BuildConfig
 import app.myspoti.engine.R
 
 const val DISCORD_URL = "https://discord.gg/S5gdMChKfY"
-private val repo get() = BuildConfig.UPDATE_REPO.ifBlank { "kota-zo/myspoti" }
+
 
 private fun openUrl(context: Context, url: String) {
     runCatching {
@@ -69,7 +69,7 @@ fun AboutSheet(onDismiss: () -> Unit) {
             Text(stringResource(R.string.about_free), color = AppMuted, fontSize = 13.sp,
                 modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 8.dp))
             AboutRow(stringResource(R.string.about_discord), stringResource(R.string.about_discord_detail)) { openUrl(context, DISCORD_URL) }
-            AboutRow(stringResource(R.string.about_github), stringResource(R.string.about_github_detail)) { openUrl(context, "https://github.com/$repo") }
+            AboutRow("Forgejo", stringResource(R.string.about_github_detail)) { openUrl(context, BuildConfig.PROJECT_URL) }
             AboutRow("Origin: Myspoti (GPL-3.0)", "https://github.com/kota-zo/myspoti") { openUrl(context, "https://github.com/kota-zo/myspoti") }
         }
     }

@@ -6,6 +6,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UpdateCheckerTest {
+    @Test fun forgejoApkUsesDirectHostAndRejectsForeignPaths() {
+        val direct = "https://dl.caruno.wtf:8443"
+        val path = "/carunodev/Revera/releases/download/v1.0.8/Revera-1.0.8-ARMv8.apk"
+        assertEquals(direct + path, UpdateChecker.directAsset("https://revera.caruno.wtf$path", "v1.0.8", direct))
+        assertEquals("", UpdateChecker.directAsset("https://example.org$path", "v1.0.8", direct))
+        assertEquals("", UpdateChecker.directAsset("https://revera.caruno.wtf$path", "v1.0.9", direct))
+        assertEquals("", UpdateChecker.directAsset("https://revera.caruno.wtf${path.replace("/Revera/", "/Other/")}", "v1.0.8", direct))
+    }
     @Test fun numericHotfixIsNewerThanItsBase() {
         assertFalse(UpdateChecker.isNewer("1.0.4", "1.0.4-2"))
         assertTrue(UpdateChecker.isNewer("1.0.4-2", "1.0.4"))

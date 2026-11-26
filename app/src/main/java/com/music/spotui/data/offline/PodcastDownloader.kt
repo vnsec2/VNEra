@@ -111,6 +111,7 @@ object PodcastDownloader {
             (0 until a.length()).map { Request.fromJson(a.getJSONObject(it)) }
         }.getOrDefault(emptyList())
         if (saved.isNotEmpty()) enqueueAll(saved)
+        DownloadNotifier.changed()
     }
 
     /** Downloads [song], which must be an episode row (`url = "episode:<id>"`). */
@@ -142,6 +143,7 @@ object PodcastDownloader {
         if (added.isEmpty()) return
         scope.launch(Dispatchers.Main) {
             added.forEach { requests[it.trackId] = it; OfflineStore.status[it.trackId] = OfflineStatus.Queued }
+            DownloadNotifier.changed()
         }
         start()
         added.forEach { queue.trySend(it) }
@@ -160,12 +162,17 @@ object PodcastDownloader {
         jobs.forEach { it.cancel() }
         kotlinx.coroutines.withTimeoutOrNull(5_000) { jobs.forEach { it.join() } }
         withContext(Dispatchers.Main) { requests.clear() }
+        DownloadNotifier.changed()
     }
 
     fun cancel(trackId: String) {
         synchronized(pending) { if (pending.remove(trackId) != null) savePending() }
         running.remove(trackId)?.cancel()
-        scope.launch(Dispatchers.Main) { OfflineStore.status.remove(trackId); requests.remove(trackId) }
+        scope.launch(Dispatchers.Main) {
+            OfflineStore.status.remove(trackId)
+            requests.remove(trackId)
+            DownloadNotifier.changed()
+        }
     }
 
     /** Deletes a downloaded episode (or stops its download). */
@@ -190,6 +197,7 @@ object PodcastDownloader {
 
     private suspend fun setStatus(id: String, s: OfflineStatus?) = withContext(Dispatchers.Main) {
         if (s == null) OfflineStore.status.remove(id) else OfflineStore.status[id] = s
+        if (s !is OfflineStatus.Downloading) DownloadNotifier.changed()
     }
 
     private fun toast(res: Int) = scope.launch(Dispatchers.Main) {
@@ -207,9 +215,11 @@ object PodcastDownloader {
         val job = scope.launch {
             val outcome: OfflineStatus? = try {
                 setStatus(r.trackId, OfflineStatus.Downloading(-1f))
+                DownloadNotifier.changed()
                 val t = download(r)
                 OfflineStore.add(t)
                 withContext(Dispatchers.Main) { requests.remove(r.trackId) }
+                DownloadNotifier.changed()
                 null
             } catch (e: CancellationException) {
                 throw e

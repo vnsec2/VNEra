@@ -340,6 +340,9 @@
     <!-- A25: stop the queue, keep the songs already downloaded. -->
     <string name="downloads_stop_all_title">Stop all downloads</string>
     <string name="downloads_stop_all_detail">Cancels what is left; songs already downloaded are kept</string>
+    <string name="download_notify_channel">Downloads</string>
+    <string name="download_notify_remaining">Downloads remaining: %1$d</string>
+    <string name="download_notify_waiting">Waiting to download</string>
     <string name="removed_from">Removed from %1$s</string>
     <!-- Track options inside a playlist (A11/A12). -->
     <string name="context_menu_remove_from_playlist">Remove from this playlist</string>

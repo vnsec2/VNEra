@@ -1039,6 +1039,14 @@ private fun DisplayPage(open: (SettingsPage) -> Unit, back: () -> Unit) {
                 row { ImmersiveSwitchRow(stringResource(R.string.chrome_handle), checked = com.music.spotui.data.preferences.ImmersiveChromePref.handle, onChecked = { com.music.spotui.data.preferences.ImmersiveChromePref.handle(it) }, detail = stringResource(R.string.chrome_handle_detail)) }
                 row { ImmersiveSwitchRow(stringResource(R.string.chrome_stats), checked = com.music.spotui.data.preferences.ImmersiveChromePref.stats, onChecked = { com.music.spotui.data.preferences.ImmersiveChromePref.stats(it) }, detail = stringResource(R.string.chrome_stats_detail)) }
                 row { ImmersiveSwitchRow(stringResource(R.string.chrome_canvas), checked = com.music.spotui.data.preferences.ImmersiveChromePref.canvas, onChecked = { com.music.spotui.data.preferences.ImmersiveChromePref.canvas(it) }, detail = stringResource(R.string.chrome_canvas_detail)) }
+                row {
+                    ImmersiveSwitchRow(
+                        stringResource(R.string.player_cover_fullscreen),
+                        checked = com.music.spotui.data.preferences.ImmersivePlayerCoverPref.fullScreen,
+                        onChecked = { com.music.spotui.data.preferences.ImmersivePlayerCoverPref.set(ctx, it) },
+                        detail = stringResource(R.string.player_cover_fullscreen_detail),
+                    )
+                }
             }
             row {
                 ImmersiveSwitchRow(stringResource(R.string.settings_item_canvas_title),
@@ -1368,12 +1376,19 @@ private fun AccountsPage(back: () -> Unit) {
 private fun DurationStepper(title: Int, value: Int, zero: Int, onChange: (Int) -> Unit) {
     val steps = listOf(0, 2, 4, 6, 8, 10, 12, 15, 20, 25, 30, 40, 50, 60, 75, 90)
     val at = steps.indexOfFirst { it >= value }.let { if (it < 0) steps.lastIndex else it }
+    val label = if (value == 0) stringResource(zero) else stringResource(R.string.settings_automix_seconds, value)
     ImmersiveGroupRow(
         stringResource(title),
-        value = if (value == 0) stringResource(zero) else stringResource(R.string.settings_automix_seconds, value),
         trailing = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(enabled = at > 0, onClick = { onChange(steps[at - 1]) }) { Text("−", style = Immersive.Headline) }
+                Text(
+                    text = label,
+                    style = Immersive.Body.copy(color = Immersive.TextSecondary),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
                 TextButton(enabled = at < steps.lastIndex, onClick = { onChange(steps[(if (steps[at] == value) at + 1 else at).coerceAtMost(steps.lastIndex)]) }) { Text("+", style = Immersive.Headline) }
             }
         },

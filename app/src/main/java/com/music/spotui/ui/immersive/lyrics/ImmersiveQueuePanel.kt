@@ -331,19 +331,21 @@ fun ImmersiveQueuePanel(modifier: Modifier = Modifier, contentPadding: PaddingVa
     }
     var saveDialogOpen by remember { mutableStateOf(false) }
     var activeMood by remember { mutableStateOf<com.music.spotui.ui.components.QueueMood?>(null) }
+    var recProvider by remember { mutableStateOf(com.music.spotui.ui.components.RecProviderPrefs.queue(context)) }
     var moodBusy by remember { mutableStateOf(false) }
     val discoveryScope = androidx.compose.runtime.rememberCoroutineScope()
 
     if (saveDialogOpen) {
         val defaultName = contextName.ifBlank { stringResource(R.string.action_queue_label) }
-        com.music.spotui.ui.screens.NameDialog(
-            title = stringResource(R.string.save_queue_as_playlist),
-            initial = defaultName,
-            confirm = stringResource(R.string.create_playlist_create_button),
+        com.music.spotui.ui.components.SaveQueueDialog(
+            initialName = defaultName,
+            currentId = queue.current?.spotifyTrackId,
+            queuedIds = queue.queued.map { it.song.spotifyTrackId },
+            nextUpIds = queue.nextUp.map { it.song.spotifyTrackId },
             onDismiss = { saveDialogOpen = false },
-        ) { name ->
+        ) { name, ids ->
             saveDialogOpen = false
-            com.music.spotui.data.api.SpotifySync.createPlaylistWithTracks(context, name, saveableTrackIds) { ok ->
+            com.music.spotui.data.api.SpotifySync.createPlaylistWithTracks(context, name, ids) { ok ->
                 val msg = context.getString(if (ok) R.string.save_queue_saved else R.string.save_queue_failed, name)
                 android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
             }
@@ -385,13 +387,23 @@ fun ImmersiveQueuePanel(modifier: Modifier = Modifier, contentPadding: PaddingVa
                         moodBusy = true
                         discoveryScope.launch {
                             try {
-                                com.music.spotui.ui.components.QueueDiscovery.surpriseMe(context)
+                                com.music.spotui.ui.components.QueueDiscovery.surpriseMe(context, recProvider)
                             } finally {
                                 moodBusy = false
                             }
                         }
                     }
                 },
+            )
+        }
+        item(key = "rec-provider") {
+            com.music.spotui.ui.components.RecProviderChipRow(
+                selected = recProvider,
+                onSelect = {
+                    recProvider = it
+                    com.music.spotui.ui.components.RecProviderPrefs.setQueue(context, it)
+                },
+                modifier = Modifier.padding(top = 10.dp),
             )
         }
         item(key = "mood-chips") {
@@ -404,7 +416,7 @@ fun ImmersiveQueuePanel(modifier: Modifier = Modifier, contentPadding: PaddingVa
                     moodBusy = true
                     discoveryScope.launch {
                         try {
-                            val added = com.music.spotui.ui.components.QueueDiscovery.reshapeQueue(context, mood)
+                            val added = com.music.spotui.ui.components.QueueDiscovery.reshapeQueue(context, mood, recProvider)
                             val msg = if (added > 0) context.getString(R.string.queue_mood_added, added, context.getString(mood.labelRes))
                             else context.getString(R.string.queue_mood_empty)
                             android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
@@ -413,7 +425,7 @@ fun ImmersiveQueuePanel(modifier: Modifier = Modifier, contentPadding: PaddingVa
                         }
                     }
                 },
-                modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
             )
         }
         if (hasCurrent) {

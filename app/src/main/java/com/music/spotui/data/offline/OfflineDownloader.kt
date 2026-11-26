@@ -117,6 +117,7 @@ object OfflineDownloader {
                 (0 until a.length()).map { Request.fromJson(a.getJSONObject(it)) }
             }.getOrDefault(emptyList())
             if (saved.isNotEmpty()) enqueueAll(saved)
+            DownloadNotifier.changed()
         }
     }
 
@@ -178,6 +179,7 @@ object OfflineDownloader {
         if (added.isEmpty()) return
         scope.launch(Dispatchers.Main) {
             added.forEach { requests[it.trackId] = it; OfflineStore.status[it.trackId] = OfflineStatus.Queued }
+            DownloadNotifier.changed()
         }
         start()
         added.forEach { queue.trySend(it) }
@@ -195,6 +197,7 @@ object OfflineDownloader {
         jobs.forEach { it.cancel() }
         kotlinx.coroutines.withTimeoutOrNull(5_000) { jobs.forEach { it.join() } }
         withContext(Dispatchers.Main) { requests.clear() }
+        DownloadNotifier.changed()
     }
 
     /** Stops a queued or running download (and forgets a failed one). */
@@ -203,6 +206,7 @@ object OfflineDownloader {
         running.remove(trackId)?.cancel()
         OfflineStore.status.remove(trackId)
         requests.remove(trackId)
+        DownloadNotifier.changed()
     }
 
     /**
@@ -220,6 +224,7 @@ object OfflineDownloader {
         // Snapshot state: the badges and the list are read from the UI, so write them there.
         scope.launch(Dispatchers.Main) {
             ids.forEach { OfflineStore.status.remove(it); requests.remove(it) }
+            DownloadNotifier.changed()
         }
     }
 
@@ -241,6 +246,7 @@ object OfflineDownloader {
         ids.forEach { running.remove(it)?.cancel() }
         running.values.forEach { it.cancel() }
         requests.clear()
+        DownloadNotifier.changed()
         // Deleting a large library can take a while: IO scope, not the caller.
         scope.launch { OfflineCollections.removeAll(); OfflineStore.removeAll() }
     }
@@ -257,6 +263,7 @@ object OfflineDownloader {
     private suspend fun setStatus(id: String, s: OfflineStatus?, by: List<String> = emptyList()) = withContext(Dispatchers.Main) {
         if (by.isEmpty()) OfflineStore.notAnswering.remove(id) else OfflineStore.notAnswering[id] = by.joinToString(", ")
         if (s == null) OfflineStore.status.remove(id) else OfflineStore.status[id] = s
+        if (s !is OfflineStatus.Downloading) DownloadNotifier.changed()
     }
 
     private suspend fun work(r: Request) {
@@ -271,10 +278,12 @@ object OfflineDownloader {
             var by = emptyList<String>()
             val outcome: OfflineStatus? = try {
                 setStatus(r.trackId, OfflineStatus.Downloading(-1f))
+                DownloadNotifier.changed()
                 val t = download(r)
                 // Already on the IO scope: the index rewrite stays off the main thread.
                 OfflineStore.add(t)
                 withContext(Dispatchers.Main) { requests.remove(r.trackId) }
+                DownloadNotifier.changed()
                 // Its lyrics kept with it, for playing offline (looked up behind, one song at a time).
                 if (com.music.spotui.data.preferences.LyricsOfflinePref.on) com.music.spotui.data.api.LyricsApi.keepForOffline(
                     com.music.spotui.data.api.LyricsApi.Track(r.trackId, r.title, r.artist, r.album, r.durationMs, r.coverUrl))

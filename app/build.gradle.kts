@@ -12,6 +12,8 @@ val keystoreProperties = Properties().apply {
         keystorePropertiesFile.inputStream().use { load(it) }
     }
 }
+val debugKeystoreFile = rootProject.file("keystore/debug.keystore")
+val lineageFile = rootProject.file("keystore/${keystoreProperties.getProperty("lineageFile", "lineage.bin")}")
 
 // -PautomixLab: a test app with its own data, installed alongside every regular/dev build.
 val automixLab = findProperty("automixLab") != null
@@ -27,6 +29,7 @@ val ABI_NAMES = mapOf("arm64-v8a" to "ARMv8", "armeabi-v7a" to "ARMv7")
  * instead of trying an APK it cannot install over itself.
  */
 val APK_NAME = "Revera"
+val projectUrl = "https://revera.caruno.wtf/carunodev/Revera"
 
 android {
     testOptions {
@@ -55,10 +58,8 @@ android {
         // CI release builds pass the tag's version (-PappVersionName / -PappVersionCode).
         versionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 209
         versionName = version
-        // GitHub "owner/repo" whose releases the app checks for updates; empty = off
-        // (local builds). CI sets it to the repository it builds.
-        // Not in the dev and Mix Lab builds (below): no release carries their app id.
-        buildConfigField("String", "UPDATE_REPO", "\"${if (automixLab) "" else (findProperty("updateRepo") as String?) ?: System.getenv("MYSPOTI_UPDATE_REPO") ?: "caruno-git/Revera"}\"")
+        buildConfigField("String", "UPDATE_BASE_URL", "\"${if (automixLab) "" else "https://dl.caruno.wtf:8443"}\"")
+        buildConfigField("String", "PROJECT_URL", "\"$projectUrl\"")
         buildConfigField("String", "APK_NAME", "\"$APK_NAME\"")
         val badgeServerUrl = (findProperty("badgeServerUrl") as String?) ?: System.getenv("MYSPOTI_BADGE_SERVER_URL") ?: "https://gta.caruno.wtf:8788"
         val badgePublicKey = (findProperty("badgePublicKey") as String?) ?: System.getenv("MYSPOTI_BADGE_PUBLIC_KEY") ?: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErM7FKDnQvgklsfDMvNIt9A95Z8ypT5xShhCWLxDHUkTsGbBRczIvwBx0TLNhn8ywTs7y8rNUi060fMN9zIzRlg=="
@@ -84,6 +85,17 @@ android {
     if (stableRelease && !hasReleaseKey && gradle.startParameter.taskNames.any { Regex("(assemble|bundle|package|install)Release").containsMatchIn(it) })
         throw GradleException("A stable release needs the release key: set MYSPOTI_KEYSTORE (CI) or add keystore/keystore.properties.")
     signingConfigs {
+        if (debugKeystoreFile.exists()) {
+            getByName("debug") {
+                storeFile = debugKeystoreFile
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
         create("release") {
             if (envStore != null) {
                 storeFile = file(envStore)
@@ -96,6 +108,9 @@ android {
                 keyAlias = keystoreProperties.getProperty("keyAlias")
                 keyPassword = keystoreProperties.getProperty("keyPassword")
             }
+            enableV1Signing = false
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
@@ -104,7 +119,6 @@ android {
             // Installs next to the release apps (own data, own sign-in).
             manifestPlaceholders["appLabel"] = if (automixLab) "Revera Mix Lab" else "Revera dev"
             manifestPlaceholders["cliEnabled"] = "true"
-            buildConfigField("String", "UPDATE_REPO", "\"caruno-git/Revera\"")
         }
         release {
             // Real key when provided (CI releases); otherwise the debug key, so a local
@@ -114,7 +128,6 @@ android {
             // beta on the test phone without replacing the signed beta installed there.
             if (findProperty("overDev") != null && !automixLab) {
                 manifestPlaceholders["appLabel"] = "Revera dev"
-                buildConfigField("String", "UPDATE_REPO", "\"caruno-git/Revera\"")
             }
             // The Mix Lab stays drivable from the CLI in its optimised build, as in its debug one.
             if (automixLab) manifestPlaceholders["cliEnabled"] = "true"
@@ -160,7 +173,7 @@ dependencies {
     implementation("com.google.android.gms:play-services-wearable:20.0.1")
     // AutoMix: song analysis and transition planning (pure Kotlin), Beat This on ONNX Runtime.
     implementation(project(":automix"))
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.23.2")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.32.0")
     // Third-party extensions: the sandbox (Rhino), manifests, packages and catalogues.
     implementation(project(":extensions"))
     // Metadata (search, albums, artists, ISRC) from several providers in the user's order, with signed script updates.
@@ -277,3 +290,62 @@ tasks.register("collectApks") {
         dst.listFiles()?.sorted()?.forEach { println("${it.name}  ${it.length() / 1024 / 1024} MB") }
     }
 }
+
+// AGP has no SigningConfig option for APK Signature Scheme v3 proof-of-rotation.
+// Release APKs therefore receive the lineage in one final apksigner pass.
+val signReleaseApksWithLineage = tasks.register("signReleaseApksWithLineage") {
+    val hasProps = keystorePropertiesFile.exists() && lineageFile.isFile
+    val sdkDirProvider = androidComponents.sdkComponents.sdkDirectory
+    val debugKs = debugKeystoreFile
+    val lineage = lineageFile
+    val storeName = keystoreProperties.getProperty("storeFile", "")
+    val storeFile = if (storeName.isNotBlank()) rootProject.file("keystore/$storeName") else null
+    val keyAlias = keystoreProperties.getProperty("keyAlias", "")
+    val storePass = keystoreProperties.getProperty("storePassword", "")
+    val keyPass = keystoreProperties.getProperty("keyPassword", "")
+    val outputDirectory = layout.buildDirectory.dir("outputs/apk/release")
+    onlyIf { hasProps && storeFile != null }
+    doLast {
+        val signerName = if (System.getProperty("os.name").lowercase().contains("win")) "apksigner.bat" else "apksigner"
+        val apksigner = sdkDirProvider.get().asFile.resolve("build-tools").listFiles()
+            ?.sortedBy { it.name }
+            ?.lastOrNull()
+            ?.resolve(signerName)
+            ?: throw GradleException("Android SDK build-tools with $signerName is required for release signing.")
+        val relStore = storeFile ?: throw GradleException("Release storeFile missing.")
+        outputDirectory.get().asFile.walkTopDown().filter { it.extension == "apk" }.forEach { apk ->
+            val signedApk = apk.resolveSibling("${apk.nameWithoutExtension}.lineage.apk")
+            val signer = ProcessBuilder(
+                apksigner.absolutePath,
+                "sign",
+                "--ks", debugKs.absolutePath,
+                "--ks-key-alias", "androiddebugkey",
+                "--ks-pass", "env:REVERA_DEBUG_KEY_PASSWORD",
+                "--key-pass", "env:REVERA_DEBUG_KEY_PASSWORD",
+                "--lineage", lineage.absolutePath,
+                "--next-signer",
+                "--ks", relStore.absolutePath,
+                "--ks-key-alias", keyAlias,
+                "--ks-pass", "env:REVERA_KEYSTORE_PASSWORD",
+                "--key-pass", "env:REVERA_KEY_PASSWORD",
+                "--v1-signing-enabled", "false",
+                "--v2-signing-enabled", "true",
+                "--v3-signing-enabled", "true",
+                "--v4-signing-enabled", "false",
+                "--out", signedApk.absolutePath,
+                apk.absolutePath,
+            ).inheritIO()
+            signer.environment()["REVERA_DEBUG_KEY_PASSWORD"] = "android"
+            signer.environment()["REVERA_KEYSTORE_PASSWORD"] = storePass
+            signer.environment()["REVERA_KEY_PASSWORD"] = keyPass
+            check(signer.start().waitFor() == 0) { "Could not apply signing lineage to ${apk.name}." }
+            check(apk.delete()) { "Could not replace ${apk.name} with its lineage-signed APK." }
+            check(signedApk.renameTo(apk)) { "Could not restore ${apk.name} after signing." }
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name == "assembleRelease") finalizedBy(signReleaseApksWithLineage)
+}
+tasks.named("collectApks") { dependsOn(signReleaseApksWithLineage) }

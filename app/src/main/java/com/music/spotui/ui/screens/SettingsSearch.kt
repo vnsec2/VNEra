@@ -69,6 +69,7 @@ internal object SettingsSearch {
         SettingsEntry(R.string.chrome_handle, R.string.chrome_handle_detail, "Display"),
         SettingsEntry(R.string.chrome_stats, R.string.chrome_stats_detail, "Display"),
         SettingsEntry(R.string.chrome_canvas, R.string.chrome_canvas_detail, "Display"),
+        SettingsEntry(R.string.player_cover_fullscreen, R.string.player_cover_fullscreen_detail, "Display"),
         SettingsEntry(R.string.settings_player_lyrics_card_title, R.string.settings_player_lyrics_card_detail, "Lyrics"),
         SettingsEntry(R.string.settings_player_lyrics_two_lines_title, R.string.settings_player_lyrics_two_lines_detail, "Lyrics"),
         SettingsEntry(R.string.settings_player_source_title, R.string.settings_player_source_detail, "Display"),

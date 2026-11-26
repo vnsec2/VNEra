@@ -12,6 +12,7 @@ plugins {
 val envStore = providers.environmentVariable("MYSPOTI_KEYSTORE").orNull
 val localSigning = rootProject.layout.projectDirectory.file("keystore/keystore.properties")
 val localSigningBytes = providers.fileContents(localSigning).asBytes.orNull
+val debugKeystoreFile = rootProject.layout.projectDirectory.file("keystore/debug.keystore")
 val hasReleaseKey = envStore != null || localSigningBytes != null
 val automixLab = providers.gradleProperty("automixLab").isPresent
 val overDev = providers.gradleProperty("overDev").isPresent
@@ -22,13 +23,24 @@ android {
 
     val version = (findProperty("appVersionName") as String?) ?: "1.0.4"
     defaultConfig {
-        applicationId = if (automixLab) "app.revera.automixlab" else "app.revera"
+        applicationId = if (automixLab) "app.revera.automixlab" else "app.revera.dev"
         minSdk = 30
         targetSdk = 36
         versionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 204
         versionName = version
     }
     signingConfigs {
+        if (debugKeystoreFile.asFile.exists()) {
+            getByName("debug") {
+                storeFile = debugKeystoreFile.asFile
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
         create("release") {
             if (envStore != null) {
                 storeFile = rootProject.file("app").resolve(envStore)
@@ -42,12 +54,13 @@ android {
                 keyAlias = properties.getProperty("keyAlias")
                 keyPassword = properties.getProperty("keyPassword")
             }
+            enableV1Signing = false
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
     buildTypes {
-        debug { if (!automixLab) applicationIdSuffix = ".dev" }
         release {
-            if (overDev && !automixLab) applicationIdSuffix = ".dev"
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName(if (hasReleaseKey) "release" else "debug")

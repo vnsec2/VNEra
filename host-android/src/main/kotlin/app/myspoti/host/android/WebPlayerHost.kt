@@ -289,6 +289,7 @@ class WebPlayerHost(private val context: Context) : BridgeHost {
             it.onPlaybackReport = { wake(REPORT_AWAKE_MS) }
             it.install()
         }
+        LoginTransport(this) { cookies() }.install()
         val webView = this
         cookies().apply {
             setAcceptCookie(true)
