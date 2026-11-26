@@ -1,0 +1,348 @@
+name: Prepare VNERaBase & Revera Branches
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_version:
+        description: 'Νέα έκδοση'
+        required: true
+        default: '1.0.10'
+        type: string
+      zip_url:
+        description: 'URL του Revera zip'
+        required: true
+        default: 'https://revera.caruno.wtf/carunodev/Revera/archive/v1.0.10.zip'
+        type: string
+      old_clean_branch:
+        description: 'Καθαρό branch προηγούμενης έκδοσης'
+        required: true
+        default: 'work/revera-1.0.9-clean'
+        type: string
+      old_custom_branch:
+        description: 'Branch με τις δικές σου αλλαγές'
+        required: true
+        default: 'vnera-2.3.1'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-trees:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Revera & VNERaBase Branches
+        env:
+          NEW_V: ${{ github.event.inputs.new_version }}
+          ZIP_URL: ${{ github.event.inputs.zip_url }}
+          OLD_CLEAN: ${{ github.event.inputs.old_clean_branch }}
+          OLD_CUSTOM: ${{ github.event.inputs.old_custom_branch }}
+        run: |
+          set -euo pipefail
+          NEW_V="${NEW_V#v}"
+          OLD_V=$(echo "$OLD_CLEAN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          CLEAN_NEW_V=$(echo "$NEW_V" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "$NEW_V")
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 1. Κατέβασμα και αποσυμπίεση του zip
+          curl -fSL "$ZIP_URL" -o /tmp/revera.zip
+          mkdir -p /tmp/zip_out
+          unzip -q /tmp/revera.zip -d /tmp/zip_out
+          find /tmp/zip_out -path "*/.github/workflows" -exec rm -rf {} + 2>/dev/null || true
+
+          GRADLE_ROOT=$(find /tmp/zip_out -maxdepth 4 \( -name "settings.gradle.kts" -o -name "settings.gradle" -o -name "gradlew" \) -printf '%h\n' | head -n 1)
+          SRC_DIR="${GRADLE_ROOT:-/tmp/zip_out}"
+
+          # 2. Branch 1: Καθαρό Revera (κρατώντας τα δικά σου workflows)
+          git fetch origin main "$OLD_CLEAN" "$OLD_CUSTOM"
+          git checkout -B "Revera${NEW_V}" origin/main
+
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' -exec rm -rf {} +
+          [ -d .github ] && find .github -mindepth 1 -maxdepth 1 ! -name 'workflows' -exec rm -rf {} +
+          cp -a "$SRC_DIR"/. .
+          rm -f Revera-*.zip
+
+          git add -A
+          git commit -m "Revera ${NEW_V}"
+          git push -f origin "Revera${NEW_V}"
+
+          # 3. Branch 2: VNERaBase (Revera + όλες οι δικές σου αλλαγές αυτόματα)
+          git checkout -B "VNERaBase${NEW_V}"
+          EXCLUDES=(-- . ':!.github/workflows' ':!*.zip' ':!extract-source.yml')
+          git diff --binary "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" "${EXCLUDES[@]}" > /tmp/vnera.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          patch_file = Path("/tmp/vnera.patch")
+          patch = patch_file.read_text()
+          all_files = [str(p) for p in Path(".").rglob("*") if p.is_file() and ".git" not in p.parts]
+
+          has_old_pkg = any("com/music/spotui/" in f for f in all_files)
+          has_new_pkg = any("app/myspoti/" in f for f in all_files)
+          pkg_migrated = (not has_old_pkg) and has_new_pkg
+
+          def candidate_paths(p: str):
+              variants = [p]
+              if pkg_migrated:
+                  variants.append(p.replace("com/music/spotui/", "app/myspoti/"))
+              more = []
+              for v in variants:
+                  more.append(v)
+                  if "/java/" in v:
+                      more.append(v.replace("/java/", "/kotlin/", 1))
+              return list(dict.fromkeys(more))
+
+          def resolve_path(old_p: str) -> str:
+              if old_p == "/dev/null":
+                  return old_p
+              for cand in candidate_paths(old_p):
+                  if Path(cand).exists():
+                      return cand
+              for cand in candidate_paths(old_p):
+                  if Path(cand).parent.exists():
+                      return cand
+              name = Path(old_p).name
+              top_dir = Path(old_p).parts[0] if Path(old_p).parts else ""
+              parent_name = Path(old_p).parent.name
+              matches = [f for f in all_files if Path(f).name == name]
+              if top_dir:
+                  scoped = [f for f in matches if Path(f).parts[0] == top_dir]
+                  if scoped:
+                      matches = scoped
+              if len(matches) > 1:
+                  by_parent = [f for f in matches if Path(f).parent.name == parent_name]
+                  if by_parent:
+                      matches = by_parent
+              return matches[0] if len(matches) == 1 else old_p
+
+          mapping = {}
+          for line in patch.splitlines():
+              if line.startswith("--- a/"):
+                  p = line[6:].strip()
+                  mapping.setdefault(p, resolve_path(p))
+              elif line.startswith("+++ b/"):
+                  p = line[6:].strip()
+                  mapping.setdefault(p, resolve_path(p))
+
+          for old_p, new_p in mapping.items():
+              if old_p != new_p:
+                  patch = (
+                      patch.replace(f"diff --git a/{old_p} b/{old_p}", f"diff --git a/{new_p} b/{new_p}")
+                      .replace(f"--- a/{old_p}", f"--- a/{new_p}")
+                      .replace(f"+++ b/{old_p}", f"+++ b/{new_p}")
+                  )
+
+          if pkg_migrated:
+              patch = patch.replace("com.music.spotui", "app.myspoti")
+
+          patch_file.write_text(patch)
+          PY
+
+          git apply --3way --ignore-whitespace /tmp/vnera.patch || true
+
+          # 4. Αυτόματη επίλυση conflicts + καθαρά hooks στο ImmersivePlayer.kt
+          python3 - <<'PY'
+          import difflib
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def git_show(spec: str) -> str:
+              res = subprocess.run(["git", "show", spec], capture_output=True, text=True)
+              return res.stdout if res.returncode == 0 else ""
+
+          def balanced(lines: list[str]) -> bool:
+              txt = "\n".join(lines)
+              return txt.count("{") == txt.count("}") and txt.count("(") == txt.count(")")
+
+          unmerged = subprocess.run(
+              ["git", "diff", "--name-only", "--diff-filter=U"],
+              capture_output=True, text=True
+          ).stdout.splitlines()
+
+          for rel_path in [u.strip() for u in unmerged if u.strip()]:
+              p = Path(rel_path)
+              if not p.exists():
+                  continue
+
+              base_text = git_show(f":1:{rel_path}")
+              ours_text = git_show(f":2:{rel_path}")
+              theirs_text = git_show(f":3:{rel_path}")
+
+              base_lines = base_text.splitlines()
+              theirs_lines = theirs_text.splitlines()
+              user_added = set()
+              sm = difflib.SequenceMatcher(None, base_lines, theirs_lines)
+              for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                  if tag in ("insert", "replace"):
+                      for line in theirs_lines[j1:j2]:
+                          s = line.strip()
+                          if s and s not in {"{", "}", "(", ")", ","}:
+                              user_added.add(s)
+
+              if rel_path.endswith(("build.gradle.kts", "build.gradle")) and ours_text:
+                  ours_lines = ours_text.splitlines()
+                  ours_stripped = {l.strip() for l in ours_lines}
+                  extra_deps = [
+                      l for l in theirs_lines
+                      if l.strip() in user_added
+                      and l.strip() not in ours_stripped
+                      and any(k in l for k in ("implementation(", "api(", "ksp(", "kapt(", "compileOnly("))
+                  ]
+                  if extra_deps:
+                      out = []
+                      inserted = False
+                      for line in ours_lines:
+                          out.append(line)
+                          if not inserted and line.strip().startswith("dependencies {"):
+                              out.extend(extra_deps)
+                              inserted = True
+                      if not inserted:
+                          out.extend(extra_deps)
+                      p.write_text("\n".join(out) + "\n")
+                  else:
+                      p.write_text(ours_text)
+                  print(f"Auto-merged Gradle file: {rel_path}")
+                  subprocess.run(["git", "add", rel_path], check=True)
+                  continue
+
+              raw_lines = p.read_text().splitlines()
+              merged = []
+              i = 0
+              while i < len(raw_lines):
+                  if raw_lines[i].startswith("<<<<<<<"):
+                      ours_block = []
+                      theirs_block = []
+                      i += 1
+                      while i < len(raw_lines) and not raw_lines[i].startswith("======="):
+                          if not raw_lines[i].startswith("|||||||"):
+                              ours_block.append(raw_lines[i])
+                          i += 1
+                      i += 1
+                      while i < len(raw_lines) and not raw_lines[i].startswith(">>>>>>>"):
+                          theirs_block.append(raw_lines[i])
+                          i += 1
+                      i += 1
+
+                      ours_set = {l.strip() for l in ours_block}
+                      mod_only = [
+                          l for l in theirs_block
+                          if (not user_added or l.strip() in user_added) and l.strip() not in ours_set
+                      ]
+
+                      merged.extend(ours_block)
+                      if mod_only and balanced(mod_only):
+                          if (
+                              ours_block
+                              and "=" in ours_block[-1]
+                              and "=" in mod_only[0]
+                              and not ours_block[-1].rstrip().endswith((",", "{", "("))
+                          ):
+                              merged[-1] = merged[-1].rstrip() + ","
+                          merged.extend(mod_only)
+                      elif mod_only:
+                          print(f"Skipped partial hunk in {rel_path} (handled by hook)")
+                  else:
+                      merged.append(raw_lines[i])
+                      i += 1
+
+              p.write_text("\n".join(merged) + "\n")
+              subprocess.run(["git", "add", rel_path], check=True)
+
+          # Ειδικό hook για το ImmersivePlayer.kt
+          for ip in Path(".").rglob("ImmersivePlayer.kt"):
+              txt = ip.read_text()
+              orig = txt
+              has_fs = "lyricsFullscreen" in txt
+
+              if "lyricsExpanded" not in txt:
+                  txt = re.sub(
+                      r"(?P<ind>[ \t]*)(var panel by rememberSaveable \{ mutableIntStateOf\(Panel\.NONE\) \})",
+                      r"\g<ind>\2\n\g<ind>var lyricsExpanded by rememberSaveable { mutableStateOf(false) }",
+                      txt,
+                      count=1,
+                  )
+
+              if "lyricsExpanded" in txt:
+                  back_replacement = (
+                      "BackHandler(enabled = lyricsExpanded || panel != Panel.NONE) {\n"
+                      "        if (lyricsExpanded) lyricsExpanded = false\n"
+                      + ("        else if (lyricsFullscreen) lyricsFullscreen = false\n" if has_fs else "")
+                      + "        else panel = Panel.NONE\n"
+                      "    }"
+                  )
+                  txt = re.sub(
+                      r"BackHandler\(enabled\s*=\s*panel\s*!=\s*Panel\.NONE\)\s*\{[^}]*\}",
+                      back_replacement,
+                      txt,
+                      count=1,
+                  )
+
+                  if "Panel.LYRICS -> Box(" not in txt:
+                      txt = re.sub(
+                          r"(?P<ind>[ \t]*)Panel\.LYRICS\s*->\s*lyricsContent\(inset\)",
+                          (
+                              r"\g<ind>Panel.LYRICS -> Box(\n"
+                              r"\g<ind>    Modifier.fillMaxSize().lyricsExpandGesture(\n"
+                              r"\g<ind>        enabled = com.music.spotui.data.preferences.LyricsSwipeExpandPref.on && !lyricsExpanded,\n"
+                              r"\g<ind>        onExpand = { lyricsExpanded = true },\n"
+                              r"\g<ind>    )\n"
+                              r"\g<ind>) {\n"
+                              r"\g<ind>    lyricsContent(inset)\n"
+                              r"\g<ind>}"
+                          ),
+                          txt,
+                          count=1,
+                      )
+
+                  if "fun Modifier.lyricsExpandGesture(" not in txt:
+                      txt += (
+                          "\nprivate fun Modifier.lyricsExpandGesture(\n"
+                          "    enabled: Boolean,\n"
+                          "    onExpand: () -> Unit = {},\n"
+                          "    onCollapse: () -> Unit = {},\n"
+                          "): Modifier = if (!enabled) this else pointerInput(enabled) {\n"
+                          "    awaitEachGesture {\n"
+                          "        val down = awaitFirstDown(requireUnconsumed = false)\n"
+                          "        var total = 0f\n"
+                          "        var triggered = false\n"
+                          "        while (!triggered) {\n"
+                          "            val event = awaitPointerEvent()\n"
+                          "            val change = event.changes.firstOrNull { it.id == down.id } ?: break\n"
+                          "            total += change.positionChange().y\n"
+                          "            val threshold = 76.dp.toPx()\n"
+                          "            if (total >= threshold) {\n"
+                          "                change.consume()\n"
+                          "                onExpand()\n"
+                          "                triggered = true\n"
+                          "            } else if (total <= -threshold) {\n"
+                          "                change.consume()\n"
+                          "                onCollapse()\n"
+                          "                triggered = true\n"
+                          "            }\n"
+                          "            if (!change.pressed) break\n"
+                          "        }\n"
+                          "    }\n"
+                          "}\n"
+                      )
+
+              if txt != orig:
+                  ip.write_text(txt)
+                  subprocess.run(["git", "add", str(ip)], check=True)
+                  print(f"Applied clean lyrics hooks to {ip}")
+          PY
+
+          if [ -n "$OLD_V" ] && [ "$OLD_V" != "$CLEAN_NEW_V" ]; then
+            for gf in $(find . -maxdepth 3 -name "build.gradle.kts" -o -name "libs.versions.toml"); do
+              sed -i "s/\"${OLD_V}\"/\"${CLEAN_NEW_V}\"/g" "$gf"
+            done
+          fi
+
+          git add -A
+          git commit -m "VNERaBase ${NEW_V}"
+          git push -f origin "VNERaBase${NEW_V}"
