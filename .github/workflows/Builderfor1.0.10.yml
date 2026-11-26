@@ -43,6 +43,7 @@ jobs:
           set -euo pipefail
           NEW_V="${NEW_V#v}"
           OLD_V=$(echo "$OLD_CLEAN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+          CLEAN_NEW_V=$(echo "$NEW_V" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "$NEW_V")
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -55,16 +56,11 @@ jobs:
           # Αφαίρεση upstream workflows για να μην μπλοκάρει το push
           find /tmp/zip_out -path "*/.github/workflows" -exec rm -rf {} + 2>/dev/null || true
 
-          # Εντοπισμός της πραγματικής ρίζας του Android/Gradle project
+          # Εντοπισμός της ρίζας του Gradle project
           GRADLE_ROOT=$(find /tmp/zip_out -maxdepth 4 \( -name "settings.gradle.kts" -o -name "settings.gradle" -o -name "gradlew" \) -printf '%h\n' | head -n 1)
-          if [ -n "$GRADLE_ROOT" ]; then
-            SRC_DIR="$GRADLE_ROOT"
-          else
-            SRC_DIR="/tmp/zip_out"
-          fi
-          echo "Project root στο zip: $SRC_DIR"
+          SRC_DIR="${GRADLE_ROOT:-/tmp/zip_out}"
 
-          # 2. Δημιουργία Revera1.0.10 (κρατώντας μόνο τα δικά σου .github/workflows)
+          # 2. Δημιουργία Revera branch (κρατώντας μόνο τα δικά σου .github/workflows)
           git fetch origin main "$OLD_CLEAN" "$OLD_CUSTOM"
           git checkout -B "Revera${NEW_V}" origin/main
 
@@ -77,7 +73,7 @@ jobs:
           git commit -m "Revera ${NEW_V}"
           git push -f origin "Revera${NEW_V}"
 
-          # 3. Εφαρμογή των δικών σου αλλαγών -> VNERaBase1.0.10
+          # 3. Εφαρμογή των δικών σου αλλαγών -> VNERaBase branch
           git checkout -B "VNERaBase${NEW_V}"
           EXCLUDES=(-- . ':!.github/workflows' ':!*.zip' ':!extract-source.yml')
 
@@ -85,41 +81,82 @@ jobs:
           git diff --name-status "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" "${EXCLUDES[@]}"
           git diff --binary "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" "${EXCLUDES[@]}" > /tmp/vnera.patch
 
-          # Αυτόματη διόρθωση μονοπατιών αν στην 1.0.10 άλλαξε φάκελος (π.χ. app -> composeApp)
+          # Αυτόματη αντιστοίχιση μονοπατιών & package (com.music.spotui -> app.myspoti / kotlin)
           python3 - <<'PY'
-          import re
           from pathlib import Path
 
           patch_file = Path("/tmp/vnera.patch")
           patch = patch_file.read_text()
           all_files = [str(p) for p in Path(".").rglob("*") if p.is_file() and ".git" not in p.parts]
 
+          has_old_pkg = any("com/music/spotui/" in f for f in all_files)
+          has_new_pkg = any("app/myspoti/" in f for f in all_files)
+          pkg_migrated = (not has_old_pkg) and has_new_pkg
+
+          def candidate_paths(p: str):
+              variants = [p]
+              if pkg_migrated:
+                  variants.append(p.replace("com/music/spotui/", "app/myspoti/"))
+              more = []
+              for v in variants:
+                  more.append(v)
+                  if "/java/" in v:
+                      more.append(v.replace("/java/", "/kotlin/", 1))
+              return list(dict.fromkeys(more))
+
           def resolve_path(old_p: str) -> str:
-              if old_p == "/dev/null" or Path(old_p).exists():
+              if old_p == "/dev/null":
                   return old_p
+              for cand in candidate_paths(old_p):
+                  if Path(cand).exists():
+                      if cand != old_p:
+                          print(f"Path mapped: {old_p} -> {cand}")
+                      return cand
+
+              for cand in candidate_paths(old_p):
+                  if Path(cand).parent.exists():
+                      if cand != old_p:
+                          print(f"New file mapped: {old_p} -> {cand}")
+                      return cand
+
               name = Path(old_p).name
+              top_dir = Path(old_p).parts[0] if Path(old_p).parts else ""
+              parent_name = Path(old_p).parent.name
+
               matches = [f for f in all_files if Path(f).name == name]
+              if top_dir:
+                  scoped = [f for f in matches if Path(f).parts[0] == top_dir]
+                  if scoped:
+                      matches = scoped
+              if len(matches) > 1:
+                  by_parent = [f for f in matches if Path(f).parent.name == parent_name]
+                  if by_parent:
+                      matches = by_parent
               if len(matches) == 1:
                   print(f"Path mapped: {old_p} -> {matches[0]}")
                   return matches[0]
-              # Για νέα αρχεία (π.χ. VnSettingsBackup.kt) αν άλλαξε το parent dir
-              parent_name = Path(old_p).parent.name
-              parent_matches = [str(Path(f).parent / name) for f in all_files if Path(f).parent.name == parent_name]
-              if parent_matches:
-                  chosen = sorted(set(parent_matches))[0]
-                  print(f"New file mapped: {old_p} -> {chosen}")
-                  return chosen
               return old_p
 
           mapping = {}
-          for m in re.finditer(r'^(?:--- a/|+++ b/)(.+)$', patch, re.M):
-              p = m.group(1).strip()
-              if p not in mapping:
-                  mapping[p] = resolve_path(p)
+          for line in patch.splitlines():
+              if line.startswith("--- a/"):
+                  p = line[6:].strip()
+                  mapping.setdefault(p, resolve_path(p))
+              elif line.startswith("+++ b/"):
+                  p = line[6:].strip()
+                  mapping.setdefault(p, resolve_path(p))
 
           for old_p, new_p in mapping.items():
               if old_p != new_p:
-                  patch = patch.replace(f"a/{old_p}", f"a/{new_p}").replace(f"b/{old_p}", f"b/{new_p}")
+                  patch = (
+                      patch.replace(f"diff --git a/{old_p} b/{old_p}", f"diff --git a/{new_p} b/{new_p}")
+                      .replace(f"--- a/{old_p}", f"--- a/{new_p}")
+                      .replace(f"+++ b/{old_p}", f"+++ b/{new_p}")
+                  )
+
+          if pkg_migrated:
+              print("Package migrated in patch: com.music.spotui -> app.myspoti")
+              patch = patch.replace("com.music.spotui", "app.myspoti")
 
           patch_file.write_text(patch)
           PY
@@ -130,9 +167,9 @@ jobs:
             exit 1
           fi
 
-          if [ -n "$OLD_V" ] && [ "$OLD_V" != "$NEW_V" ]; then
+          if [ -n "$OLD_V" ] && [ "$OLD_V" != "$CLEAN_NEW_V" ]; then
             for gf in $(find . -maxdepth 3 -name "build.gradle.kts" -o -name "libs.versions.toml"); do
-              sed -i "s/\"${OLD_V}\"/\"${NEW_V}\"/g" "$gf"
+              sed -i "s/\"${OLD_V}\"/\"${CLEAN_NEW_V}\"/g" "$gf"
             done
           fi
 
