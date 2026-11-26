@@ -4,9 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       new_version:
-        description: 'Έκδοση (π.χ. 1.0.10 -> ψάχνει Revera-1.0.10.zip στο main)'
+        description: 'Νέα έκδοση'
         required: true
         default: '1.0.10'
+        type: string
+      zip_url:
+        description: 'URL του Revera zip'
+        required: true
+        default: 'https://revera.caruno.wtf/carunodev/Revera/archive/v1.0.10.zip'
         type: string
       old_clean_branch:
         description: 'Καθαρό branch προηγούμενης έκδοσης'
@@ -27,12 +32,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Create Revera & VNERaBase Branches
         env:
           NEW_V: ${{ github.event.inputs.new_version }}
+          ZIP_URL: ${{ github.event.inputs.zip_url }}
           OLD_CLEAN: ${{ github.event.inputs.old_clean_branch }}
           OLD_CUSTOM: ${{ github.event.inputs.old_custom_branch }}
         run: |
@@ -43,31 +47,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # 1. Φέρνουμε το main (μαζί με τυχόν LFS αρχεία) και βρίσκουμε το Revera-1.0.10.zip
-          git fetch origin main "$OLD_CLEAN" "$OLD_CUSTOM"
-          git checkout -B "Revera${NEW_V}" origin/main
-          git lfs pull origin main 2>/dev/null || true
-
-          ZIP_FILE=$(find . -maxdepth 3 -name "Revera-${NEW_V}.zip" | head -n 1)
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Δεν βρέθηκε το Revera-${NEW_V}.zip στο main."
-            exit 1
-          fi
-
-          ls -lh "$ZIP_FILE"
-          file "$ZIP_FILE"
+          # 1. Κατέβασμα και έλεγχος του zip από το URL
+          curl -fSL "$ZIP_URL" -o /tmp/revera.zip
+          unzip -tq /tmp/revera.zip
 
           mkdir -p /tmp/zip_out
-          if ! unzip -q "$ZIP_FILE" -d /tmp/zip_out 2>/dev/null; then
-            rm -rf /tmp/zip_out/*
-            if ! 7z x -y "$ZIP_FILE" -o/tmp/zip_out >/dev/null 2>&1; then
-              echo "ERROR: Το $ZIP_FILE δεν είναι έγκυρο αρχείο zip/archive (πιθανώς ανέβηκε κατεστραμμένο ή μισό στο main)."
-              head -c 200 "$ZIP_FILE" || true
-              exit 1
-            fi
-          fi
+          unzip -q /tmp/revera.zip -d /tmp/zip_out
 
-          # Αφαιρούμε τα upstream workflows από το zip για να μην μπλοκάρει το push
+          # Αφαίρεση τυχόν upstream workflows από το zip για να περάσει το git push
           find /tmp/zip_out -path "*/.github/workflows" -exec rm -rf {} + 2>/dev/null || true
 
           ENTRY_COUNT=$(find /tmp/zip_out -mindepth 1 -maxdepth 1 | wc -l)
@@ -78,7 +65,10 @@ jobs:
             SRC_DIR="/tmp/zip_out"
           fi
 
-          # Καθαρίζουμε τα παλιά αρχεία κρατώντας ανέπαφα τα .github/workflows του main
+          # 2. Δημιουργία Revera1.0.10 (κρατώντας μόνο τα δικά σου .github/workflows)
+          git fetch origin main "$OLD_CLEAN" "$OLD_CUSTOM"
+          git checkout -B "Revera${NEW_V}" origin/main
+
           find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' -exec rm -rf {} +
           [ -d .github ] && find .github -mindepth 1 -maxdepth 1 ! -name 'workflows' -exec rm -rf {} +
           cp -a "$SRC_DIR"/. .
@@ -88,7 +78,7 @@ jobs:
           git commit -m "Revera ${NEW_V}"
           git push -f origin "Revera${NEW_V}"
 
-          # 2. Περνάμε τις δικές σου αλλαγές πάνω στο Revera1.0.10 -> VNERaBase1.0.10
+          # 3. Εφαρμογή των δικών σου αλλαγών -> VNERaBase1.0.10
           git checkout -B "VNERaBase${NEW_V}"
           EXCLUDES=(-- . ':!.github/workflows' ':!*.zip' ':!extract-source.yml')
 
