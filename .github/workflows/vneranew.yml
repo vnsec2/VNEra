@@ -157,6 +157,7 @@ jobs:
           import kotlinx.coroutines.launch
           import org.json.*
           import java.io.File
+          import java.util.Locale
           import kotlin.math.*
 
           val LocalVnIsPlayerInlineLyric = compositionLocalOf { false }
@@ -181,6 +182,8 @@ jobs:
               const val KEY_PLAYER_KARAOKE_BG_COLOR = "player_karaoke_bg_color_argb"
               const val KEY_LYRICS_FONT_SCALE = "lyrics_font_scale"
               const val KEY_PLAYER_LYRICS_FONT_SCALE = "player_lyrics_font_scale"
+              const val KEY_LYRICS_OFFSETS_JSON = "lyrics_track_offsets_json"
+              private const val MAX_SAVED_LYRIC_OFFSETS = 400
 
               @Volatile private var initialized = false
               @Volatile var appCtx: Context? = null
@@ -220,6 +223,12 @@ jobs:
               var playerLyricsFontScale by mutableFloatStateOf(1.0f); private set
               var staticAppPrimaryArgb by mutableLongStateOf(0L)
 
+              private val lyricOffsetsMap = LinkedHashMap<String, Int>()
+              var savedLyricOffsetsCount by mutableIntStateOf(0); private set
+              var currentTrackOffsetKey by mutableStateOf(""); private set
+              var currentTrackDisplayTitle by mutableStateOf(""); private set
+              var currentLyricOffsetMs by mutableIntStateOf(0); private set
+
               val extraColorPalette = listOf(
                   "Αυτόματο" to 0L, "Crimson" to 0xFFE53935L, "Coral" to 0xFFFF5722L, "Amber" to 0xFFFF9800L,
                   "Gold" to 0xFFFFC107L, "Lime" to 0xFFAEEA00L, "Emerald" to 0xFF00C853L, "Mint" to 0xFF00BFA5L,
@@ -246,6 +255,140 @@ jobs:
                   return ac.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
               }
 
+              private fun parseLyricOffsetsJsonIntoMap(raw: String) {
+                  synchronized(lyricOffsetsMap) {
+                      lyricOffsetsMap.clear()
+                      val trimmed = raw.trim()
+                      if (trimmed.startsWith("{")) {
+                          runCatching {
+                              val obj = JSONObject(trimmed)
+                              val it = obj.keys()
+                              while (it.hasNext()) {
+                                  val k = it.next().trim()
+                                  val v = obj.optInt(k, 0).coerceIn(-15_000, 15_000)
+                                  if (k.isNotEmpty() && v != 0) {
+                                      lyricOffsetsMap[k] = v
+                                  }
+                              }
+                          }
+                      }
+                      while (lyricOffsetsMap.size > MAX_SAVED_LYRIC_OFFSETS) {
+                          val firstKey = lyricOffsetsMap.keys.firstOrNull() ?: break
+                          lyricOffsetsMap.remove(firstKey)
+                      }
+                      savedLyricOffsetsCount = lyricOffsetsMap.size
+                      if (currentTrackOffsetKey.isNotEmpty()) {
+                          currentLyricOffsetMs = lyricOffsetsMap[currentTrackOffsetKey] ?: 0
+                      }
+                  }
+              }
+
+              private fun serializeLyricOffsetsCompact(): String {
+                  synchronized(lyricOffsetsMap) {
+                      if (lyricOffsetsMap.isEmpty()) return ""
+                      val obj = JSONObject()
+                      lyricOffsetsMap.forEach { (k, v) ->
+                          if (k.isNotBlank() && v != 0) obj.put(k, v)
+                      }
+                      return if (obj.length() == 0) "" else obj.toString()
+                  }
+              }
+
+              private fun persistLyricOffsets(c: Context) {
+                  val compact = serializeLyricOffsetsCompact()
+                  val ed = prefs(c).edit()
+                  if (compact.isEmpty()) ed.remove(KEY_LYRICS_OFFSETS_JSON)
+                  else ed.putString(KEY_LYRICS_OFFSETS_JSON, compact)
+                  ed.apply()
+              }
+
+              private fun buildCompactTrackKey(rawId: String, title: String, artist: String): String {
+                  val cleanTitle = title.trim().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT)
+                  val cleanArtist = artist.trim().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT)
+                  return when {
+                      cleanTitle.isNotEmpty() && cleanArtist.isNotEmpty() -> "$cleanTitle|$cleanArtist".take(110)
+                      cleanTitle.isNotEmpty() -> cleanTitle.take(110)
+                      rawId.isNotBlank() -> rawId.trim().take(110)
+                      else -> ""
+                  }
+              }
+
+              fun onActiveTrackChanged(c: Context?, rawId: String, title: String, artist: String = "") {
+                  (c ?: resolveAppContext())?.let { ensureInit(it) }
+                  val newKey = buildCompactTrackKey(rawId, title, artist)
+                  if (newKey.isEmpty()) return
+                  if (newKey != currentTrackOffsetKey) {
+                      currentTrackOffsetKey = newKey
+                      currentTrackDisplayTitle = title.trim()
+                      synchronized(lyricOffsetsMap) {
+                          currentLyricOffsetMs = lyricOffsetsMap[newKey] ?: 0
+                      }
+                  } else if (currentTrackDisplayTitle.isEmpty() && title.isNotBlank()) {
+                      currentTrackDisplayTitle = title.trim()
+                  }
+              }
+
+              fun adjustCurrentLyricOffset(c: Context, deltaMs: Int) {
+                  ensureInit(c)
+                  var key = currentTrackOffsetKey
+                  if (key.isEmpty()) {
+                      val fallback = savedPlayerLyricLines.firstOrNull()?.trim()?.lowercase(Locale.ROOT)?.take(60).orEmpty()
+                      if (fallback.isNotEmpty()) {
+                          key = "fb:$fallback"
+                          currentTrackOffsetKey = key
+                      }
+                  }
+                  if (key.isEmpty()) {
+                      Toast.makeText(c, "Δεν εντοπίστηκε ενεργό τραγούδι", Toast.LENGTH_SHORT).show()
+                      return
+                  }
+                  val nextVal = (currentLyricOffsetMs + deltaMs).coerceIn(-15_000, 15_000)
+                  currentLyricOffsetMs = nextVal
+                  synchronized(lyricOffsetsMap) {
+                      lyricOffsetsMap.remove(key)
+                      if (nextVal != 0) {
+                          lyricOffsetsMap[key] = nextVal
+                          while (lyricOffsetsMap.size > MAX_SAVED_LYRIC_OFFSETS) {
+                              val oldest = lyricOffsetsMap.keys.firstOrNull() ?: break
+                              lyricOffsetsMap.remove(oldest)
+                          }
+                      }
+                      savedLyricOffsetsCount = lyricOffsetsMap.size
+                  }
+                  persistLyricOffsets(c)
+              }
+
+              fun resetCurrentLyricOffset(c: Context) {
+                  ensureInit(c)
+                  val key = currentTrackOffsetKey
+                  currentLyricOffsetMs = 0
+                  if (key.isNotEmpty()) {
+                      synchronized(lyricOffsetsMap) {
+                          lyricOffsetsMap.remove(key)
+                          savedLyricOffsetsCount = lyricOffsetsMap.size
+                      }
+                      persistLyricOffsets(c)
+                  }
+              }
+
+              fun clearAllSavedLyricOffsets(c: Context) {
+                  ensureInit(c)
+                  currentLyricOffsetMs = 0
+                  synchronized(lyricOffsetsMap) {
+                      lyricOffsetsMap.clear()
+                      savedLyricOffsetsCount = 0
+                  }
+                  prefs(c).edit().remove(KEY_LYRICS_OFFSETS_JSON).apply()
+                  Toast.makeText(c, "Διαγράφηκαν οι αποθηκευμένοι χρονισμοί στίχων", Toast.LENGTH_SHORT).show()
+              }
+
+              fun formatOffsetSeconds(offsetMs: Int): String {
+                  if (offsetMs == 0) return "0.0s"
+                  val sign = if (offsetMs > 0) "+" else "-"
+                  val tenths = (abs(offsetMs) / 100.0).roundToInt()
+                  return String.format(Locale.US, "%s%d.%ds", sign, tenths / 10, tenths % 10)
+              }
+
               private fun loadFromPrefs(sp: SharedPreferences) {
                   targetFps = sp.getInt(KEY_TARGET_FPS, 0)
                   lyricsImmersiveEnabled = sp.getBoolean(KEY_LYRICS_IMMERSIVE, true)
@@ -265,6 +408,7 @@ jobs:
                   playerKaraokeBgColorArgb = sp.getLong(KEY_PLAYER_KARAOKE_BG_COLOR, 0L)
                   lyricsFontScale = sp.getFloat(KEY_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.70f, 1.70f)
                   playerLyricsFontScale = sp.getFloat(KEY_PLAYER_LYRICS_FONT_SCALE, 1.0f).coerceIn(0.60f, 1.60f)
+                  parseLyricOffsetsJsonIntoMap(sp.getString(KEY_LYRICS_OFFSETS_JSON, "").orEmpty())
               }
 
               fun ensureInit(c: Context) {
@@ -367,9 +511,10 @@ jobs:
                   val generic = setOf(
                       "στίχοι", "lyrics", "no lyrics", "δεν υπάρχουν στίχοι", "...",
                       "εμφάνιση", "αναπαραγωγή", "εφαρμογή", "αυτόματο", "αυτόματη",
-                      "auto", "εντάξει"
+                      "auto", "εντάξει", "-0.2s", "+0.2s"
                   )
                   if (low in generic) return true
+                  if (norm.matches(Regex("^[+-]?\\d+\\.\\ds$"))) return true
                   if (norm.matches(Regex("^\\d{1,2}:\\d{2}(:\\d{2})?$"))) return true
                   if (norm.matches(Regex("^\\d{1,3}%$"))) return true
                   return false
@@ -460,7 +605,8 @@ jobs:
                   KEY_LYRICS_COLOR,
                   KEY_PLAYER_KARAOKE_BG_COLOR,
                   KEY_LYRICS_FONT_SCALE,
-                  KEY_PLAYER_LYRICS_FONT_SCALE
+                  KEY_PLAYER_LYRICS_FONT_SCALE,
+                  KEY_LYRICS_OFFSETS_JSON
               )
 
               private fun isVneraBackupKeyAllowed(key: String): Boolean =
@@ -484,6 +630,7 @@ jobs:
               fun isJunkBackupKey(key: String): Boolean {
                   val kl = key.trim().lowercase()
                   if (kl.isEmpty()) return true
+                  if (kl == KEY_LYRICS_OFFSETS_JSON) return false
                   if (kl == "repo" || kl == "repos" || kl == "cache" || kl == "logs" || kl == "log" || kl == "session") return true
                   for (sub in junkBackupSubstrings) {
                       if (kl.contains(sub)) return true
@@ -527,10 +674,20 @@ jobs:
               }
 
               fun exportAllPrefsJson(c: Context): JSONObject = JSONObject().also { all ->
+                  ensureInit(c)
                   val source = prefs(c).all
                   val entries = JSONObject()
                   vneraBackupKeys.forEach { key ->
                       if (!isVneraBackupKeyAllowed(key)) return@forEach
+                      if (key == KEY_LYRICS_OFFSETS_JSON) {
+                          val compactOffsets = serializeLyricOffsetsCompact()
+                          if (compactOffsets.isNotEmpty()) {
+                              runCatching {
+                                  entries.put(key, JSONObject().put("t", "o").put("v", JSONObject(compactOffsets)))
+                              }
+                          }
+                          return@forEach
+                      }
                       when (val v = source[key]) {
                           is Boolean -> entries.put(key, JSONObject().put("t", "b").put("v", v))
                           is Int -> entries.put(key, JSONObject().put("t", "i").put("v", v))
@@ -574,6 +731,17 @@ jobs:
                                   "l" -> ed.putLong(k, item.optLong("v"))
                                   "f" -> ed.putFloat(k, item.optDouble("v").toFloat())
                                   "s" -> ed.putString(k, item.optString("v"))
+                                  "o" -> item.optJSONObject("v")?.let { obj ->
+                                      val compactObj = JSONObject()
+                                      val kIt = obj.keys()
+                                      while (kIt.hasNext()) {
+                                          val tk = kIt.next().trim()
+                                          val off = obj.optInt(tk, 0).coerceIn(-15_000, 15_000)
+                                          if (tk.isNotEmpty() && off != 0) compactObj.put(tk, off)
+                                      }
+                                      if (compactObj.length() > 0) ed.putString(k, compactObj.toString())
+                                      else ed.remove(k)
+                                  }
                                   "set" -> item.optJSONArray("v")?.let { arr ->
                                       ed.putStringSet(k, (0 until arr.length()).mapTo(LinkedHashSet()) { arr.optString(it) })
                                   }
@@ -802,6 +970,12 @@ jobs:
               }
           }
 
+          fun vnApplyLyricOffset(posMs: Long): Long =
+              if (posMs <= 0L) posMs else (posMs + VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L)
+
+          fun vnApplyLyricOffset(posMs: Int): Int =
+              if (posMs <= 0) posMs else (posMs + VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0)
+
           fun vnCaptureLyricText(rawText: String, isActive: Boolean = true): String {
               VnFpsPref.captureLyricLine(rawText, isActive = isActive)
               return rawText
@@ -979,6 +1153,75 @@ jobs:
           }
 
           @Composable
+          fun VnLyricsOffsetControlPill(modifier: Modifier = Modifier) {
+              val c = LocalContext.current
+              VnFpsPref.ensureInit(c)
+              val offsetMs = VnFpsPref.currentLyricOffsetMs
+              val activeTint = vnResolveSelectedLyricColor()
+              Surface(
+                  modifier = modifier
+                      .zIndex(99f)
+                      .height(46.dp),
+                  shape = RoundedCornerShape(15.dp),
+                  color = Color(0xE6161820),
+                  border = BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
+                  shadowElevation = 12.dp
+              ) {
+                  Row(
+                      modifier = Modifier.padding(horizontal = 4.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(2.dp)
+                  ) {
+                      Box(
+                          modifier = Modifier
+                              .clip(RoundedCornerShape(11.dp))
+                              .clickable { VnFpsPref.adjustCurrentLyricOffset(c, -200) }
+                              .padding(horizontal = 10.dp, vertical = 8.dp),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Text(
+                              text = "-0.2s",
+                              style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                              fontWeight = FontWeight.Bold,
+                              color = Color.White.copy(alpha = 0.90f)
+                          )
+                      }
+                      Box(
+                          modifier = Modifier
+                              .clip(RoundedCornerShape(10.dp))
+                              .background(if (offsetMs != 0) activeTint.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f))
+                              .clickable(enabled = offsetMs != 0) {
+                                  VnFpsPref.resetCurrentLyricOffset(c)
+                              }
+                              .padding(horizontal = 8.dp, vertical = 6.dp),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Text(
+                              text = VnFpsPref.formatOffsetSeconds(offsetMs),
+                              style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                              fontWeight = FontWeight.ExtraBold,
+                              color = if (offsetMs != 0) activeTint else Color.White.copy(alpha = 0.72f)
+                          )
+                      }
+                      Box(
+                          modifier = Modifier
+                              .clip(RoundedCornerShape(11.dp))
+                              .clickable { VnFpsPref.adjustCurrentLyricOffset(c, +200) }
+                              .padding(horizontal = 10.dp, vertical = 8.dp),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Text(
+                              text = "+0.2s",
+                              style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                              fontWeight = FontWeight.Bold,
+                              color = Color.White.copy(alpha = 0.90f)
+                          )
+                      }
+                  }
+              }
+          }
+
+          @Composable
           fun VnLyricsFullscreenButton(
               isFullscreen: Boolean,
               ownerId: String = "default",
@@ -1063,6 +1306,11 @@ jobs:
                               modifier = Modifier.fillMaxSize(),
                               contentPadding = PaddingValues(top = 56.dp, bottom = 76.dp)
                           )
+                          Box(
+                              modifier = Modifier.align(Alignment.TopStart).padding(top = 10.dp, start = 12.dp).zIndex(99f)
+                          ) {
+                              VnLyricsOffsetControlPill()
+                          }
                           Box(
                               modifier = Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 12.dp).zIndex(99f)
                           ) {
@@ -1475,6 +1723,7 @@ jobs:
                   VnFpsPref.ensureInit(c)
                   var id = ""
                   var title = ""
+                  var artist = ""
                   var source = ""
                   var quality = ""
                   var kbps = 0
@@ -1494,6 +1743,7 @@ jobs:
                       }
                       if (id.isEmpty()) id = readProp(cand, "id", "mediaId", "trackId", "songId", "uri", "url")
                       if (title.isEmpty()) title = readProp(cand, "title", "name", "trackTitle", "songTitle")
+                      if (artist.isEmpty()) artist = readProp(cand, "artist", "artistName", "artists", "subtitle", "author")
                       if (source.isEmpty()) source = readProp(cand, "source", "provider", "extension", "extensionId", "extensionName", "sourceName", "providerName", "plugin")
                       if (quality.isEmpty()) quality = readProp(cand, "quality", "audioQuality", "qualityLabel", "format", "codec", "mimeType", "streamQuality")
                       if (kbps == 0) {
@@ -1502,9 +1752,12 @@ jobs:
                           if (num > 0) kbps = if (num > 10_000) num / 1000 else num
                       }
                   }
+                  if (title.isNotEmpty() || id.isNotEmpty()) {
+                      VnFpsPref.onActiveTrackChanged(c, id, title, artist)
+                  }
                   val key = (id.ifBlank { title }).trim()
                   if (key.isNotEmpty() || quality.isNotEmpty() || kbps > 0) {
-                      onTrackPlaybackObserved(c, key.ifBlank { "track_${title.hashCode()}" }, title, source, quality, kbps)
+                      onTrackPlaybackObserved(c, key.ifBlank { "track_${title.hashCode()}" }, title, source, quality, kbps, artist)
                   } else {
                       checkOrderMismatchOnly(c)
                   }
@@ -1527,8 +1780,9 @@ jobs:
                   }
               }
 
-              fun onTrackPlaybackObserved(c: Context, key: String, title: String, source: String, quality: String, kbps: Int = 0) {
+              fun onTrackPlaybackObserved(c: Context, key: String, title: String, source: String, quality: String, kbps: Int = 0, artist: String = "") {
                   VnFpsPref.ensureInit(c)
+                  VnFpsPref.onActiveTrackChanged(c, key, title, artist)
                   val ck = key.trim()
                   val cs = source.trim()
                   val cq = quality.trim()
@@ -2059,6 +2313,7 @@ jobs:
               VnFpsPref.ensureInit(c)
               val playerScalePresets = listOf(0.60f, 0.70f, 0.80f, 0.90f, 1.00f, 1.10f, 1.20f, 1.30f, 1.40f, 1.50f, 1.60f)
               val panelScalePresets = listOf(0.70f, 0.85f, 1.00f, 1.20f, 1.40f, 1.70f)
+              val savedOffsetsCount = VnFpsPref.savedLyricOffsetsCount
 
               VnSectionBlock(sectionTitle = "VNERA · ΣΤΙΧΟΙ", modifier = modifier) {
                   VnNativeSwitchRow(
@@ -2187,6 +2442,38 @@ jobs:
                                   onClick = { VnFpsPref.updateLyricsFontScale(c, preset) }
                               )
                           }
+                      }
+                  }
+
+                  VnCardDivider()
+
+                  Row(
+                      modifier = Modifier
+                          .fillMaxWidth()
+                          .padding(horizontal = 16.dp, vertical = 14.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(12.dp)
+                  ) {
+                      Column(Modifier.weight(1f)) {
+                          Text(
+                              text = "Χρονισμός Στίχων ανά Τραγούδι",
+                              style = MaterialTheme.typography.bodyLarge,
+                              fontWeight = FontWeight.Medium,
+                              color = MaterialTheme.colorScheme.onSurface
+                          )
+                          Spacer(Modifier.height(3.dp))
+                          Text(
+                              text = if (savedOffsetsCount > 0) "Αποθηκευμένα: $savedOffsetsCount τραγούδια · περιλαμβάνονται οικονομικά στο Import/Export" else "Ρύθμισε -0.2s / +0.2s πάνω στους στίχους · αποθηκεύεται αυτόματα ανά τραγούδι",
+                              style = MaterialTheme.typography.bodySmall,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
+                      }
+                      if (savedOffsetsCount > 0) {
+                          VnOptionPill(
+                              label = "Επαναφορά",
+                              selected = false,
+                              onClick = { VnFpsPref.clearAllSavedLyricOffsets(c) }
+                          )
                       }
                   }
               }
@@ -2403,7 +2690,6 @@ jobs:
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
               t = re.sub(r'\nandroid \{\n\s*signingConfigs \{ getByName\("debug"\) \{[^}]+\} \}\n\s*buildTypes \{ getByName\("debug"\) \{[^}]+\} \}\n\}\n', '\n', t)
-              # Match existing v2.3.1 package name: app.vnera.player (no .debug suffix)
               t += f'''
           android {{
               buildFeatures {{
@@ -2565,6 +2851,67 @@ jobs:
                   i += 1
               return "".join(out)
 
+          def apply_lyric_timing_offset_hooks(src: str) -> str:
+              if "vnApplyLyricOffset" in src:
+                  return src
+              # 1) Wrap property reads like state.position / playerState.currentPositionMs / uiState.position
+              src = re.sub(
+                  r'\b((?:state|playerState|playbackState|uiState)\.(?:positionMs|currentPositionMs|currentPosition|position|currentTimeMs|progressMs|elapsedMs))\b(?!\s*=[^=])',
+                  r'com.music.spotui.ui.screens.vnApplyLyricOffset(\1)',
+                  src
+              )
+              # 2) Wrap local `val position = ...` or `val position by ...`
+              lines = src.splitlines(keepends=True)
+              out = []
+              pos_names = r'(?:positionMs|currentPositionMs|currentPosition|position|currentTimeMs|elapsedMs)'
+              for ln in lines:
+                  m_eq = re.match(rf'^(\s*val\s+{pos_names}\s*(?::\s*(?:Long|Int)\s*)?=\s*)(.+)$', ln)
+                  if m_eq and "vnApplyLyricOffset" not in ln and "by " not in m_eq.group(1):
+                      rhs = m_eq.group(2).rstrip('\r\n')
+                      eol = ln[len(ln.rstrip('\r\n')):]
+                      out.append(f"{m_eq.group(1)}com.music.spotui.ui.screens.vnApplyLyricOffset({rhs}){eol}")
+                      continue
+                  m_by = re.match(rf'^(\s*)val\s+({pos_names})\s+by\s+(.+)$', ln)
+                  if m_by and "vnApplyLyricOffset" not in ln:
+                      ind, vname, del_expr = m_by.group(1), m_by.group(2), m_by.group(3).rstrip('\r\n')
+                      eol = ln[len(ln.rstrip('\r\n')):]
+                      raw_v = f"vnRaw_{vname}"
+                      out.append(f"{ind}val {raw_v} by {del_expr}{eol}")
+                      out.append(f"{ind}val {vname} = com.music.spotui.ui.screens.vnApplyLyricOffset({raw_v}){eol}")
+                      continue
+                  out.append(ln)
+              res = "".join(out)
+              # 3) If a composable takes position: Long / currentPosition: Long as a parameter, shadow it at top of body
+              if "vnApplyLyricOffset" not in res:
+                  lines2 = res.splitlines(keepends=True)
+                  for idx, l in enumerate(lines2):
+                      if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', l):
+                          p_c = 0; se = None
+                          for j in range(idx, min(len(lines2), idx + 25)):
+                              clj = strip_line_strings_and_comments(lines2[j])
+                              p_c += clj.count("(") - clj.count(")")
+                              if p_c <= 0 and "{" in clj:
+                                  se = j
+                                  break
+                          if se is not None:
+                              sig = "".join(lines2[idx:se + 1])
+                              m_p = re.search(rf'\b({pos_names})\s*:\s*(?:Long|Int)\b', sig)
+                              if m_p:
+                                  pname = m_p.group(1)
+                                  d = 0; be = se
+                                  for k in range(se, len(lines2)):
+                                      clk = strip_line_strings_and_comments(lines2[k])
+                                      d += clk.count("{") - clk.count("}")
+                                      if d <= 0:
+                                          be = k
+                                          break
+                                  body_txt = "".join(lines2[se + 1:be])
+                                  if not re.search(rf'\b(?:val|var)\s+{re.escape(pname)}\b', body_txt):
+                                      lines2[se] += f"    val {pname} = com.music.spotui.ui.screens.vnApplyLyricOffset({pname})\n"
+                                      res = "".join(lines2)
+                                      break
+              return res
+
           p2 = next(Path("app/src/main/java").rglob("ImmersivePlayer.kt"), Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt"))
           if p2.exists():
               ps = p2.read_text()
@@ -2589,6 +2936,7 @@ jobs:
                       observer = (
                           f"{ind}val vnPlaybackStateObserver = state\n"
                           f"{ind}androidx.compose.runtime.LaunchedEffect(state.title, state.artist, state.coverUrl, com.music.spotui.ui.screens.VnFpsPref.playbackAlertsEnabled) {{\n"
+                          f"{ind}    com.music.spotui.ui.screens.VnFpsPref.onActiveTrackChanged(context, \"\", state.title, state.artist)\n"
                           f"{ind}    if (com.music.spotui.ui.screens.VnFpsPref.playbackAlertsEnabled) {{\n"
                           f"{ind}        com.music.spotui.ui.screens.VnPlaybackMonitor.inspectAndReport(context, vnPlaybackStateObserver)\n"
                           f"{ind}        com.music.spotui.ui.screens.VnPlaybackMonitor.checkOrderMismatchOnly(context)\n"
@@ -2603,6 +2951,7 @@ jobs:
               s0 = lf.read_text()
               s1 = hook_lazy_cols(s0, "VnRegisterLyricsScrollState")
               s1 = suppress_duplicate_top_fullscreen_icons(s1)
+              s1 = apply_lyric_timing_offset_hooks(s1)
               if "VnLyricsFullscreenButton" not in s1:
                   lines = s1.splitlines(keepends=True)
                   for i in range(len(lines)):
@@ -2645,6 +2994,11 @@ jobs:
                                   )
                                   lines[be] = (
                                       "        androidx.compose.foundation.layout.Box(\n"
+                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopStart).statusBarsPadding().padding(top = 14.dp, start = 16.dp).zIndex(99f)\n"
+                                      "        ) {\n"
+                                      "            com.music.spotui.ui.screens.VnLyricsOffsetControlPill()\n"
+                                      "        }\n"
+                                      "        androidx.compose.foundation.layout.Box(\n"
                                       "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).statusBarsPadding().padding(top = 14.dp, end = 16.dp).zIndex(99f)\n"
                                       "        ) {\n"
                                       "            com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, ownerId = \"lyrics_screen\", onClick = vnTriggerClose)\n"
@@ -2671,6 +3025,7 @@ jobs:
               t0 = il.read_text()
               t1 = hook_lazy_cols(t0, "VnRegisterLyricsScrollState")
               t1 = suppress_duplicate_top_fullscreen_icons(t1)
+              t1 = apply_lyric_timing_offset_hooks(t1)
               if "VnLyricsFullscreenButton" not in t1:
                   lines = t1.splitlines(keepends=True)
                   for i in range(len(lines)):
@@ -2719,6 +3074,11 @@ jobs:
                                       "    ) {\n"
                                   )
                                   lines[be] = (
+                                      "        androidx.compose.foundation.layout.Box(\n"
+                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopStart).statusBarsPadding().padding(top = 14.dp, start = 16.dp).zIndex(99f)\n"
+                                      "        ) {\n"
+                                      "            if (!com.music.spotui.ui.screens.LocalVnFullscreenOverlayContent.current) com.music.spotui.ui.screens.VnLyricsOffsetControlPill()\n"
+                                      "        }\n"
                                       "        androidx.compose.foundation.layout.Box(\n"
                                       "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).statusBarsPadding().padding(top = 14.dp, end = 16.dp).zIndex(99f)\n"
                                       "        ) {\n"
@@ -2966,6 +3326,9 @@ jobs:
 
               orig_src = src
               is_player_scope = ui_kt.name != "ImmersiveLyricsPanel.kt"
+
+              if is_lyric_comp:
+                  src = apply_lyric_timing_offset_hooks(src)
 
               if is_player_file:
                   src = wrap_player_controls_lyric_block(src)
