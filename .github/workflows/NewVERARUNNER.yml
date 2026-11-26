@@ -118,10 +118,7 @@ jobs:
           import androidx.compose.foundation.*
           import androidx.compose.foundation.gestures.*
           import androidx.compose.foundation.layout.*
-          import androidx.compose.foundation.lazy.LazyColumn
           import androidx.compose.foundation.lazy.LazyListState
-          import androidx.compose.foundation.lazy.itemsIndexed
-          import androidx.compose.foundation.lazy.rememberLazyListState
           import androidx.compose.foundation.shape.*
           import androidx.compose.material.icons.Icons
           import androidx.compose.material.icons.rounded.Check
@@ -167,9 +164,7 @@ jobs:
               const val KEY_ANIM_PAUSE_ON_PAUSE = "element_animation_pause_on_playback_pause"
               const val KEY_PLAYBACK_ALERTS = "playback_quality_order_alerts"
               const val KEY_KEEP_SHUFFLE = "keep_shuffle_enabled"
-              const val KEY_REMEMBER_SHUFFLE = "remember_shuffle_enabled"
-              const val KEY_REMEMBERED_SHUFFLE_STATE = "remembered_shuffle_state"
-              const val KEY_SHUFFLE_MANUAL_OFF = "shuffle_manual_off_by_user"
+              const val KEY_SHUFFLE_LOCKED_ON = "shuffle_locked_on"
               const val KEY_LAST_BACKUP_JSON = "last_loaded_backup_json"
               const val KEY_LAST_BACKUP_EXTENSIONS = "last_loaded_backup_extensions"
               const val KEY_RESTORED_EXTENSIONS = "restored_extensions_list"
@@ -200,10 +195,6 @@ jobs:
               var savedPlayerPreviewScrollOffset by mutableIntStateOf(0)
               var playerBackgroundColorArgb by mutableLongStateOf(0L)
 
-              private var lastActiveCaptureMs = 0L
-              private var burstDistinctCount = 0
-              private var lastBurstSample = ""
-
               var customAccentColorArgb by mutableLongStateOf(0L); private set
               var elementAnimEnabled by mutableStateOf(false); private set
               var elementAnimMode by mutableIntStateOf(1); private set
@@ -212,10 +203,7 @@ jobs:
               @Volatile var hasDirectPlayerIsPlaying = false
               var playbackAlertsEnabled by mutableStateOf(true); private set
               var keepShuffleEnabled by mutableStateOf(false); private set
-              var rememberedShuffleState by mutableStateOf(false); private set
-              var manualShuffleOffSaved by mutableStateOf(false); private set
-              val isShuffleMemoryActive: Boolean get() = keepShuffleEnabled
-              val shuffleLockEnabled: Boolean get() = keepShuffleEnabled
+              var shuffleLockedOn by mutableStateOf(false); private set
               var cachedExtensionsText by mutableStateOf(""); private set
               var lyricsBeautifulEnabled by mutableStateOf(false); private set
               var lyricsCustomColorArgb by mutableLongStateOf(0L); private set
@@ -244,13 +232,6 @@ jobs:
                   }.getOrNull()
               }
 
-              fun ensureInitAuto(): Boolean {
-                  if (initialized) return true
-                  val ac = resolveAppContext() ?: return false
-                  ensureInit(ac)
-                  return initialized
-              }
-
               private fun prefs(c: Context): SharedPreferences {
                   val ac = c.applicationContext ?: c
                   if (appCtx == null) appCtx = ac
@@ -265,14 +246,11 @@ jobs:
                   elementAnimMode = sp.getInt(KEY_ANIM_MODE, 1).coerceIn(1, 3)
                   elementAnimPauseOnPause = sp.getBoolean(KEY_ANIM_PAUSE_ON_PAUSE, true)
                   playbackAlertsEnabled = sp.getBoolean(KEY_PLAYBACK_ALERTS, true)
-                  val legacyRemember = sp.getBoolean(KEY_REMEMBER_SHUFFLE, false)
-                  val keep = sp.getBoolean(KEY_KEEP_SHUFFLE, false) || legacyRemember
-                  val manualOff = sp.getBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
-                  val rem = if (manualOff) false else sp.getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
+                  val keep = sp.getBoolean(KEY_KEEP_SHUFFLE, false)
+                  val locked = keep && sp.getBoolean(KEY_SHUFFLE_LOCKED_ON, false)
                   keepShuffleEnabled = keep
-                  manualShuffleOffSaved = manualOff
-                  rememberedShuffleState = rem
-                  VnShuffleGuard.syncFromPrefs(keep && rem, manualOff)
+                  shuffleLockedOn = locked
+                  VnShuffleGuard.syncFromPrefs(locked)
                   cachedExtensionsText = sp.getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
                   lyricsCustomColorArgb = sp.getLong(KEY_LYRICS_COLOR, 0L)
                   lyricsBeautifulEnabled = sp.getBoolean(KEY_LYRICS_BEAUTIFUL, false) || (lyricsCustomColorArgb != 0L)
@@ -310,7 +288,6 @@ jobs:
                   }
               }
 
-              fun reload(c: Context) { init(c); c.findActivity()?.let { applyWindowFrameRate(it, targetFps, true) } }
               fun update(c: Context, fps: Int) { targetFps = fps; prefs(c).edit().putInt(KEY_TARGET_FPS, fps).apply(); c.findActivity()?.let { applyWindowFrameRate(it, fps, true) } }
               fun updateLyricsImmersive(c: Context, en: Boolean) { lyricsImmersiveEnabled = en; prefs(c).edit().putBoolean(KEY_LYRICS_IMMERSIVE, en).apply() }
               fun updateCustomColor(c: Context, argb: Long) { customAccentColorArgb = argb; prefs(c).edit().putLong(KEY_CUSTOM_COLOR, argb).apply() }
@@ -326,35 +303,19 @@ jobs:
               fun updateKeepShuffle(c: Context, en: Boolean) {
                   ensureInit(c)
                   keepShuffleEnabled = en
-                  val manualOff = VnShuffleGuard.isManualShuffleOff || manualShuffleOffSaved
-                  val shouldRemember = en && !manualOff && (rememberedShuffleState || VnShuffleGuard.userWantsShuffle || VnShuffleGuard.lastKnownShuffleOn)
-                  rememberedShuffleState = if (en) shouldRemember else false
-                  manualShuffleOffSaved = if (en) manualOff else false
+                  val locked = en && VnShuffleGuard.lastObservedShuffleOn
+                  shuffleLockedOn = locked
                   prefs(c).edit()
                       .putBoolean(KEY_KEEP_SHUFFLE, en)
-                      .putBoolean(KEY_REMEMBER_SHUFFLE, false)
-                      .putBoolean(KEY_REMEMBERED_SHUFFLE_STATE, if (en) shouldRemember else false)
-                      .putBoolean(KEY_SHUFFLE_MANUAL_OFF, if (en) manualOff else false)
+                      .putBoolean(KEY_SHUFFLE_LOCKED_ON, locked)
                       .apply()
-                  VnShuffleGuard.onSettingChanged(en, if (en) shouldRemember else false, if (en) manualOff else false, c)
+                  VnShuffleGuard.syncFromPrefs(locked)
               }
-              fun saveShuffleStateAtomic(c: Context?, enabled: Boolean, manualOff: Boolean = !enabled) {
-                  val effectiveEnabled = if (manualOff) false else enabled
-                  rememberedShuffleState = effectiveEnabled
-                  manualShuffleOffSaved = manualOff
-                  val ctx = c ?: resolveAppContext()
-                  ctx?.let {
-                      prefs(it).edit()
-                          .putBoolean(KEY_REMEMBERED_SHUFFLE_STATE, effectiveEnabled)
-                          .putBoolean(KEY_SHUFFLE_MANUAL_OFF, manualOff)
-                          .apply()
+              fun saveShuffleLock(c: Context?, locked: Boolean) {
+                  shuffleLockedOn = locked
+                  (c ?: resolveAppContext())?.let {
+                      prefs(it).edit().putBoolean(KEY_SHUFFLE_LOCKED_ON, locked).apply()
                   }
-              }
-              fun saveRememberedShuffleState(c: Context?, state: Boolean) {
-                  saveShuffleStateAtomic(c, state, !state)
-              }
-              fun saveManualShuffleOff(c: Context?, manualOff: Boolean) {
-                  saveShuffleStateAtomic(c, !manualOff, manualOff)
               }
               fun updateLyricsBeautiful(c: Context, en: Boolean) {
                   lyricsBeautifulEnabled = en
@@ -387,9 +348,6 @@ jobs:
                   savedPlayerLyricText = ""
                   savedPlayerLyricLines = emptyList()
                   savedPlayerActiveLineIndex = -1
-                  lastActiveCaptureMs = 0L
-                  burstDistinctCount = 0
-                  lastBurstSample = ""
               }
 
               private fun normalizeLyricLine(s: String): String =
@@ -489,8 +447,7 @@ jobs:
                   KEY_ANIM_PAUSE_ON_PAUSE,
                   KEY_PLAYBACK_ALERTS,
                   KEY_KEEP_SHUFFLE,
-                  KEY_REMEMBERED_SHUFFLE_STATE,
-                  KEY_SHUFFLE_MANUAL_OFF,
+                  KEY_SHUFFLE_LOCKED_ON,
                   KEY_LYRICS_BEAUTIFUL,
                   KEY_LYRICS_COLOR,
                   KEY_PLAYER_KARAOKE_BG_COLOR,
@@ -500,7 +457,6 @@ jobs:
 
               private fun isVneraBackupKeyAllowed(key: String): Boolean =
                   key in vneraBackupKeys &&
-                  key != KEY_REMEMBER_SHUFFLE &&
                   key != KEY_LAST_BACKUP_JSON &&
                   key != KEY_LAST_BACKUP_EXTENSIONS &&
                   key != KEY_RESTORED_EXTENSIONS
@@ -595,7 +551,6 @@ jobs:
                       val allPrefs = root.optJSONObject("__vnera_all_prefs__")
                       val entries = allPrefs?.optJSONObject(PREFS_NAME)
                       val ed = prefs(c).edit()
-                      ed.remove(KEY_REMEMBER_SHUFFLE)
                       ed.remove(KEY_LAST_BACKUP_JSON)
                       ed.remove(KEY_LAST_BACKUP_EXTENSIONS)
                       ed.remove(KEY_RESTORED_EXTENSIONS)
@@ -619,9 +574,6 @@ jobs:
                       }
                       ed.apply()
                       loadFromPrefs(prefs(c))
-                      val importedManualOff = prefs(c).getBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
-                      val importedRemembered = if (importedManualOff) false else prefs(c).getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
-                      VnShuffleGuard.applyImportedManualOff(importedManualOff, importedRemembered)
                       pruneBackupJsonInPlace(root)
                   } catch (e: Exception) {
                       throw IllegalArgumentException("Backup import failed: ${e.message ?: e.javaClass.simpleName}", e)
@@ -637,9 +589,7 @@ jobs:
               fun onBackupImported(c: Context, rawText: String): String =
                   importAndParseBackupJson(c, rawText).toString()
 
-              fun recordBackupAndExtractExtensions(c: Context, raw: String) {
-                  // Απενεργοποιημένο ώστε το Export/Import να αφορά αποκλειστικά τις ρυθμίσεις του Revera και του VNEra.
-              }
+              fun recordBackupAndExtractExtensions(c: Context, raw: String) {}
 
               private val ignoredSettingTokens = setOf(
                   "true", "false", "null", "[]", "{}", "auto", "default", "none", "high", "low", "medium",
@@ -1021,26 +971,6 @@ jobs:
           }
 
           @Composable
-          fun VnPlayerInlineLyricScope(
-              isPlayerControls: Boolean = true,
-              content: @Composable () -> Unit
-          ) {
-              val c = LocalContext.current
-              VnFpsPref.ensureInit(c)
-              if (isPlayerControls) {
-                  VnPlayerOnlyLyricScope(content)
-              } else {
-                  val activeColor = vnPlayerInlineLyricColor(LocalContentColor.current, isPlayer = false)
-                  CompositionLocalProvider(
-                      LocalVnIsPlayerInlineLyric provides false,
-                      LocalContentColor provides activeColor
-                  ) {
-                      content()
-                  }
-              }
-          }
-
-          @Composable
           fun VnLyricsFullscreenButton(
               isFullscreen: Boolean,
               ownerId: String = "default",
@@ -1070,7 +1000,6 @@ jobs:
                               .graphicsLayer {
                                   scaleX = iconScale
                                   scaleY = iconScale
-                                  rotationZ = if (isFullscreen) 0f else 0f
                               }
                               .size(if (isFullscreen) 22.dp else 24.dp)
                       )
@@ -1256,263 +1185,59 @@ jobs:
 
           object VnShuffleGuard {
               var activeBannerMessage by mutableStateOf<String?>(null)
-              var userWantsShuffle by mutableStateOf(false)
-              var lastKnownShuffleOn by mutableStateOf(false)
-              @Volatile private var manualShuffleOffByUser = false
-              val isManualShuffleOff: Boolean get() = manualShuffleOffByUser
-              val shuffleLockedByUser: Boolean get() = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
-              var onForceEnableShuffle: (() -> Unit)? = null
-              @Volatile private var lastReenableMs = 0L
-              @Volatile private var userGraceUntilMs = 0L
-              @Volatile private var awaitingUserSettlement = false
-              @Volatile private var isInternalRestoring = false
-              @Volatile private var lastObservedShuffleState: Boolean? = null
-              @Volatile private var prefsInitialized = false
-              @Volatile private var smartShuffleActive = false
-              @Volatile private var pendingAutoRestoreUntilMs = 0L
-              var userOverrideUntilPlayerClose by mutableStateOf(false)
+              var lockedOn by mutableStateOf(false)
+              @Volatile var lastObservedShuffleOn = false
+              @Volatile private var lastUserTapMs = 0L
+              @Volatile private var lastAutoRestoreMs = 0L
 
               fun dismissBanner() { activeBannerMessage = null }
 
-              fun runInternalRestore(block: () -> Unit) {
-                  isInternalRestoring = true
-                  try { block() } finally { isInternalRestoring = false }
-              }
-
-              private fun isInUserGraceWindow(now: Long = SystemClock.elapsedRealtime()): Boolean =
-                  awaitingUserSettlement || now <= userGraceUntilMs
-
-              fun onUserShuffleControlTouched(c: Context? = null) {
-                  if (isInternalRestoring) return
-                  val now = SystemClock.elapsedRealtime()
-                  userGraceUntilMs = now + 5_000L
-                  awaitingUserSettlement = true
-                  pendingAutoRestoreUntilMs = 0L
+              fun onUserTap() {
+                  lastUserTapMs = SystemClock.elapsedRealtime()
                   activeBannerMessage = null
-                  if (lastKnownShuffleOn || lastObservedShuffleState == true) {
-                      manualShuffleOffByUser = true
-                      userWantsShuffle = false
-                      userOverrideUntilPlayerClose = true
-                      VnFpsPref.saveShuffleStateAtomic(c, enabled = false, manualOff = true)
-                  }
               }
 
-              fun onUserPressedToggleShuffle(
-                  currentShuffleState: Boolean? = null,
-                  currentSmartState: Boolean? = null,
-                  c: Context? = null
-              ) {
-                  onUserShuffleControlTouched(c)
+              fun syncFromPrefs(savedLockedOn: Boolean) {
+                  lockedOn = savedLockedOn
               }
 
-              fun onPlayerListenerShuffleChanged(enabled: Boolean, c: Context? = null) {
-                  if (isInternalRestoring) return
-                  val now = SystemClock.elapsedRealtime()
-                  lastObservedShuffleState = enabled
-                  if (isInUserGraceWindow(now)) {
-                      if (!enabled) {
-                          manualShuffleOffByUser = true
-                          userWantsShuffle = false
-                          lastKnownShuffleOn = false
-                          smartShuffleActive = false
-                          userOverrideUntilPlayerClose = true
-                          awaitingUserSettlement = false
-                          VnFpsPref.saveShuffleStateAtomic(c, enabled = false, manualOff = true)
-                      } else {
-                          manualShuffleOffByUser = false
-                          userWantsShuffle = true
-                          lastKnownShuffleOn = true
-                          userOverrideUntilPlayerClose = false
-                          VnFpsPref.saveShuffleStateAtomic(c, enabled = true, manualOff = false)
-                      }
-                      return
-                  }
-                  if (shouldRestorePlayerState(enabled)) {
-                      runCatching { onForceEnableShuffle?.invoke() }
-                  }
-              }
-
-              fun syncFromPrefs(remembered: Boolean, manualOff: Boolean) {
-                  if (isInUserGraceWindow()) return
-                  manualShuffleOffByUser = manualOff
-                  val effective = if (manualOff) false else remembered
-                  userWantsShuffle = effective
-                  lastKnownShuffleOn = effective
-                  userOverrideUntilPlayerClose = manualOff
-                  pendingAutoRestoreUntilMs = 0L
-                  if (!prefsInitialized) {
-                      prefsInitialized = true
-                      lastObservedShuffleState = null
-                      smartShuffleActive = false
-                  }
-              }
-
-              fun applyImportedManualOff(manualOff: Boolean, remembered: Boolean = VnFpsPref.rememberedShuffleState) {
-                  userGraceUntilMs = 0L
-                  awaitingUserSettlement = false
-                  pendingAutoRestoreUntilMs = 0L
-                  manualShuffleOffByUser = manualOff
-                  val desired = if (manualOff) false else remembered
-                  userWantsShuffle = desired
-                  lastKnownShuffleOn = desired
-                  lastObservedShuffleState = null
-                  smartShuffleActive = false
-                  userOverrideUntilPlayerClose = manualOff
-              }
-
-              fun markUserShuffleInteraction() {
-                  onUserShuffleControlTouched(VnFpsPref.resolveAppContext())
-              }
-
-              fun onUserTappedShuffleButton(wasShuffleOn: Boolean, c: Context? = null) {
-                  onUserExplicitShuffleToggle(!wasShuffleOn, c)
-              }
-
-              fun onSettingChanged(enabled: Boolean, remembered: Boolean, manualOff: Boolean = false, c: Context? = null) {
-                  smartShuffleActive = false
-                  lastObservedShuffleState = null
-                  userGraceUntilMs = 0L
-                  awaitingUserSettlement = false
-                  pendingAutoRestoreUntilMs = 0L
-                  if (!enabled) {
-                      userWantsShuffle = false
-                      lastKnownShuffleOn = false
-                      manualShuffleOffByUser = false
-                      userOverrideUntilPlayerClose = false
-                  } else {
-                      manualShuffleOffByUser = manualOff
-                      val effective = if (manualOff) false else remembered
-                      userWantsShuffle = effective
-                      lastKnownShuffleOn = effective
-                      userOverrideUntilPlayerClose = manualOff
-                  }
-              }
-
-              fun onUserExplicitShuffleToggle(newShuffleState: Boolean, c: Context? = null) {
-                  if (isInternalRestoring) return
-                  userGraceUntilMs = SystemClock.elapsedRealtime() + 5_000L
-                  awaitingUserSettlement = false
-                  pendingAutoRestoreUntilMs = 0L
-                  manualShuffleOffByUser = !newShuffleState
-                  userOverrideUntilPlayerClose = !newShuffleState
-                  userWantsShuffle = newShuffleState
-                  lastKnownShuffleOn = newShuffleState
-                  lastObservedShuffleState = newShuffleState
-                  activeBannerMessage = null
-                  VnFpsPref.saveShuffleStateAtomic(c, enabled = newShuffleState, manualOff = !newShuffleState)
-              }
-
-              fun onSmartShuffleActivated(isSmart: Boolean) {
-                  if (isInUserGraceWindow()) return
-                  smartShuffleActive = isSmart
-                  if (isSmart) {
-                      manualShuffleOffByUser = false
-                      userWantsShuffle = true
-                      userOverrideUntilPlayerClose = false
-                  }
-              }
-
-              fun onPlayerClosed() {
-                  lastObservedShuffleState = null
-                  userGraceUntilMs = 0L
-                  awaitingUserSettlement = false
-                  pendingAutoRestoreUntilMs = 0L
-                  smartShuffleActive = false
-              }
-
-              fun shouldRestorePlayerState(currentState: Boolean): Boolean {
-                  val now = SystemClock.elapsedRealtime()
-                  if (isInUserGraceWindow(now)) return false
-                  return VnFpsPref.keepShuffleEnabled && userWantsShuffle &&
-                      !manualShuffleOffByUser && !currentState && !smartShuffleActive
-              }
-
-              fun enforceOnPlayerIfNeeded(playerObj: Any?) {
-                  val now = SystemClock.elapsedRealtime()
-                  if (isInUserGraceWindow(now)) return
-                  if (now <= pendingAutoRestoreUntilMs) return
-                  if (!VnFpsPref.keepShuffleEnabled || !userWantsShuffle || manualShuffleOffByUser || smartShuffleActive) return
-                  if (playerObj == null) return
-                  runCatching {
-                      val getter = playerObj.javaClass.methods.firstOrNull {
-                          it.parameterCount == 0 && (it.name == "getShuffleModeEnabled" || it.name == "isShuffleModeEnabled")
-                      }
-                      val setter = playerObj.javaClass.methods.firstOrNull {
-                          it.parameterCount == 1 && (it.name == "setShuffleModeEnabled" || it.name == "setShuffleEnabled")
-                      }
-                      val currentVal = getter?.invoke(playerObj) as? Boolean
-                      if (currentVal == false && setter != null) {
-                          pendingAutoRestoreUntilMs = now + 2_500L
-                          runInternalRestore { setter.invoke(playerObj, true) }
-                          lastKnownShuffleOn = true
-                          if (now - lastReenableMs > 1_800L) {
-                              lastReenableMs = now
-                              activeBannerMessage = "Επαναφέρθηκε η Τυχαία Σειρά (έκλεισε αυτόματα)"
-                          }
-                      }
-                  }
-              }
-
-              fun observeShuffleState(
+              fun onShuffleStateChanged(
                   c: Context,
                   isShuffleOn: Boolean,
-                  isSmartShuffle: Boolean = false,
-                  reEnableWithoutBreakingQueue: () -> Unit
+                  reEnable: () -> Unit
               ) {
                   VnFpsPref.ensureInit(c)
-                  onForceEnableShuffle = reEnableWithoutBreakingQueue
+                  lastObservedShuffleOn = isShuffleOn
                   val now = SystemClock.elapsedRealtime()
-                  lastObservedShuffleState = isShuffleOn
-
-                  if (isInUserGraceWindow(now)) {
-                      if (!isShuffleOn) {
-                          manualShuffleOffByUser = true
-                          userWantsShuffle = false
-                          lastKnownShuffleOn = false
-                          smartShuffleActive = false
-                          userOverrideUntilPlayerClose = true
-                          awaitingUserSettlement = false
-                          VnFpsPref.saveShuffleStateAtomic(c, enabled = false, manualOff = true)
-                      } else {
-                          manualShuffleOffByUser = false
-                          userWantsShuffle = true
-                          lastKnownShuffleOn = true
-                          smartShuffleActive = isSmartShuffle
-                          userOverrideUntilPlayerClose = false
-                          VnFpsPref.saveShuffleStateAtomic(c, enabled = true, manualOff = false)
-                      }
-                      return
-                  }
+                  val byUser = (now - lastUserTapMs) <= 1_500L
 
                   if (!VnFpsPref.keepShuffleEnabled) {
-                      lastKnownShuffleOn = isShuffleOn
+                      if (lockedOn) {
+                          lockedOn = false
+                          VnFpsPref.saveShuffleLock(c, false)
+                      }
                       return
                   }
 
                   if (isShuffleOn) {
-                      smartShuffleActive = isSmartShuffle
-                      if (!manualShuffleOffByUser) {
-                          userWantsShuffle = true
-                          lastKnownShuffleOn = true
+                      if (!lockedOn) {
+                          lockedOn = true
+                          VnFpsPref.saveShuffleLock(c, true)
                       }
                       return
                   }
 
-                  smartShuffleActive = false
-                  if (now <= pendingAutoRestoreUntilMs) {
-                      lastKnownShuffleOn = false
+                  if (byUser) {
+                      if (lockedOn) {
+                          lockedOn = false
+                          VnFpsPref.saveShuffleLock(c, false)
+                      }
                       return
                   }
 
-                  if (manualShuffleOffByUser || !userWantsShuffle) {
-                      lastKnownShuffleOn = false
-                      return
-                  }
-
-                  if (now - lastReenableMs > 1_200L) {
-                      lastReenableMs = now
-                      pendingAutoRestoreUntilMs = now + 2_500L
-                      runInternalRestore { reEnableWithoutBreakingQueue() }
+                  if (lockedOn && (now - lastAutoRestoreMs) > 1_200L) {
+                      lastAutoRestoreMs = now
+                      reEnable()
                       activeBannerMessage = "Επαναφέρθηκε η Τυχαία Σειρά (έκλεισε αυτόματα)"
                   }
               }
@@ -3194,33 +2919,6 @@ jobs:
                                       ct = "".join(lines_p)
                                       break
 
-              if "onShuffleModeEnabledChanged" in ct and "onPlayerListenerShuffleChanged" not in ct:
-                  ct = re.sub(
-                      r'(override\s+fun\s+onShuffleModeEnabledChanged\s*\(\s*([A-Za-z0-9_]+)\s*:\s*Boolean\s*\)\s*\{)',
-                      r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onPlayerListenerShuffleChanged(\2)',
-                      ct,
-                      count=1
-                  )
-
-              if "enforceOnPlayerIfNeeded" not in ct:
-                  for cb_name in ("onPlaybackStateChanged", "onIsPlayingChanged", "onMediaItemTransition", "onTimelineChanged"):
-                      m_cb = re.search(rf'(override\s+fun\s+{cb_name}\s*\([^)]*\)\s*\{{)', ct)
-                      if m_cb:
-                          player_cand = next(
-                              (cand for cand in ("player", "exoPlayer", "mediaController", "controller", "_player")
-                               if re.search(rf'(?:private\s+|internal\s+|protected\s+|public\s+|lateinit\s+)?(?:val|var)\s+{cand}\b', ct)),
-                              "this" if re.search(r':\s*Player\b', ct) else None
-                          )
-                          if player_cand:
-                              is_fn = player_cand != "this" and bool(re.search(rf'(?:\bfun\s+{player_cand}\s*\(|\b(?:val|var)\s+{player_cand}\s*:\s*\(\s*\)\s*->)', ct))
-                              player_expr = f"{player_cand}()" if is_fn else player_cand
-                              ct = ct.replace(
-                                  m_cb.group(1),
-                                  f"{m_cb.group(1)}\n        runCatching {{ com.music.spotui.ui.screens.VnShuffleGuard.enforceOnPlayerIfNeeded({player_expr}) }}",
-                                  1
-                              )
-                              break
-
               if "inspectAndReport" not in ct:
                   if ctrl_kt.name in ("PlayerControls.kt", "ImmersivePlayer.kt"):
                       lines_m = ct.splitlines(keepends=True)
@@ -3258,7 +2956,7 @@ jobs:
                   ctrl_kt.write_text(ct)
 
           SHUFFLE_CB_RX = re.compile(
-              r'\b(?:actions\s*(?:\.|::)\s*toggleShuffle|onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle|setShuffleModeEnabled|setShuffleEnabled)\b'
+              r'\b(?:actions\s*(?:\.|::)\s*toggleShuffle|onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle)\b'
           )
           SHUFFLE_ICON_RX = re.compile(
               r'(?:BitChordPlayerIcons\.Shuffle\b|Icons\.(?:Rounded|Outlined|Default|Filled|TwoTone|Sharp)\.(?:Shuffle|ShuffleOn)\b|R\.drawable\.[A-Za-z0-9_]*shuffle[A-Za-z0-9_]*|contentDescription\s*=\s*[^,\n\)]*(?:shuffle|τυχαία))',
@@ -3305,11 +3003,11 @@ jobs:
           def wrap_user_toggle_shuffle_calls(src: str) -> str:
               lines = src.splitlines(keepends=True)
               n = len(lines)
-              guard_stmt = "com.music.spotui.ui.screens.VnShuffleGuard.onUserShuffleControlTouched(); "
+              tap_stmt = "com.music.spotui.ui.screens.VnShuffleGuard.onUserTap(); "
 
               for i in range(n):
                   ln = lines[i]
-                  if "onUserShuffleControlTouched" in ln or "VnShuffleGuard" in ln:
+                  if "onUserTap" in ln or "VnShuffleGuard" in ln:
                       continue
                   if re.match(r'^\s*(?:override\s+)?fun\b', ln):
                       continue
@@ -3321,7 +3019,7 @@ jobs:
                   if m_ref:
                       ref = m_ref.group(1)
                       inv = ref.replace("::", ".").replace(" ", "") + "()"
-                      lines[i] = ln[:m_ref.start()] + f"onClick = {{ {guard_stmt}{inv} }}" + ln[m_ref.end():]
+                      lines[i] = ln[:m_ref.start()] + f"onClick = {{ {tap_stmt}{inv} }}" + ln[m_ref.end():]
                       continue
 
                   m_pos = re.search(
@@ -3331,7 +3029,7 @@ jobs:
                   if m_pos:
                       ref = m_pos.group(2)
                       inv = ref.replace("::", ".").replace(" ", "") + "()"
-                      lines[i] = ln[:m_pos.start()] + f"{m_pos.group(1)}{{ {guard_stmt}{inv} }}{m_pos.group(3)}" + ln[m_pos.end():]
+                      lines[i] = ln[:m_pos.start()] + f"{m_pos.group(1)}{{ {tap_stmt}{inv} }}{m_pos.group(3)}" + ln[m_pos.end():]
                       continue
 
                   m_lam = re.search(r'(?:\bonClick\s*=\s*\{|\b(?:clickable|combinedClickable)\s*(?:\([^)]*\)\s*)?\{)', ln)
@@ -3363,13 +3061,13 @@ jobs:
                           or bool(SHUFFLE_ICON_RX.search(own_btn_block))
                       )
                       if is_shuffle_handler and "VnShuffleGuard" not in click_body:
-                          lines[i] = ln[:brace_open_pos + 1] + f" {guard_stmt}" + ln[brace_open_pos + 1:]
+                          lines[i] = ln[:brace_open_pos + 1] + f" {tap_stmt}" + ln[brace_open_pos + 1:]
                           continue
 
                   if SHUFFLE_CB_RX.search(ln) and "VnShuffleGuard" not in ln:
                       lines[i] = re.sub(
                           r'\b((?:actions\s*\.\s*)?(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle)\s*\(\s*\))',
-                          rf'{{ {guard_stmt}\1 }}()',
+                          rf'{{ {tap_stmt}\1 }}()',
                           ln
                       )
 
@@ -3379,7 +3077,7 @@ jobs:
           if immersive_player.exists():
               src_shuffle = immersive_player.read_text()
               old_shuffle = src_shuffle
-              if "VnShuffleGuard.observeShuffleState" not in src_shuffle:
+              if "VnShuffleGuard.onShuffleStateChanged" not in src_shuffle:
                   m_shuffle_fn = re.search(r'(@Composable\s+private fun PlayerControlsBlock\([\s\S]*?\n\)\s*\{)', src_shuffle)
                   if m_shuffle_fn:
                       body_start = m_shuffle_fn.end()
@@ -3398,11 +3096,8 @@ jobs:
                       body_offset = m_shuffle_fn.end() - m_shuffle_fn.start()
                       guard = (
                           "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
-                          "    androidx.compose.runtime.DisposableEffect(Unit) {\n"
-                          "        onDispose { com.music.spotui.ui.screens.VnShuffleGuard.onPlayerClosed() }\n"
-                          "    }\n"
-                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, state.smart, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle, com.music.spotui.ui.screens.VnShuffleGuard.userOverrideUntilPlayerClose) {\n"
-                          "        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShuffleContext, state.shuffle, state.smart) { actions.toggleShuffle() }\n"
+                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, state.smart, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled) {\n"
+                          "        com.music.spotui.ui.screens.VnShuffleGuard.onShuffleStateChanged(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
                           "    }\n"
                       )
                       player_fn = player_fn[:body_offset] + guard + player_fn[body_offset:]
@@ -3422,10 +3117,10 @@ jobs:
                   patched_st = wrap_user_toggle_shuffle_calls(st_ui)
                   if patched_st != st_ui:
                       shuffle_ui_kt.write_text(patched_st)
-                      print(f"Patched shuffle PillSegment tap interception in {shuffle_ui_kt}")
+                      print(f"Patched shuffle tap in {shuffle_ui_kt}")
 
           pc_file = Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")
-          if pc_file.exists() and "onUserShuffleControlTouched" not in pc_file.read_text():
+          if pc_file.exists() and "onUserTap" not in pc_file.read_text():
               raise RuntimeError("Failed to patch Shuffle PillSegment in PlayerControls.kt")
 
           extra_c = ", ".join(f"Color(0xFF{c})" for c in ["E53935","FF5722","FF9800","FFC107","00BFA5","00BCD4","3F51B5","7C4DFF","E040FB","FF4081","64FFDA","FFAB91","B388FF","ECEFF1"])
