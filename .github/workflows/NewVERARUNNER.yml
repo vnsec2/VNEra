@@ -1187,28 +1187,28 @@ jobs:
               var activeBannerMessage by mutableStateOf<String?>(null)
               var lockedOn by mutableStateOf(false)
               @Volatile var lastObservedShuffleOn = false
-              @Volatile private var suppressAutoLockUntilMs = 0L
-              @Volatile private var lastAutoRestoreMs = 0L
+              @Volatile private var pendingManualTarget: Boolean? = null
+              @Volatile private var desiredLockedOn = false
+              @Volatile private var autoRestoreInFlight = false
 
               fun dismissBanner() { activeBannerMessage = null }
 
-              fun onUserTap(currentlyOn: Boolean = lastObservedShuffleOn) {
-                  val now = SystemClock.elapsedRealtime()
+              fun onUserToggleShuffle(currentlyOn: Boolean = lastObservedShuffleOn) {
+                  val targetState = !currentlyOn
+                  val shouldLock = targetState && VnFpsPref.keepShuffleEnabled
                   activeBannerMessage = null
-                  if (currentlyOn) {
-                      lockedOn = false
-                      suppressAutoLockUntilMs = now + 2_000L
-                      VnFpsPref.saveShuffleLock(null, false)
-                  } else {
-                      suppressAutoLockUntilMs = 0L
-                      val shouldLock = VnFpsPref.keepShuffleEnabled
-                      lockedOn = shouldLock
-                      VnFpsPref.saveShuffleLock(null, shouldLock)
-                  }
+                  autoRestoreInFlight = false
+                  pendingManualTarget = targetState
+                  desiredLockedOn = shouldLock
+                  lockedOn = shouldLock
+                  VnFpsPref.saveShuffleLock(null, shouldLock)
               }
 
               fun syncFromPrefs(savedLockedOn: Boolean) {
-                  lockedOn = savedLockedOn
+                  if (pendingManualTarget == null) {
+                      lockedOn = savedLockedOn
+                      desiredLockedOn = savedLockedOn
+                  }
               }
 
               fun onShuffleStateChanged(
@@ -1218,9 +1218,11 @@ jobs:
               ) {
                   VnFpsPref.ensureInit(c)
                   lastObservedShuffleOn = isShuffleOn
-                  val now = SystemClock.elapsedRealtime()
 
                   if (!VnFpsPref.keepShuffleEnabled) {
+                      pendingManualTarget = null
+                      autoRestoreInFlight = false
+                      desiredLockedOn = false
                       if (lockedOn) {
                           lockedOn = false
                           VnFpsPref.saveShuffleLock(c, false)
@@ -1228,16 +1230,28 @@ jobs:
                       return
                   }
 
+                  val manualTarget = pendingManualTarget
+                  if (manualTarget != null) {
+                      if (isShuffleOn == manualTarget) {
+                          pendingManualTarget = null
+                          lockedOn = desiredLockedOn
+                          VnFpsPref.saveShuffleLock(c, desiredLockedOn)
+                      }
+                      return
+                  }
+
                   if (isShuffleOn) {
-                      if (!lockedOn && now > suppressAutoLockUntilMs) {
+                      autoRestoreInFlight = false
+                      if (!lockedOn) {
                           lockedOn = true
+                          desiredLockedOn = true
                           VnFpsPref.saveShuffleLock(c, true)
                       }
                       return
                   }
 
-                  if (lockedOn && now > suppressAutoLockUntilMs && (now - lastAutoRestoreMs) > 1_200L) {
-                      lastAutoRestoreMs = now
+                  if (lockedOn && !autoRestoreInFlight) {
+                      autoRestoreInFlight = true
                       reEnable()
                       activeBannerMessage = "Επαναφέρθηκε η Τυχαία Σειρά (έκλεισε αυτόματα)"
                   }
@@ -2886,7 +2900,7 @@ jobs:
 
               if "reportPlayerIsPlaying" not in ct:
                   ct, n_lis = re.subn(
-                      r'(override\s+fun\s+onIsPlayingChanged\s*\(\s*([A-Za-z0-9_]+)\s*:s*Boolean\s*\)\s*\{)',
+                      r'(override\s+fun\s+onIsPlayingChanged\s*\(\s*([A-Za-z0-9_]+)\s*:\s*Boolean\s*\)\s*\{)',
                       r'\1\n        com.music.spotui.ui.screens.VnFpsPref.reportPlayerIsPlaying(\2)',
                       ct
                   )
@@ -2961,7 +2975,7 @@ jobs:
               pc_src = pc_file.read_text()
               pc_new, n_pc = re.subn(
                   r'(PillSegment\s*\(\s*icon\s*=\s*if\s*\(smartEnabled\)[\s\S]*?\bonClick\s*=\s*)onToggleShuffle(\s*,)',
-                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserTap(shuffleEnabled); onToggleShuffle() }\2',
+                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(shuffleEnabled); onToggleShuffle() }\2',
                   pc_src,
                   count=1
               )
@@ -2969,6 +2983,50 @@ jobs:
                   raise RuntimeError("Failed to patch Shuffle PillSegment in PlayerControls.kt")
               pc_file.write_text(pc_new)
               print("Patched exact Shuffle PillSegment in PlayerControls.kt")
+
+          shuffle_hook_count = 0
+          for kt_sh in sorted(Path("app/src/main/java").rglob("*.kt")):
+              if kt_sh.name in ("VnFrameRateManager.kt", "PlayerControls.kt"):
+                  continue
+              sh_src = kt_sh.read_text()
+              sh_new = sh_src
+
+              sh_new = re.sub(
+                  r'(?m)^([ \t]*(?:override\s+)?fun\s+toggleShuffle\s*\(\s*\)\s*\{)',
+                  r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle()',
+                  sh_new
+              )
+              sh_new = re.sub(
+                  r'(\btoggleShuffle\s*=\s*\{)(?![^\n]*VnShuffleGuard)',
+                  r'\1 com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();',
+                  sh_new
+              )
+              sh_new = re.sub(
+                  r'(\b(?:onClick|onToggleShuffle)\s*=\s*)([A-Za-z0-9_.]+)::toggleShuffle\b',
+                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); \2.toggleShuffle() }',
+                  sh_new
+              )
+              sh_new = re.sub(
+                  r'(\b(?:onClick|onToggleShuffle)\s*=\s*)([A-Za-z0-9_.]+)\.toggleShuffle(?!\s*\()',
+                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); \2.toggleShuffle() }',
+                  sh_new
+              )
+              sh_new = re.sub(
+                  r'(\b(?:onClick|onToggleShuffle)\s*=\s*\{)(?![^}]*VnShuffleGuard)([^}]*\btoggleShuffle\s*\(\s*\))',
+                  r'\1 com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();\2',
+                  sh_new
+              )
+              sh_new = re.sub(
+                  r'(\b(?:onClick|onShuffle)\s*=\s*\{)(?![^}]*VnShuffleGuard)([^}]*\b(?:onShuffle|shuffleQueue)\s*\(\s*\))',
+                  r'\1 com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle();\2',
+                  sh_new
+              )
+
+              if sh_new != sh_src:
+                  kt_sh.write_text(sh_new)
+                  shuffle_hook_count += 1
+                  print(f"Patched all Shuffle triggers in {kt_sh}")
+          print(f"Total files hooked for all Shuffle buttons (including Queue header): {shuffle_hook_count}")
 
           immersive_player = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if immersive_player.exists():
@@ -2979,6 +3037,7 @@ jobs:
                       raise RuntimeError("Could not locate PlayerControlsBlock for shuffle integration")
                   guard = (
                       "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
+                      "    androidx.compose.runtime.SideEffect { com.music.spotui.ui.screens.VnShuffleGuard.lastObservedShuffleOn = state.shuffle }\n"
                       "    androidx.compose.runtime.LaunchedEffect(state.shuffle, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled) {\n"
                       "        com.music.spotui.ui.screens.VnShuffleGuard.onShuffleStateChanged(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
                       "    }\n"
