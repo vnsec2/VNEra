@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Muzică în timpul apelurilor</string>
+    <string name="music_during_calls_detail">Redarea continuă dacă Android permite acest lucru. Apelurile pot totuși întrerupe redarea sau opri sunetul.</string>
+</resources>

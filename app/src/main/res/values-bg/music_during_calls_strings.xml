@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Музика по време на разговори</string>
+    <string name="music_during_calls_detail">Възпроизвеждането продължава, когато Android го позволява. Разговорите все пак могат да го поставят на пауза или да заглушат звука.</string>
+</resources>

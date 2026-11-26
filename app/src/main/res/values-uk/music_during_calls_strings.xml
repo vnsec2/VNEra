@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Музика під час викликів</string>
+    <string name="music_during_calls_detail">Відтворення триває, якщо Android це дозволяє. Виклики все одно можуть призупинити відтворення або вимкнути звук.</string>
+</resources>

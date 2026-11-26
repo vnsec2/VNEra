@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Tijdelijke media bij de volgende sessie wissen</string>
+    <string name="settings_storage_clear_on_start_detail">Standaard uitgeschakeld. Downloads blijven behouden.</string>
+</resources>

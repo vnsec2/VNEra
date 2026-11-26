@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Tónlist í símtölum</string>
+    <string name="music_during_calls_detail">Spilun heldur áfram ef Android leyfir það. Símtöl geta samt gert hlé á spilun eða slökkt á hljóðinu.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Исчисти привремени медиуми при следната сесија</string>
+    <string name="settings_storage_clear_on_start_detail">Стандардно исклучено. Преземањата се зачувуваат.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Изчистване на временната медия при следваща сесия</string>
+    <string name="settings_storage_clear_on_start_detail">Изключено по подразбиране. Изтеглените файлове се запазват.</string>
+</resources>

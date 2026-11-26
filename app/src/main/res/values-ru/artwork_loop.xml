@@ -1,0 +1,4 @@
+<resources>
+    <string name="artwork_loop_title">Анимация обложки</string>
+    <string name="artwork_loop_detail">Плавно приближать и отдалять обложку во время воспроизведения.</string>
+</resources>

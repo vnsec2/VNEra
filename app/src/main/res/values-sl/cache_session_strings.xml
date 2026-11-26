@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Počisti začasne medije ob naslednji seji</string>
+    <string name="settings_storage_clear_on_start_detail">Privzeto izklopljeno. Prenosi se ohranijo.</string>
+</resources>

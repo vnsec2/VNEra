@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Hreinsa tímabundna miðla í næstu lotu</string>
+    <string name="settings_storage_clear_on_start_detail">Sjálfgefið óvirkt. Niðurhal er varðveitt.</string>
+</resources>

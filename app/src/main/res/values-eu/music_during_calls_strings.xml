@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Musika deietan</string>
+    <string name="music_during_calls_detail">Android-ek baimentzen duenean, erreprodukzioak jarraituko du. Deiek erreprodukzioa pausatu edo isilarazi dezakete hala ere.</string>
+</resources>

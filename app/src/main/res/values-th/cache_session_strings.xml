@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">ล้างสื่อชั่วคราวในเซสชันถัดไป</string>
+    <string name="settings_storage_clear_on_start_detail">ปิดไว้ตามค่าเริ่มต้น ไฟล์ดาวน์โหลดยังคงอยู่</string>
+</resources>

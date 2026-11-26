@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Очищати тимчасові медіа під час нового сеансу</string>
+    <string name="settings_storage_clear_on_start_detail">Типово вимкнено. Завантажені файли зберігаються.</string>
+</resources>

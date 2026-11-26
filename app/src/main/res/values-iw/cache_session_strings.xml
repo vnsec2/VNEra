@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">ניקוי מדיה זמנית בהפעלה הבאה</string>
+    <string name="settings_storage_clear_on_start_detail">כבוי כברירת מחדל. ההורדות נשמרות.</string>
+</resources>

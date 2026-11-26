@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">अर्को सत्रमा अस्थायी मिडिया हटाउनुहोस्</string>
+    <string name="settings_storage_clear_on_start_detail">पूर्वनिर्धारित रूपमा बन्द। डाउनलोड सुरक्षित रहन्छन्।</string>
+</resources>

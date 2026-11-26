@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">తదుపరి సెషన్‌లో తాత్కాలిక మీడియాను తీసివేయి</string>
+    <string name="settings_storage_clear_on_start_detail">డిఫాల్ట్‌గా ఆఫ్. డౌన్‌లోడ్‌లు అలాగే ఉంటాయి.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Limpar multimédia temporária na próxima sessão</string>
+    <string name="settings_storage_clear_on_start_detail">Desativado por predefinição. Os ficheiros transferidos são mantidos.</string>
+</resources>

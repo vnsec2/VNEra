@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">اگلے سیشن میں عارضی میڈیا صاف کریں</string>
+    <string name="settings_storage_clear_on_start_detail">بطور ڈیفالٹ بند ہے۔ ڈاؤن لوڈ محفوظ رہتے ہیں۔</string>
+</resources>

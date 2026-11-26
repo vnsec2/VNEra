@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Música durante as chamadas</string>
+    <string name="music_during_calls_detail">A reprodução continua quando o Android o permite. Ainda assim, as chamadas podem pôr a reprodução em pausa ou silenciar o som.</string>
+</resources>

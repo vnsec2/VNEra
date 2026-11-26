@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">通话时播放音乐</string>
+    <string name="music_during_calls_detail">在 Android 允许时继续播放。通话仍可能导致播放暂停或静音。</string>
+</resources>

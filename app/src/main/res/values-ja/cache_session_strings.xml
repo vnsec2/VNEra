@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">次のセッションで一時メディアを削除</string>
+    <string name="settings_storage_clear_on_start_detail">初期設定はオフです。ダウンロードは保持されます。</string>
+</resources>

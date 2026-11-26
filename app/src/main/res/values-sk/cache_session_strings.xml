@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Vymazať dočasné médiá pri ďalšej relácii</string>
+    <string name="settings_storage_clear_on_start_detail">Predvolene vypnuté. Stiahnuté súbory zostanú zachované.</string>
+</resources>
