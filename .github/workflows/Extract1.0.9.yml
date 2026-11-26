@@ -1,0 +1,57 @@
+name: Extract Clean Revera 1.0.9
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout your repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download official Revera 1.0.9 source
+        run: |
+          set -euo pipefail
+          git clone --no-checkout https://revera.caruno.wtf/carunodev/Revera.git "$RUNNER_TEMP/revera"
+          git -C "$RUNNER_TEMP/revera" fetch --depth 1 origin tag v1.0.9
+          git -C "$RUNNER_TEMP/revera" checkout --detach v1.0.9
+
+          PROJECT_ROOT="$(find "$RUNNER_TEMP/revera" -type f -name gradlew -not -path '*/.git/*' -printf '%h\n' | head -n 1)"
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "ERROR: Δεν βρέθηκε το gradlew στο Revera v1.0.9."
+            exit 1
+          fi
+
+          echo "Βρέθηκε source root: $PROJECT_ROOT"
+          echo "Revera commit: $(git -C "$RUNNER_TEMP/revera" rev-parse HEAD)"
+
+          mkdir -p "$RUNNER_TEMP/clean-source"
+          cp -a "$PROJECT_ROOT"/. "$RUNNER_TEMP/clean-source"/
+          chmod +x "$RUNNER_TEMP/clean-source/gradlew"
+
+      - name: Create clean branch work/revera-1.0.9-clean
+        run: |
+          set -euo pipefail
+
+          TARGET_BRANCH="work/revera-1.0.9-clean"
+
+          # Create a new branch containing only the extracted official source.
+          git switch --orphan "$TARGET_BRANCH"
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -a "$RUNNER_TEMP/clean-source"/. .
+          chmod +x ./gradlew
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Extract clean official Revera v1.0.9 source"
+
+          # This workflow owns this dedicated clean-source branch.
+          git push --force origin "HEAD:refs/heads/$TARGET_BRANCH"
