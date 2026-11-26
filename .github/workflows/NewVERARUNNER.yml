@@ -1187,14 +1187,24 @@ jobs:
               var activeBannerMessage by mutableStateOf<String?>(null)
               var lockedOn by mutableStateOf(false)
               @Volatile var lastObservedShuffleOn = false
-              @Volatile private var lastUserTapMs = 0L
+              @Volatile private var suppressAutoLockUntilMs = 0L
               @Volatile private var lastAutoRestoreMs = 0L
 
               fun dismissBanner() { activeBannerMessage = null }
 
-              fun onUserTap() {
-                  lastUserTapMs = SystemClock.elapsedRealtime()
+              fun onUserTap(currentlyOn: Boolean = lastObservedShuffleOn) {
+                  val now = SystemClock.elapsedRealtime()
                   activeBannerMessage = null
+                  if (currentlyOn) {
+                      lockedOn = false
+                      suppressAutoLockUntilMs = now + 2_000L
+                      VnFpsPref.saveShuffleLock(null, false)
+                  } else {
+                      suppressAutoLockUntilMs = 0L
+                      val shouldLock = VnFpsPref.keepShuffleEnabled
+                      lockedOn = shouldLock
+                      VnFpsPref.saveShuffleLock(null, shouldLock)
+                  }
               }
 
               fun syncFromPrefs(savedLockedOn: Boolean) {
@@ -1209,7 +1219,6 @@ jobs:
                   VnFpsPref.ensureInit(c)
                   lastObservedShuffleOn = isShuffleOn
                   val now = SystemClock.elapsedRealtime()
-                  val byUser = (now - lastUserTapMs) <= 1_500L
 
                   if (!VnFpsPref.keepShuffleEnabled) {
                       if (lockedOn) {
@@ -1220,22 +1229,14 @@ jobs:
                   }
 
                   if (isShuffleOn) {
-                      if (!lockedOn) {
+                      if (!lockedOn && now > suppressAutoLockUntilMs) {
                           lockedOn = true
                           VnFpsPref.saveShuffleLock(c, true)
                       }
                       return
                   }
 
-                  if (byUser) {
-                      if (lockedOn) {
-                          lockedOn = false
-                          VnFpsPref.saveShuffleLock(c, false)
-                      }
-                      return
-                  }
-
-                  if (lockedOn && (now - lastAutoRestoreMs) > 1_200L) {
+                  if (lockedOn && now > suppressAutoLockUntilMs && (now - lastAutoRestoreMs) > 1_200L) {
                       lastAutoRestoreMs = now
                       reEnable()
                       activeBannerMessage = "Επαναφέρθηκε η Τυχαία Σειρά (έκλεισε αυτόματα)"
@@ -2885,7 +2886,7 @@ jobs:
 
               if "reportPlayerIsPlaying" not in ct:
                   ct, n_lis = re.subn(
-                      r'(override\s+fun\s+onIsPlayingChanged\s*\(\s*([A-Za-z0-9_]+)\s*:\s*Boolean\s*\)\s*\{)',
+                      r'(override\s+fun\s+onIsPlayingChanged\s*\(\s*([A-Za-z0-9_]+)\s*:s*Boolean\s*\)\s*\{)',
                       r'\1\n        com.music.spotui.ui.screens.VnFpsPref.reportPlayerIsPlaying(\2)',
                       ct
                   )
@@ -2955,173 +2956,36 @@ jobs:
               if ct != orig_ct:
                   ctrl_kt.write_text(ct)
 
-          SHUFFLE_CB_RX = re.compile(
-              r'\b(?:actions\s*(?:\.|::)\s*toggleShuffle|onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle)\b'
-          )
-          SHUFFLE_ICON_RX = re.compile(
-              r'(?:BitChordPlayerIcons\.Shuffle\b|Icons\.(?:Rounded|Outlined|Default|Filled|TwoTone|Sharp)\.(?:Shuffle|ShuffleOn)\b|R\.drawable\.[A-Za-z0-9_]*shuffle[A-Za-z0-9_]*|contentDescription\s*=\s*[^,\n\)]*(?:shuffle|τυχαία))',
-              re.I
-          )
-
-          def get_enclosing_button_block(lines: list[str], click_line: int) -> str:
-              n = len(lines)
-              btn_start = click_line
-              for back in range(click_line, max(-1, click_line - 15), -1):
-                  if re.search(r'\b(?:PillSegment|BottomGlyph|CircleGlyph|IconButton|FilledIconButton|FilledTonalIconButton|OutlinedIconButton|Box|Surface)\s*\(', lines[back]):
-                      btn_start = back
-                      break
-              p_depth = 0
-              saw_p = False
-              after_paren_line = btn_start
-              for li in range(btn_start, min(n, btn_start + 25)):
-                  s_clean = strip_line_strings_and_comments(lines[li])
-                  for ch in s_clean:
-                      if ch == '(':
-                          p_depth += 1
-                          saw_p = True
-                      elif ch == ')':
-                          p_depth -= 1
-                  if saw_p and p_depth <= 0:
-                      after_paren_line = li
-                      break
-              b_depth = 0
-              saw_b = False
-              end_block_line = after_paren_line
-              for li in range(after_paren_line, min(n, after_paren_line + 20)):
-                  s_clean = strip_line_strings_and_comments(lines[li])
-                  for ch in s_clean:
-                      if ch == '{':
-                          b_depth += 1
-                          saw_b = True
-                      elif ch == '}':
-                          b_depth -= 1
-                  if saw_b and b_depth <= 0:
-                      end_block_line = li
-                      break
-              return "".join(lines[btn_start:end_block_line + 1])
-
-          def wrap_user_toggle_shuffle_calls(src: str) -> str:
-              lines = src.splitlines(keepends=True)
-              n = len(lines)
-              tap_stmt = "com.music.spotui.ui.screens.VnShuffleGuard.onUserTap(); "
-
-              for i in range(n):
-                  ln = lines[i]
-                  if "onUserTap" in ln or "VnShuffleGuard" in ln:
-                      continue
-                  if re.match(r'^\s*(?:override\s+)?fun\b', ln):
-                      continue
-
-                  m_ref = re.search(
-                      r'\bonClick\s*=\s*((?:[A-Za-z0-9_]+\s*(?:\.|::)\s*)?(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle))\b(?!\s*\()',
-                      ln
-                  )
-                  if m_ref:
-                      ref = m_ref.group(1)
-                      inv = ref.replace("::", ".").replace(" ", "") + "()"
-                      lines[i] = ln[:m_ref.start()] + f"onClick = {{ {tap_stmt}{inv} }}" + ln[m_ref.end():]
-                      continue
-
-                  m_pos = re.search(
-                      r'(\b(?:PillSegment|BottomGlyph|CircleGlyph|IconButton|FilledIconButton|FilledTonalIconButton|OutlinedIconButton)\s*\(\s*)((?:[A-Za-z0-9_]+\s*(?:\.|::)\s*)?(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle))(\s*[,\)])',
-                      ln
-                  )
-                  if m_pos:
-                      ref = m_pos.group(2)
-                      inv = ref.replace("::", ".").replace(" ", "") + "()"
-                      lines[i] = ln[:m_pos.start()] + f"{m_pos.group(1)}{{ {tap_stmt}{inv} }}{m_pos.group(3)}" + ln[m_pos.end():]
-                      continue
-
-                  m_lam = re.search(r'(?:\bonClick\s*=\s*\{|\b(?:clickable|combinedClickable)\s*(?:\([^)]*\)\s*)?\{)', ln)
-                  if m_lam:
-                      brace_open_pos = m_lam.end() - 1
-                      depth = 0
-                      end_line = i
-                      found_end = False
-                      for li in range(i, min(n, i + 35)):
-                          s_clean = strip_line_strings_and_comments(lines[li])
-                          start_c = brace_open_pos if li == i else 0
-                          for ci in range(start_c, len(s_clean)):
-                              ch = s_clean[ci]
-                              if ch == '{':
-                                  depth += 1
-                              elif ch == '}':
-                                  depth -= 1
-                                  if depth == 0:
-                                      end_line = li
-                                      found_end = True
-                                      break
-                          if found_end:
-                              break
-                      click_body = "".join(lines[i:end_line + 1]) if found_end else ln
-                      own_btn_block = get_enclosing_button_block(lines, i)
-                      is_shuffle_handler = (
-                          bool(SHUFFLE_CB_RX.search(click_body))
-                          or bool(re.search(r'ToggleShuffle|ShuffleMode', click_body, re.I))
-                          or bool(SHUFFLE_ICON_RX.search(own_btn_block))
-                      )
-                      if is_shuffle_handler and "VnShuffleGuard" not in click_body:
-                          lines[i] = ln[:brace_open_pos + 1] + f" {tap_stmt}" + ln[brace_open_pos + 1:]
-                          continue
-
-                  if SHUFFLE_CB_RX.search(ln) and "VnShuffleGuard" not in ln:
-                      lines[i] = re.sub(
-                          r'\b((?:actions\s*\.\s*)?(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle)\s*\(\s*\))',
-                          rf'{{ {tap_stmt}\1 }}()',
-                          ln
-                      )
-
-              return "".join(lines)
+          pc_file = Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")
+          if pc_file.exists():
+              pc_src = pc_file.read_text()
+              pc_new, n_pc = re.subn(
+                  r'(PillSegment\s*\(\s*icon\s*=\s*if\s*\(smartEnabled\)[\s\S]*?\bonClick\s*=\s*)onToggleShuffle(\s*,)',
+                  r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserTap(shuffleEnabled); onToggleShuffle() }\2',
+                  pc_src,
+                  count=1
+              )
+              if n_pc == 0:
+                  raise RuntimeError("Failed to patch Shuffle PillSegment in PlayerControls.kt")
+              pc_file.write_text(pc_new)
+              print("Patched exact Shuffle PillSegment in PlayerControls.kt")
 
           immersive_player = Path("app/src/main/java/com/music/spotui/ui/immersive/player/ImmersivePlayer.kt")
           if immersive_player.exists():
               src_shuffle = immersive_player.read_text()
-              old_shuffle = src_shuffle
               if "VnShuffleGuard.onShuffleStateChanged" not in src_shuffle:
                   m_shuffle_fn = re.search(r'(@Composable\s+private fun PlayerControlsBlock\([\s\S]*?\n\)\s*\{)', src_shuffle)
-                  if m_shuffle_fn:
-                      body_start = m_shuffle_fn.end()
-                      depth = 1
-                      pos = body_start
-                      while pos < len(src_shuffle) and depth > 0:
-                          if src_shuffle[pos] == "{":
-                              depth += 1
-                          elif src_shuffle[pos] == "}":
-                              depth -= 1
-                          pos += 1
-                      if depth != 0:
-                          raise RuntimeError("Could not find end of PlayerControlsBlock")
-                      before_fn = wrap_user_toggle_shuffle_calls(src_shuffle[:m_shuffle_fn.start()])
-                      player_fn = wrap_user_toggle_shuffle_calls(src_shuffle[m_shuffle_fn.start():pos])
-                      body_offset = m_shuffle_fn.end() - m_shuffle_fn.start()
-                      guard = (
-                          "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
-                          "    androidx.compose.runtime.LaunchedEffect(state.shuffle, state.smart, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled) {\n"
-                          "        com.music.spotui.ui.screens.VnShuffleGuard.onShuffleStateChanged(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
-                          "    }\n"
-                      )
-                      player_fn = player_fn[:body_offset] + guard + player_fn[body_offset:]
-                      after_fn = wrap_user_toggle_shuffle_calls(src_shuffle[pos:])
-                      src_shuffle = before_fn + player_fn + after_fn
-                  else:
+                  if not m_shuffle_fn:
                       raise RuntimeError("Could not locate PlayerControlsBlock for shuffle integration")
-              if src_shuffle != old_shuffle:
+                  guard = (
+                      "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
+                      "    androidx.compose.runtime.LaunchedEffect(state.shuffle, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled) {\n"
+                      "        com.music.spotui.ui.screens.VnShuffleGuard.onShuffleStateChanged(vnShuffleContext, state.shuffle) { actions.toggleShuffle() }\n"
+                      "    }\n"
+                  )
+                  src_shuffle = src_shuffle[:m_shuffle_fn.end()] + guard + src_shuffle[m_shuffle_fn.end():]
                   immersive_player.write_text(src_shuffle)
-                  print("Patched shuffle persistence in ImmersivePlayer PlayerControlsBlock")
-
-          for shuffle_ui_kt in sorted(Path("app/src/main/java").rglob("*.kt")):
-              if shuffle_ui_kt.name in ("VnFrameRateManager.kt", "ImmersivePlayer.kt"):
-                  continue
-              st_ui = shuffle_ui_kt.read_text()
-              if SHUFFLE_CB_RX.search(st_ui) or SHUFFLE_ICON_RX.search(st_ui):
-                  patched_st = wrap_user_toggle_shuffle_calls(st_ui)
-                  if patched_st != st_ui:
-                      shuffle_ui_kt.write_text(patched_st)
-                      print(f"Patched shuffle tap in {shuffle_ui_kt}")
-
-          pc_file = Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")
-          if pc_file.exists() and "onUserTap" not in pc_file.read_text():
-              raise RuntimeError("Failed to patch Shuffle PillSegment in PlayerControls.kt")
+                  print("Patched shuffle state observer in ImmersivePlayer PlayerControlsBlock")
 
           extra_c = ", ".join(f"Color(0xFF{c})" for c in ["E53935","FF5722","FF9800","FFC107","00BFA5","00BCD4","3F51B5","7C4DFF","E040FB","FF4081","64FFDA","FFAB91","B388FF","ECEFF1"])
           for kf in sorted(Path("app/src/main/java").rglob("*.kt")):
