@@ -145,15 +145,20 @@ jobs:
 
           git apply --3way --ignore-whitespace /tmp/vnera.patch || true
 
-          # 4. Αυτόματη επίλυση τυχόν conflicts (κρατώντας βάση 1.0.10 + τις δικές σου προσθήκες)
+          # 4. Αυτόματη επίλυση conflicts + καθαρά hooks στο ImmersivePlayer.kt
           python3 - <<'PY'
           import difflib
+          import re
           import subprocess
           from pathlib import Path
 
           def git_show(spec: str) -> str:
               res = subprocess.run(["git", "show", spec], capture_output=True, text=True)
               return res.stdout if res.returncode == 0 else ""
+
+          def balanced(lines: list[str]) -> bool:
+              txt = "\n".join(lines)
+              return txt.count("{") == txt.count("}") and txt.count("(") == txt.count(")")
 
           unmerged = subprocess.run(
               ["git", "diff", "--name-only", "--diff-filter=U"],
@@ -169,7 +174,6 @@ jobs:
               ours_text = git_show(f":2:{rel_path}")
               theirs_text = git_show(f":3:{rel_path}")
 
-              # Εξαγωγή μόνο των γραμμών που πρόσθεσες εσύ στο mod (όχι παλιές γραμμές της 1.0.9)
               base_lines = base_text.splitlines()
               theirs_lines = theirs_text.splitlines()
               user_added = set()
@@ -182,7 +186,6 @@ jobs:
                               user_added.add(s)
 
               if rel_path.endswith(("build.gradle.kts", "build.gradle")) and ours_text:
-                  # Κρατάμε το build.gradle.kts της 1.0.10 και προσθέτουμε τυχόν extra dependencies σου
                   ours_lines = ours_text.splitlines()
                   ours_stripped = {l.strip() for l in ours_lines}
                   extra_deps = [
@@ -208,7 +211,6 @@ jobs:
                   subprocess.run(["git", "add", rel_path], check=True)
                   continue
 
-              # Για Kotlin/XML αρχεία: ένωση 1.0.10 + νέων γραμμών του mod χωρίς conflict markers
               raw_lines = p.read_text().splitlines()
               merged = []
               i = 0
@@ -221,11 +223,11 @@ jobs:
                           if not raw_lines[i].startswith("|||||||"):
                               ours_block.append(raw_lines[i])
                           i += 1
-                      i += 1  # skip =======
+                      i += 1
                       while i < len(raw_lines) and not raw_lines[i].startswith(">>>>>>>"):
                           theirs_block.append(raw_lines[i])
                           i += 1
-                      i += 1  # skip >>>>>>>
+                      i += 1
 
                       ours_set = {l.strip() for l in ours_block}
                       mod_only = [
@@ -233,24 +235,106 @@ jobs:
                           if (not user_added or l.strip() in user_added) and l.strip() not in ours_set
                       ]
 
-                      if (
-                          ours_block
-                          and mod_only
-                          and "=" in ours_block[-1]
-                          and "=" in mod_only[0]
-                          and not ours_block[-1].rstrip().endswith((",", "{", "("))
-                      ):
-                          ours_block[-1] = ours_block[-1].rstrip() + ","
-
                       merged.extend(ours_block)
-                      merged.extend(mod_only)
+                      if mod_only and balanced(mod_only):
+                          if (
+                              ours_block
+                              and "=" in ours_block[-1]
+                              and "=" in mod_only[0]
+                              and not ours_block[-1].rstrip().endswith((",", "{", "("))
+                          ):
+                              merged[-1] = merged[-1].rstrip() + ","
+                          merged.extend(mod_only)
+                      elif mod_only:
+                          print(f"Skipped partial hunk in {rel_path} (handled by hook)")
                   else:
                       merged.append(raw_lines[i])
                       i += 1
 
               p.write_text("\n".join(merged) + "\n")
-              print(f"Auto-merged source file: {rel_path}")
               subprocess.run(["git", "add", rel_path], check=True)
+
+          # Ειδικό hook για το ImmersivePlayer.kt
+          for ip in Path(".").rglob("ImmersivePlayer.kt"):
+              txt = ip.read_text()
+              orig = txt
+              has_fs = "lyricsFullscreen" in txt
+
+              if "lyricsExpanded" not in txt:
+                  txt = re.sub(
+                      r"(?P<ind>[ \t]*)(var panel by rememberSaveable \{ mutableIntStateOf\(Panel\.NONE\) \})",
+                      r"\g<ind>\2\n\g<ind>var lyricsExpanded by rememberSaveable { mutableStateOf(false) }",
+                      txt,
+                      count=1,
+                  )
+
+              if "lyricsExpanded" in txt:
+                  back_replacement = (
+                      "BackHandler(enabled = lyricsExpanded || panel != Panel.NONE) {\n"
+                      "        if (lyricsExpanded) lyricsExpanded = false\n"
+                      + ("        else if (lyricsFullscreen) lyricsFullscreen = false\n" if has_fs else "")
+                      + "        else panel = Panel.NONE\n"
+                      "    }"
+                  )
+                  txt = re.sub(
+                      r"BackHandler\(enabled\s*=\s*panel\s*!=\s*Panel\.NONE\)\s*\{[^}]*\}",
+                      back_replacement,
+                      txt,
+                      count=1,
+                  )
+
+                  if "Panel.LYRICS -> Box(" not in txt:
+                      txt = re.sub(
+                          r"(?P<ind>[ \t]*)Panel\.LYRICS\s*->\s*lyricsContent\(inset\)",
+                          (
+                              r"\g<ind>Panel.LYRICS -> Box(\n"
+                              r"\g<ind>    Modifier.fillMaxSize().lyricsExpandGesture(\n"
+                              r"\g<ind>        enabled = com.music.spotui.data.preferences.LyricsSwipeExpandPref.on && !lyricsExpanded,\n"
+                              r"\g<ind>        onExpand = { lyricsExpanded = true },\n"
+                              r"\g<ind>    )\n"
+                              r"\g<ind>) {\n"
+                              r"\g<ind>    lyricsContent(inset)\n"
+                              r"\g<ind>}"
+                          ),
+                          txt,
+                          count=1,
+                      )
+
+                  if "fun Modifier.lyricsExpandGesture(" not in txt:
+                      txt += (
+                          "\nprivate fun Modifier.lyricsExpandGesture(\n"
+                          "    enabled: Boolean,\n"
+                          "    onExpand: () -> Unit = {},\n"
+                          "    onCollapse: () -> Unit = {},\n"
+                          "): Modifier = if (!enabled) this else pointerInput(enabled) {\n"
+                          "    awaitEachGesture {\n"
+                          "        val down = awaitFirstDown(requireUnconsumed = false)\n"
+                          "        var total = 0f\n"
+                          "        var triggered = false\n"
+                          "        while (!triggered) {\n"
+                          "            val event = awaitPointerEvent()\n"
+                          "            val change = event.changes.firstOrNull { it.id == down.id } ?: break\n"
+                          "            total += change.positionChange().y\n"
+                          "            val threshold = 76.dp.toPx()\n"
+                          "            if (total >= threshold) {\n"
+                          "                change.consume()\n"
+                          "                onExpand()\n"
+                          "                triggered = true\n"
+                          "            } else if (total <= -threshold) {\n"
+                          "                change.consume()\n"
+                          "                onCollapse()\n"
+                          "                triggered = true\n"
+                          "            }\n"
+                          "            if (!change.pressed) break\n"
+                          "        }\n"
+                          "    }\n"
+                          "}\n"
+                      )
+
+              if txt != orig:
+                  ip.write_text(txt)
+                  subprocess.run(["git", "add", str(ip)], check=True)
+                  print(f"Applied clean lyrics hooks to {ip}")
           PY
 
           if [ -n "$OLD_V" ] && [ "$OLD_V" != "$CLEAN_NEW_V" ]; then
