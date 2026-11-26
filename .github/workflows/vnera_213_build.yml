@@ -1450,7 +1450,7 @@ jobs:
                   userOverrideUntilPlayerClose = false
               }
 
-              fun markUserShuffleInteraction() { onUserPressedToggleShuffle(VnFpsPref.resolveAppContext()) }
+              fun markUserShuffleInteraction() { onUserPressedToggleShuffle(c = VnFpsPref.resolveAppContext()) }
 
               fun onUserTappedShuffleButton(wasShuffleOn: Boolean, c: Context? = null) {
                   onUserExplicitShuffleToggle(!wasShuffleOn, c)
@@ -3424,7 +3424,9 @@ jobs:
                       before_fn = wrap_user_toggle_shuffle_calls(src_shuffle[:m_shuffle_fn.start()])
                       player_fn = src_shuffle[m_shuffle_fn.start():pos]
                       player_fn = wrap_user_toggle_shuffle_calls(player_fn, use_live_state=True)
-                      after_fn = wrap_user_toggle_shuffle_calls(src_shuffle[pos:])
+                      # Insert the Compose observer INSIDE PlayerControlsBlock,
+                      # immediately after its opening brace (not at file scope).
+                      body_offset = m_shuffle_fn.end() - m_shuffle_fn.start()
                       guard = (
                           "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
                           "    androidx.compose.runtime.DisposableEffect(Unit) {\n"
@@ -3434,7 +3436,9 @@ jobs:
                           "        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShuffleContext, state.shuffle, state.smart) { actions.toggleShuffle() }\n"
                           "    }\n"
                       )
-                      src_shuffle = before_fn + guard + player_fn + after_fn
+                      player_fn = player_fn[:body_offset] + guard + player_fn[body_offset:]
+                      after_fn = wrap_user_toggle_shuffle_calls(src_shuffle[pos:])
+                      src_shuffle = before_fn + player_fn + after_fn
                   else:
                       raise RuntimeError("Could not locate PlayerControlsBlock for shuffle integration")
               if src_shuffle != old_shuffle:
