@@ -1390,10 +1390,13 @@ jobs:
               // Called immediately before EVERY user-facing Shuffle toggle.
               // The currently observed state is only a baseline; the player callback
               // confirms the result. This avoids guessing from a stale remembered value.
-              fun onUserPressedToggleShuffle(c: Context? = null) {
+              fun onUserPressedToggleShuffle(currentShuffleState: Boolean? = null, c: Context? = null) {
                   if (isInternalRestoring) return
                   val now = SystemClock.elapsedRealtime()
-                  val baseline = lastObservedShuffleState ?: lastKnownShuffleOn
+                  // Prefer the live state from the button's own Compose state.
+                  // A stale observer value can be the opposite of the actual player state,
+                  // which previously misclassified a manual OFF as an ON request.
+                  val baseline = currentShuffleState ?: lastObservedShuffleState ?: lastKnownShuffleOn
                   val desired = !baseline
                   lastUserTapMs = now
                   userTogglePending = true
@@ -3345,7 +3348,7 @@ jobs:
               if ct != orig_ct:
                   ctrl_kt.write_text(ct)
 
-          def wrap_user_toggle_shuffle_calls(src: str) -> str:
+          def wrap_user_toggle_shuffle_calls(src: str, use_live_state: bool = False) -> str:
               lines = src.splitlines(keepends=True)
               out_lines = []
               for idx, ln in enumerate(lines):
@@ -3357,19 +3360,21 @@ jobs:
                       continue
                   new_ln = ln
                   if "actions.toggleShuffle" in new_ln or "actions::toggleShuffle" in new_ln:
+                      live_arg = "state.shuffle" if use_live_state else ""
+                      guard_call = f"com.music.spotui.ui.screens.VnShuffleGuard.onUserPressedToggleShuffle({live_arg}); "
                       new_ln = re.sub(
                           r'\bactions::toggleShuffle\b',
-                          '{ com.music.spotui.ui.screens.VnShuffleGuard.onUserPressedToggleShuffle(); actions.toggleShuffle() }',
+                          '{ ' + guard_call + 'actions.toggleShuffle() }',
                           new_ln
                       )
                       new_ln = re.sub(
                           r'\bactions\.toggleShuffle\s*\(\s*\)',
-                          '{ com.music.spotui.ui.screens.VnShuffleGuard.onUserPressedToggleShuffle(); actions.toggleShuffle() }()',
+                          '{ ' + guard_call + 'actions.toggleShuffle() }()',
                           new_ln
                       )
                       new_ln = re.sub(
                           r'\bactions\.toggleShuffle\b(?!\s*\()',
-                          '{ com.music.spotui.ui.screens.VnShuffleGuard.onUserPressedToggleShuffle(); actions.toggleShuffle() }',
+                          '{ ' + guard_call + 'actions.toggleShuffle() }',
                           new_ln
                       )
                   elif re.search(r'\b(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode)\s*\(\s*\)', new_ln):
@@ -3394,8 +3399,24 @@ jobs:
               if "VnShuffleGuard.observeShuffleState" not in src_shuffle:
                   m_shuffle_fn = re.search(r'(@Composable\s+private fun PlayerControlsBlock\([\s\S]*?\n\)\s*\{)', src_shuffle)
                   if m_shuffle_fn:
-                      before_fn = wrap_user_toggle_shuffle_calls(src_shuffle[:m_shuffle_fn.end()])
-                      after_fn = wrap_user_toggle_shuffle_calls(src_shuffle[m_shuffle_fn.end():])
+                      # Find the matching end of PlayerControlsBlock so only its
+                      # controls receive the live state argument; other files/buttons
+                      # keep the observer-based fallback.
+                      body_start = m_shuffle_fn.end()
+                      depth = 1
+                      pos = body_start
+                      while pos < len(src_shuffle) and depth > 0:
+                          if src_shuffle[pos] == "{":
+                              depth += 1
+                          elif src_shuffle[pos] == "}":
+                              depth -= 1
+                          pos += 1
+                      if depth != 0:
+                          raise RuntimeError("Could not find end of PlayerControlsBlock")
+                      before_fn = wrap_user_toggle_shuffle_calls(src_shuffle[:m_shuffle_fn.start()])
+                      player_fn = src_shuffle[m_shuffle_fn.start():pos]
+                      player_fn = wrap_user_toggle_shuffle_calls(player_fn, use_live_state=True)
+                      after_fn = wrap_user_toggle_shuffle_calls(src_shuffle[pos:])
                       guard = (
                           "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
                           "    androidx.compose.runtime.DisposableEffect(Unit) {\n"
@@ -3405,7 +3426,7 @@ jobs:
                           "        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnShuffleContext, state.shuffle, state.smart) { actions.toggleShuffle() }\n"
                           "    }\n"
                       )
-                      src_shuffle = before_fn + guard + after_fn
+                      src_shuffle = before_fn + guard + player_fn + after_fn
                   else:
                       raise RuntimeError("Could not locate PlayerControlsBlock for shuffle integration")
               if src_shuffle != old_shuffle:
