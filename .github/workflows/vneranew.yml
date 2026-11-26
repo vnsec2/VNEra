@@ -2403,14 +2403,14 @@ jobs:
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
               t = re.sub(r'\nandroid \{\n\s*signingConfigs \{ getByName\("debug"\) \{[^}]+\} \}\n\s*buildTypes \{ getByName\("debug"\) \{[^}]+\} \}\n\}\n', '\n', t)
-              # Enable resValues in buildFeatures (required in AGP 9.1.0) and override package/label
+              # Match existing v2.3.1 package name: app.vnera.player (no .debug suffix)
               t += f'''
           android {{
               buildFeatures {{
                   resValues = true
               }}
               defaultConfig {{
-                  applicationId = "app.vnera.music"
+                  applicationId = "app.vnera.player"
                   versionCode = {build_vcode}
                   versionName = "{app_version}"
                   resValue("string", "app_name", "VNEra")
@@ -3830,17 +3830,55 @@ jobs:
           python3 <<'PY'
           import re
           from pathlib import Path
-          lyric_file = Path("app/src/main/java/com/music/spotui/ui/immersive/lyrics/ImmersiveLyricsPanel.kt")
-          if lyric_file.exists():
-              src = lyric_file.read_text()
-              if "leadLine" in src and "val focusLine = activeRow" not in src:
-                  pattern = r"    // Where the panel is heading,[\s\S]*?    val focusLine = if \(leadLine >= 0\) leadLine else activeRow\n"
-                  src2, count = re.subn(pattern,
-                      "    // Follow the actual timed line; predictive lead scrolling caused repeated target changes.\n    val focusLine = activeRow\n",
-                      src, count=1)
-                  if count == 1:
-                      lyric_file.write_text(src2)
-                      print("Patched fullscreen lyrics to follow the actual timed line")
+
+          patched_any = False
+          for kt_file in sorted(Path("app/src/main/java").rglob("*.kt")):
+              if kt_file.name in ("VnFrameRateManager.kt", "VnSettingsBackup.kt"):
+                  continue
+              src = kt_file.read_text()
+              if "leadLine" not in src and "focusLine" not in src:
+                  continue
+
+              orig = src
+
+              src = re.sub(
+                  r'// Where the panel is heading,[\s\S]*?val focusLine = if \(leadLine >= 0\) leadLine else activeRow',
+                  '// Follow the actual timed line; predictive lead scrolling caused repeated target changes.\n    val focusLine = activeRow',
+                  src
+              )
+              src = re.sub(
+                  r'\bval\s+focusLine\s*=\s*if\s*\(\s*leadLine\s*>=\s*0\s*\)\s*leadLine\s+else\s+activeRow\b',
+                  'val focusLine = activeRow',
+                  src
+              )
+
+              def strip_lead_from_effect(m):
+                  keys = [k.strip() for k in m.group(1).split(",") if k.strip()]
+                  filtered = [k for k in keys if k != "leadLine"]
+                  if not filtered:
+                      filtered = ["focusLine"]
+                  return f"LaunchedEffect({', '.join(filtered)})"
+
+              src = re.sub(
+                  r'LaunchedEffect\(([^)]*\bleadLine\b[^)]*)\)',
+                  strip_lead_from_effect,
+                  src
+              )
+
+              fallback_var = "focusLine" if "val focusLine" in src else "activeRow"
+              src = re.sub(
+                  r'(\b(?:animateScrollToItem|scrollToItem)\s*\(\s*(?:index\s*=\s*)?)leadLine\b',
+                  rf'\g<1>{fallback_var}',
+                  src
+              )
+
+              if src != orig:
+                  kt_file.write_text(src)
+                  patched_any = True
+                  print(f"Patched lyrics scroll stability in {kt_file}")
+
+          if patched_any:
+              print("Lyrics scroll stability patches applied cleanly.")
           PY
 
       - name: Build Debug APK
@@ -3858,7 +3896,7 @@ jobs:
           APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
           BADGING=$("$AAPT2" dump badging "$APK_FILE")
           echo "$BADGING" | grep -E "^(package:|application-label)"
-          echo "$BADGING" | grep -q "package: name='app.vnera.music'" || { echo "ERROR: APK package is not app.vnera.music"; exit 1; }
+          echo "$BADGING" | grep -q "package: name='app.vnera.player'" || { echo "ERROR: APK package is not app.vnera.player"; exit 1; }
           echo "$BADGING" | grep -q "application-label:'VNEra'" || { echo "ERROR: APK label is not VNEra"; exit 1; }
 
       - name: Upload Debug APK
