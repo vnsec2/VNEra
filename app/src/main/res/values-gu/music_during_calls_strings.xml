@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">કૉલ દરમિયાન સંગીત</string>
+    <string name="music_during_calls_detail">Android મંજૂરી આપે ત્યારે સંગીત ચાલુ રહે છે. કૉલ દરમિયાન સંગીત થોભી શકે છે અથવા તેનો અવાજ બંધ થઈ શકે છે.</string>
+</resources>

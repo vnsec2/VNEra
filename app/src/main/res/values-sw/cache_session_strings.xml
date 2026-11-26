@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Futa midia ya muda katika kipindi kijacho</string>
+    <string name="settings_storage_clear_on_start_detail">Imezimwa kwa chaguomsingi. Vipakuliwa vinahifadhiwa.</string>
+</resources>

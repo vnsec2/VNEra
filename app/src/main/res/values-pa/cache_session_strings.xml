@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">ਅਗਲੇ ਸੈਸ਼ਨ ਵਿੱਚ ਅਸਥਾਈ ਮੀਡੀਆ ਸਾਫ਼ ਕਰੋ</string>
+    <string name="settings_storage_clear_on_start_detail">ਮੂਲ ਰੂਪ ਵਿੱਚ ਬੰਦ। ਡਾਊਨਲੋਡ ਰੱਖੇ ਜਾਂਦੇ ਹਨ।</string>
+</resources>

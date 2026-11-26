@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Neteja els fitxers multimèdia temporals a la sessió següent</string>
+    <string name="settings_storage_clear_on_start_detail">Desactivat per defecte. Es conserven les baixades.</string>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Nhạc trong khi gọi</string>
+    <string name="music_during_calls_detail">Tiếp tục phát khi Android cho phép. Cuộc gọi vẫn có thể tạm dừng hoặc tắt tiếng nhạc.</string>
+</resources>

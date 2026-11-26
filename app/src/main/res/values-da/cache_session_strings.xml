@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Ryd midlertidige medier ved næste session</string>
+    <string name="settings_storage_clear_on_start_detail">Slået fra som standard. Downloads bevares.</string>
+</resources>

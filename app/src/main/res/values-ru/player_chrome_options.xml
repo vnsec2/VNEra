@@ -1,0 +1,8 @@
+<resources>
+    <string name="chrome_handle">Полоска закрытия плеера</string>
+    <string name="chrome_handle_detail">Жест закрытия работает и без полоски</string>
+    <string name="chrome_stats">Быстрый доступ к статистике</string>
+    <string name="chrome_stats_detail">Кнопка статистики в правом нижнем углу плеера</string>
+    <string name="chrome_canvas">Canvas без элементов управления</string>
+    <string name="chrome_canvas_detail">Скрывать кнопки во время Canvas; коснитесь видео, чтобы вернуть их</string>
+</resources>

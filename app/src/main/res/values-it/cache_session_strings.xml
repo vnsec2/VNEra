@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Cancella i contenuti temporanei alla prossima sessione</string>
+    <string name="settings_storage_clear_on_start_detail">Disattivato per impostazione predefinita. I download vengono conservati.</string>
+</resources>

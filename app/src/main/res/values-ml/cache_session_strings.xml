@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">അടുത്ത സെഷനിൽ താൽക്കാലിക മീഡിയ മായ്ക്കുക</string>
+    <string name="settings_storage_clear_on_start_detail">ഡിഫോൾട്ടായി ഓഫാണ്. ഡൗൺലോഡുകൾ സൂക്ഷിക്കും.</string>
+</resources>

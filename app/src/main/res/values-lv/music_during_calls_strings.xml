@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Mūzika zvanu laikā</string>
+    <string name="music_during_calls_detail">Atskaņošana turpinās, ja Android to atļauj. Zvani joprojām var apturēt atskaņošanu vai izslēgt skaņu.</string>
+</resources>

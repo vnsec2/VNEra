@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Zene hívás közben</string>
+    <string name="music_during_calls_detail">A lejátszás folytatódik, ha az Android engedi. A hívások így is szüneteltethetik vagy elnémíthatják a lejátszást.</string>
+</resources>

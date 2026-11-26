@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Kustuta ajutine meedia järgmisel seansil</string>
+    <string name="settings_storage_clear_on_start_detail">Vaikimisi väljas. Allalaadimised säilivad.</string>
+</resources>

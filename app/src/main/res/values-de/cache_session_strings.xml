@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Temporäre Medien bei der nächsten Sitzung leeren</string>
+    <string name="settings_storage_clear_on_start_detail">Standardmäßig aus. Downloads bleiben erhalten.</string>
+</resources>

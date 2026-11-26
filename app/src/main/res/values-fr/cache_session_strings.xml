@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Vider les médias temporaires à la prochaine session</string>
+    <string name="settings_storage_clear_on_start_detail">Désactivé par défaut. Les téléchargements sont conservés.</string>
+</resources>

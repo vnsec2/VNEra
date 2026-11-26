@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Μουσική κατά τις κλήσεις</string>
+    <string name="music_during_calls_detail">Η αναπαραγωγή συνεχίζεται όταν το επιτρέπει το Android. Οι κλήσεις μπορεί παρ’ όλα αυτά να την παύσουν ή να τη σιγάσουν.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="artwork_loop_title">Animate album artwork</string>
+    <string name="artwork_loop_detail">Slowly zoom the cover while a song plays.</string>
+</resources>

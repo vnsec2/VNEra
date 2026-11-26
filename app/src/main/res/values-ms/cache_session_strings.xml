@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Padam media sementara pada sesi seterusnya</string>
+    <string name="settings_storage_clear_on_start_detail">Dimatikan secara lalai. Muat turun dikekalkan.</string>
+</resources>

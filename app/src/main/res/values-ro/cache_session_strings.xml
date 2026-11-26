@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Șterge fișierele media temporare la sesiunea următoare</string>
+    <string name="settings_storage_clear_on_start_detail">Dezactivat implicit. Descărcările sunt păstrate.</string>
+</resources>

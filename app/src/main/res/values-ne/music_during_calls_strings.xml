@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">कलको समयमा सङ्गीत</string>
+    <string name="music_during_calls_detail">Android ले अनुमति दिएमा सङ्गीत बजिरहन्छ। तैपनि कलले सङ्गीत केही बेर रोक्न वा आवाज बन्द गर्न सक्छ।</string>
+</resources>

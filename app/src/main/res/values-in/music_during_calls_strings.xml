@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Musik saat panggilan</string>
+    <string name="music_during_calls_detail">Pemutaran berlanjut jika Android mengizinkannya. Panggilan tetap dapat menjeda atau membisukan pemutaran.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Növbəti sessiyada müvəqqəti medianı təmizlə</string>
+    <string name="settings_storage_clear_on_start_detail">Standart olaraq sönülüdür. Endirmələr saxlanılır.</string>
+</resources>

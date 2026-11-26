@@ -1,0 +1,3 @@
+<resources>
+    <string name="voice_recognition_unavailable">На устройстве нет приложения для распознавания речи.</string>
+</resources>

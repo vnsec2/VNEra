@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">पुढील सत्रात तात्पुरता मीडिया साफ करा</string>
+    <string name="settings_storage_clear_on_start_detail">मूलभूतपणे बंद. डाउनलोड जतन केले जातात.</string>
+</resources>

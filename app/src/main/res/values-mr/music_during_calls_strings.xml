@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">कॉलदरम्यान संगीत</string>
+    <string name="music_during_calls_detail">Android ने परवानगी दिल्यास संगीत सुरू राहील. तरीही कॉलमुळे संगीत थांबू शकते किंवा त्याचा आवाज बंद होऊ शकतो.</string>
+</resources>
