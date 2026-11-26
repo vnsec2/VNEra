@@ -1554,14 +1554,31 @@ jobs:
                               userOverrideUntilPlayerClose = true
                               return
                           }
-                          // Ignore stale/pre-toggle callbacks. The manual choice was
-                          // already saved by onUserPressedToggleShuffle; only confirm it
-                          // when the player reports the expected resulting state.
+                          // Confirm the actual resulting state, not merely the state
+                          // predicted before the button action. This is shared by every
+                          // intercepted Shuffle button, including controls outside the
+                          // main player.
                           if (isShuffleOn == userWantsShuffle) {
                               lastObservedShuffleState = isShuffleOn
                               userTogglePending = false
                               userTogglePendingUntilMs = 0L
                               smartShuffleActive = false
+                              return
+                          }
+                          // Some controls report the old state briefly. If the player
+                          // still reports OFF after the action has had time to settle,
+                          // treat that as the effective manual OFF choice so the
+                          // persistence guard cannot turn Shuffle back on.
+                          if (!isShuffleOn && userWantsShuffle && (now - lastUserTapMs) >= 1_200L) {
+                              manualShuffleOffByUser = true
+                              userOverrideUntilPlayerClose = true
+                              userWantsShuffle = false
+                              lastKnownShuffleOn = false
+                              lastObservedShuffleState = false
+                              userTogglePending = false
+                              userTogglePendingUntilMs = 0L
+                              VnFpsPref.saveShuffleStateAtomic(c, false)
+                              return
                           }
                           return
                       } else {
