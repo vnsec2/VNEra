@@ -1,127 +1,100 @@
-name: Prepare VNEra Base Branch
+name: Prepare VNERaBase & Revera Branches
 
 on:
   workflow_dispatch:
     inputs:
-      tag_or_version:
-        description: 'Έκδοση / Tag του Revera (π.χ. 1.0.10)'
+      new_version:
+        description: 'Νέα έκδοση Revera (π.χ. 1.0.10)'
         required: true
         default: '1.0.10'
         type: string
-      upstream_repo:
-        description: 'Upstream repo του Revera'
+      old_clean_branch:
+        description: 'Καθαρό branch προηγούμενης έκδοσης'
         required: true
-        default: 'caruno/Revera'
+        default: '1.0.9cleaned'
         type: string
-      source_branch:
-        description: 'Branch με τα Vn*.kt (κενό = αυτόματος εντοπισμός)'
+      old_custom_branch:
+        description: 'Branch 1.0.9 με τις δικές σου αλλαγές'
+        required: true
+        default: 'VNEraBase1.0.9'
+        type: string
+      zip_url:
+        description: 'Προαιρετικό direct link για το Revera zip (κενό = αυτόματο από GitHub tag)'
         required: false
         default: ''
+        type: string
+      upstream_repo:
+        description: 'Upstream GitHub repo του Revera'
+        required: true
+        default: 'caruno/Revera'
         type: string
 
 permissions:
   contents: write
 
 jobs:
-  prepare-base:
+  build-trees:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout & Collect Existing Workflows / Vn Files
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          path: _wf
-          fetch-depth: 0
+          path: _repo
 
-      - name: Fetch Clean Revera & Push Clean Branch
+      - name: Create Revera1.0.10 & VNERaBase1.0.10
         env:
-          RAW_VER: ${{ github.event.inputs.tag_or_version }}
+          NEW_V: ${{ github.event.inputs.new_version }}
+          OLD_CLEAN: ${{ github.event.inputs.old_clean_branch }}
+          OLD_CUSTOM: ${{ github.event.inputs.old_custom_branch }}
+          ZIP_URL: ${{ github.event.inputs.zip_url }}
           UPSTREAM: ${{ github.event.inputs.upstream_repo }}
-          SRC_BR: ${{ github.event.inputs.source_branch }}
         run: |
           set -euo pipefail
-          VER="${RAW_VER#v}"
-          echo "VER=$VER" >> "$GITHUB_ENV"
+          NEW_V="${NEW_V#v}"
 
-          mkdir -p /tmp/saved_wf /tmp/vn_files
-          cp -rf _wf/.github/workflows/. /tmp/saved_wf/
-
-          # Βρες τα Vn*.kt από το τρέχον branch, το source_branch ή το πιο πρόσφατο VNEraBase*
-          git -C _wf fetch origin '+refs/heads/*:refs/remotes/origin/*' --quiet || true
-          CANDIDATE="${SRC_BR:-$(git -C _wf branch -r --sort=-committerdate | grep 'origin/VNEraBase' | head -n1 | sed 's|.*origin/||')}"
-          find _wf/app -name 'Vn*.kt' -exec cp {} /tmp/vn_files/ \; 2>/dev/null || true
-          if [ -z "$(ls -A /tmp/vn_files 2>/dev/null)" ] && [ -n "$CANDIDATE" ]; then
-            git -C _wf checkout "origin/$CANDIDATE" -- app/ 2>/dev/null || true
-            find _wf/app -name 'Vn*.kt' -exec cp {} /tmp/vn_files/ \; 2>/dev/null || true
+          # 1. Λήψη & αποσυμπίεση του Revera zip -> branch Revera1.0.10
+          mkdir -p _zip _clean
+          if [ -n "$ZIP_URL" ]; then
+            curl -fsSL "$ZIP_URL" -o _zip/revera.zip
+          else
+            curl -fsSL "https://github.com/${UPSTREAM}/archive/refs/tags/v${NEW_V}.zip" -o _zip/revera.zip \
+              || curl -fsSL "https://github.com/${UPSTREAM}/archive/refs/tags/${NEW_V}.zip" -o _zip/revera.zip
+          fi
+          unzip -q _zip/revera.zip -d _zip/out
+          TOP_DIR=$(find _zip/out -mindepth 1 -maxdepth 1 -type d | head -n 1)
+          if [ -n "$TOP_DIR" ]; then
+            cp -a "$TOP_DIR"/. _clean/
+          else
+            cp -a _zip/out/. _clean/
           fi
 
-          git clone --depth 1 --branch "v${VER}" "https://github.com/${UPSTREAM}.git" _clean 2>/dev/null \
-            || git clone --depth 1 --branch "${VER}" "https://github.com/${UPSTREAM}.git" _clean
-          rm -rf _clean/.git
+          # Διατήρηση των workflows σου ανέπαφων (NewVERARUNNER.yml κ.λπ.)
           mkdir -p _clean/.github/workflows
-          cp -rf /tmp/saved_wf/. _clean/.github/workflows/
+          cp -rf _repo/.github/workflows/. _clean/.github/workflows/
 
           cd _clean
-          git init -b "revera-${VER}-clean"
+          git init -b "Revera${NEW_V}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A && git commit -m "Clean Revera ${VER}"
+          git add -A && git commit -m "Revera ${NEW_V} (from zip)"
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-          git push -f origin "revera-${VER}-clean"
+          git push -f origin "Revera${NEW_V}"
 
-      - name: Apply VNEra Base Patches & Push Base Branch
-        run: |
-          set -euo pipefail
-          cp -a _clean _base && rm -rf _base/.git && cd _base
-          mkdir -p app/src/main/java/com/music/spotui/ui/screens
-          cp -f /tmp/vn_files/*.kt app/src/main/java/com/music/spotui/ui/screens/ 2>/dev/null || true
+          # 2. Εφαρμογή όλων των δικών σου αλλαγών (1.0.9cleaned -> old_custom_branch) -> VNERaBase1.0.10
+          git checkout -b "VNERaBase${NEW_V}"
+          git -C ../_repo fetch origin "$OLD_CLEAN" "$OLD_CUSTOM"
+          git -C ../_repo diff --binary "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" -- . ':!.github/workflows' > /tmp/vnera.patch
 
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
+          if [ ! -s /tmp/vnera.patch ]; then
+            echo "ERROR: Δεν βρέθηκαν διαφορές ανάμεσα στα $OLD_CLEAN και $OLD_CUSTOM."
+            exit 1
+          fi
 
-          for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
-              if p.exists():
-                  p.write_text(p.read_text().replace("2.4.10", "2.2.20").replace("2.4.21", "2.2.20"))
+          git apply --3way --ignore-whitespace /tmp/vnera.patch || true
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            echo "ERROR: Υπάρχουν conflicts στα εξής αρχεία:"
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
 
-          for sp in Path("app/src/main/res").rglob("strings.xml"):
-              sp.write_text(re.sub(r'<string name="app_name"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', sp.read_text()))
-
-          g = Path("app/build.gradle.kts")
-          if g.exists():
-              t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', g.read_text())
-              if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
-                  t = re.sub(r'(?m)^(\s*android\s*\{)', 'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\\1', t, count=1)
-              if "META-INF/versions/9/OSGI-INF/MANIFEST.MF" not in t:
-                  t += '\nandroid { packaging { resources { excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"; excludes += "META-INF/versions/9/module-info.class" } } }\n'
-              g.write_text(t)
-
-          upd = Path("app/src/main/java/com/music/spotui/data/api/UpdateChecker.kt")
-          if upd.exists():
-              ut = upd.read_text()
-              add = []
-              if re.search(r'(?<![.\w])UPDATE_BASE_URL\b', ut) and "val UPDATE_BASE_URL" not in ut:
-                  add.append('private const val UPDATE_BASE_URL = "https://api.github.com/repos/vnsec2/VNEra"')
-              if re.search(r'(?<![.\w])PROJECT_URL\b', ut) and "val PROJECT_URL" not in ut:
-                  add.append('private const val PROJECT_URL = "https://github.com/vnsec2/VNEra"')
-              if add:
-                  upd.write_text(re.sub(r'(?m)^(package\s+[^\n]+)', '\\1\n' + '\n'.join(add), ut, count=1))
-
-          for ap in sorted(Path("app/src/main/java").rglob("*Activity.kt")):
-              at = ap.read_text()
-              if "setContent" in at and "VnFrameRateGuard" not in at:
-                  an, n = re.subn(r'(?m)^([ \t]*)(setContent(?:\([^)]*\))?\s*\{)\s*$', r'\1\2\n\1    com.music.spotui.ui.screens.VnFrameRateGuard()', at, count=1)
-                  if n: ap.write_text(an); break
-
-          for sf in sorted(Path("app/src/main/java").rglob("*SettingsScreen.kt")):
-              st = sf.read_text()
-              if "VnAppearanceSettingsCard" not in st and "VnSettingsBackup" in st:
-                  st = re.sub(r'(?m)^([ \t]*)(.*VnSettingsBackup\s*\()', r'\1com.music.spotui.ui.screens.VnAppearanceSettingsCard()\n\1com.music.spotui.ui.screens.VnPlaybackSettingsCard()\n\1com.music.spotui.ui.screens.VnLyricsSettingsCard()\n\1\2', st, count=1)
-                  sf.write_text(st)
-          PY
-
-          git init -b "VNEraBase${VER}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A && git commit -m "VNEra Base ${VER}"
-          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
-          git push -f origin "VNEraBase${VER}"
+          git add -A && git commit -m "VNERaBase ${NEW_V} (base + custom changes)"
+          git push -f origin "VNERaBase${NEW_V}"
