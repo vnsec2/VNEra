@@ -1372,6 +1372,7 @@ jobs:
               @Volatile private var lastUserTapMs = 0L
               @Volatile private var userTogglePending = false
               @Volatile private var userTogglePendingUntilMs = 0L
+              @Volatile private var shuffleStateBeforeUserToggle: Boolean? = null
               @Volatile private var isInternalRestoring = false
               @Volatile private var lastObservedShuffleState: Boolean? = null
               @Volatile private var prefsInitialized = false
@@ -1397,17 +1398,15 @@ jobs:
                   // Predict the resulting state from the most recent player observation,
                   // persist it immediately, then let the observer confirm the UI update.
                   val currentState = lastObservedShuffleState ?: lastKnownShuffleOn
-                  val desiredState = !currentState
                   lastUserTapMs = now
+                  shuffleStateBeforeUserToggle = currentState
                   userTogglePending = true
-                  userTogglePendingUntilMs = now + 3_500L
+                  userTogglePendingUntilMs = now + 5_000L
                   pendingAutoRestoreUntilMs = 0L
-                  manualShuffleOffByUser = !desiredState
-                  userWantsShuffle = desiredState
-                  lastKnownShuffleOn = desiredState
-                  userOverrideUntilPlayerClose = !desiredState
+                  // Do not commit a predicted state here. Different player controls can
+                  // deliver callbacks in a different order; the observed player state
+                  // after the tap is the source of truth.
                   activeBannerMessage = null
-                  VnFpsPref.saveShuffleStateAtomic(c, desiredState)
               }
 
               fun syncFromPrefs(remembered: Boolean, manualOff: Boolean) {
@@ -1429,6 +1428,7 @@ jobs:
               fun applyImportedManualOff(manualOff: Boolean, remembered: Boolean = VnFpsPref.rememberedShuffleState) {
                   userTogglePending = false
                   userTogglePendingUntilMs = 0L
+                  shuffleStateBeforeUserToggle = null
                   pendingAutoRestoreUntilMs = 0L
                   manualShuffleOffByUser = manualOff
                   val desired = if (manualOff) false else remembered
@@ -1452,6 +1452,7 @@ jobs:
                   lastObservedShuffleState = null
                   userTogglePending = false
                   userTogglePendingUntilMs = 0L
+                  shuffleStateBeforeUserToggle = null
                   pendingAutoRestoreUntilMs = 0L
                   if (!enabled) {
                       userWantsShuffle = false
@@ -1471,6 +1472,7 @@ jobs:
                   lastUserTapMs = now
                   userTogglePending = false
                   userTogglePendingUntilMs = 0L
+                  shuffleStateBeforeUserToggle = null
                   pendingAutoRestoreUntilMs = 0L
                   manualShuffleOffByUser = !newShuffleState
                   userOverrideUntilPlayerClose = !newShuffleState
@@ -1554,36 +1556,31 @@ jobs:
                               userOverrideUntilPlayerClose = true
                               return
                           }
-                          // Confirm the actual resulting state, not merely the state
-                          // predicted before the button action. This is shared by every
-                          // intercepted Shuffle button, including controls outside the
-                          // main player.
-                          if (isShuffleOn == userWantsShuffle) {
+                          val before = shuffleStateBeforeUserToggle
+                          // A real state transition after the user's tap confirms the
+                          // result for every intercepted Shuffle control. Persist that
+                          // actual result, never the pre-tap prediction.
+                          if (before != null && isShuffleOn != before) {
+                              manualShuffleOffByUser = !isShuffleOn
+                              userOverrideUntilPlayerClose = !isShuffleOn
+                              userWantsShuffle = isShuffleOn
+                              lastKnownShuffleOn = isShuffleOn
                               lastObservedShuffleState = isShuffleOn
                               userTogglePending = false
                               userTogglePendingUntilMs = 0L
+                              shuffleStateBeforeUserToggle = null
                               smartShuffleActive = false
+                              VnFpsPref.saveShuffleStateAtomic(c, isShuffleOn)
                               return
                           }
-                          // Some controls report the old state briefly. If the player
-                          // still reports OFF after the action has had time to settle,
-                          // treat that as the effective manual OFF choice so the
-                          // persistence guard cannot turn Shuffle back on.
-                          if (!isShuffleOn && userWantsShuffle && (now - lastUserTapMs) >= 1_200L) {
-                              manualShuffleOffByUser = true
-                              userOverrideUntilPlayerClose = true
-                              userWantsShuffle = false
-                              lastKnownShuffleOn = false
-                              lastObservedShuffleState = false
-                              userTogglePending = false
-                              userTogglePendingUntilMs = 0L
-                              VnFpsPref.saveShuffleStateAtomic(c, false)
-                              return
-                          }
+                          // No state transition yet: wait for the player's actual
+                          // callback rather than guessing or allowing auto-restore.
+                          lastObservedShuffleState = isShuffleOn
                           return
                       } else {
                           userTogglePending = false
                           userTogglePendingUntilMs = 0L
+                          shuffleStateBeforeUserToggle = null
                       }
                   }
 
