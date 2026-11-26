@@ -11,20 +11,20 @@ on:
       old_clean_branch:
         description: 'Καθαρό branch προηγούμενης έκδοσης'
         required: true
-        default: '1.0.9cleaned'
+        default: 'work/revera-1.0.9-clean'
         type: string
       old_custom_branch:
-        description: 'Branch 1.0.9 με τις δικές σου αλλαγές (π.χ. work/1.0.9)'
+        description: 'Branch με τις δικές σου αλλαγές'
         required: true
-        default: 'work/1.0.9'
+        default: 'vnera-2.3.1'
         type: string
       zip_url:
-        description: 'Προαιρετικό direct link για το Revera zip (κενό = αυτόματο από GitHub tag)'
+        description: 'Direct link για το zip του Revera 1.0.10 (υποχρεωτικό αν δεν υπάρχει public tag)'
         required: false
         default: ''
         type: string
       upstream_repo:
-        description: 'Upstream GitHub repo του Revera'
+        description: 'Upstream GitHub repo του Revera (owner/repo)'
         required: true
         default: 'caruno/Revera'
         type: string
@@ -52,27 +52,52 @@ jobs:
           NEW_V="${NEW_V#v}"
           OLD_V=$(echo "$OLD_CLEAN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
 
-          # 1. Έλεγχος ότι παίρνουμε ΜΟΝΟ τις δικές σου αλλαγές (όχι αρχεία του 1.0.9)
+          # 1. Εντοπισμός μόνο των 11 καθαρών αρχείων αλλαγών (χωρίς παλιά .zip ή extract-source.yml)
           git -C _repo fetch origin "$OLD_CLEAN" "$OLD_CUSTOM"
-          CHANGED_COUNT=$(git -C _repo diff --name-only "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" -- . ':!.github/workflows' | wc -l)
+          EXCLUDES=(-- . ':!.github/workflows' ':!*.zip' ':!extract-source.yml')
+          CHANGED_COUNT=$(git -C _repo diff --name-only "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" "${EXCLUDES[@]}" | wc -l)
+
           echo "=== Αρχεία που θα μεταφερθούν από το ${OLD_CUSTOM} ($CHANGED_COUNT) ==="
-          git -C _repo diff --name-status "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" -- . ':!.github/workflows'
+          git -C _repo diff --name-status "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" "${EXCLUDES[@]}"
 
           if [ "$CHANGED_COUNT" -eq 0 ] || [ "$CHANGED_COUNT" -gt 60 ]; then
-            echo "ERROR: Βρέθηκαν $CHANGED_COUNT αρχεία. Έλεγξε ότι το '$OLD_CLEAN' και το '$OLD_CUSTOM' είναι της ίδιας έκδοσης."
+            echo "ERROR: Βρέθηκαν $CHANGED_COUNT αρχεία. Έλεγξε τα ονόματα των branches."
             exit 1
           fi
 
-          git -C _repo diff --binary "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" -- . ':!.github/workflows' > /tmp/vnera.patch
+          git -C _repo diff --binary "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" "${EXCLUDES[@]}" > /tmp/vnera.patch
 
           # 2. Λήψη & αποσυμπίεση του Revera zip -> branch Revera1.0.10
           mkdir -p _zip _clean
+          DOWNLOADED=0
           if [ -n "$ZIP_URL" ]; then
-            curl -fsSL "$ZIP_URL" -o _zip/revera.zip
+            echo "Λήψη από zip_url: $ZIP_URL"
+            if curl -fsSL "$ZIP_URL" -o _zip/revera.zip; then
+              DOWNLOADED=1
+            else
+              echo "ERROR: Το link στο zip_url έδωσε 404 ή δεν είναι προσβάσιμο: $ZIP_URL"
+              exit 1
+            fi
           else
-            curl -fsSL "https://github.com/${UPSTREAM}/archive/refs/tags/v${NEW_V}.zip" -o _zip/revera.zip \
-              || curl -fsSL "https://github.com/${UPSTREAM}/archive/refs/tags/${NEW_V}.zip" -o _zip/revera.zip
+            for U in \
+              "https://github.com/${UPSTREAM}/archive/refs/tags/v${NEW_V}.zip" \
+              "https://github.com/${UPSTREAM}/archive/refs/tags/${NEW_V}.zip" \
+              "https://api.github.com/repos/${UPSTREAM}/zipball/v${NEW_V}" \
+              "https://api.github.com/repos/${UPSTREAM}/zipball/${NEW_V}"; do
+              if curl -fsSL -H "Accept: application/vnd.github+json" "$U" -o _zip/revera.zip 2>/dev/null; then
+                DOWNLOADED=1
+                echo "Βρέθηκε zip στο: $U"
+                break
+              fi
+            done
           fi
+
+          if [ "$DOWNLOADED" -ne 1 ]; then
+            echo "ERROR: Δεν βρέθηκε το zip της έκδοσης ${NEW_V} στο '${UPSTREAM}' (404 Not Found)."
+            echo "Λύση: Βάλε το ακριβές download link του Revera ${NEW_V} zip στο πεδίο 'zip_url' όταν πατάς Run workflow."
+            exit 1
+          fi
+
           unzip -q _zip/revera.zip -d _zip/out
           TOP_DIR=$(find _zip/out -mindepth 1 -maxdepth 1 -type d | head -n 1)
           if [ -n "$TOP_DIR" ]; then
@@ -98,11 +123,10 @@ jobs:
           export GIT_ALTERNATE_OBJECT_DIRECTORIES="$(realpath ../_repo/.git/objects)"
 
           if ! git apply --3way --ignore-whitespace /tmp/vnera.patch; then
-            echo "ERROR: Υπήρξε conflict κατά τη συγχώνευση των αλλαγών σου πάνω στην ${NEW_V}. Δες παραπάνω ποιο αρχείο κόλλησε."
+            echo "ERROR: Υπήρξε conflict κατά τη συγχώνευση των αλλαγών σου πάνω στην ${NEW_V}."
             exit 1
           fi
 
-          # Μην υποβαθμιστεί τυχαία το versionName στη νέα έκδοση
           if [ -n "$OLD_V" ] && [ "$OLD_V" != "$NEW_V" ]; then
             for gf in app/build.gradle.kts gradle/libs.versions.toml; do
               [ -f "$gf" ] && sed -i "s/\"${OLD_V}\"/\"${NEW_V}\"/g" "$gf"
