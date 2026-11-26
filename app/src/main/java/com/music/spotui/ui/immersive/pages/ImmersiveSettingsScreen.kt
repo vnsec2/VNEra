@@ -508,6 +508,14 @@ internal fun LyricsPage(open: (SettingsPage) -> Unit, back: () -> Unit) {
     ImmersivePage(title = stringResource(R.string.settings_section_lyrics), onBack = back) {
         immersiveGroup("lyrics") {
             row { com.music.spotui.ui.components.LyricsAppearanceControls() }
+            row {
+                ImmersiveSwitchRow(
+                    stringResource(R.string.vn_lyrics_swipe_expand_title),
+                    checked = com.music.spotui.data.preferences.LyricsSwipeExpandPref.on,
+                    onChecked = { com.music.spotui.data.preferences.LyricsSwipeExpandPref.set(ctx, it) },
+                    detail = stringResource(R.string.vn_lyrics_swipe_expand_detail),
+                )
+            }
             // Lyrics: word by word (karaoke) first, or line by line with Spotify's first.
             row {
                 ImmersiveSwitchRow(
@@ -679,15 +687,9 @@ private fun CrossfadePage(back: () -> Unit) {
             }
         }
         if (mode == TransitionMode.AUTOMIX) immersiveGroup("automix-length", headerRes = R.string.settings_automix_length, footerRes = R.string.settings_automix_length_detail) {
-            listOf(R.string.settings_automix_length_short, R.string.settings_automix_length_auto, R.string.settings_automix_length_long).forEachIndexed { i, label ->
+            listOf(R.string.settings_automix_length_short, R.string.settings_automix_length_auto, R.string.settings_automix_length_long, R.string.settings_automix_length_very_long).forEachIndexed { i, label ->
                 row { ImmersiveChoiceRow(stringResource(label), selected = automix.mixLength == i, onClick = { automix.changeMixLength(i) }) }
             }
-            row { DurationStepper(R.string.settings_automix_duration_min, automix.minDurationSeconds, zero = R.string.settings_automix_duration_auto) { v ->
-                automix.changeDurationBounds(v, if (automix.maxDurationSeconds in 1 until v) v else automix.maxDurationSeconds)
-            } }
-            row { DurationStepper(R.string.settings_automix_duration_max, automix.maxDurationSeconds, zero = R.string.settings_automix_duration_none) { v ->
-                automix.changeDurationBounds(if (v in 1 until automix.minDurationSeconds) v else automix.minDurationSeconds, v)
-            } }
         }
         if (mode == TransitionMode.AUTOMIX) immersiveGroup("automix-tempo", headerRes = R.string.settings_automix_tempo, footerRes = R.string.settings_automix_tempo_detail) {
             listOf(R.string.settings_automix_tempo_strict, R.string.settings_automix_tempo_normal, R.string.settings_automix_tempo_wide).forEachIndexed { i, label ->
@@ -1013,6 +1015,34 @@ private fun DisplayPage(open: (SettingsPage) -> Unit, back: () -> Unit) {
             }
         }
         immersiveGroup("display") {
+            row {
+                ImmersiveSwitchRow(
+                    stringResource(R.string.vn_player_lyrics_wrap_title),
+                    checked = com.music.spotui.data.preferences.PlayerLyricsWrapPref.on,
+                    onChecked = { com.music.spotui.data.preferences.PlayerLyricsWrapPref.set(ctx, it) },
+                    detail = stringResource(R.string.vn_player_lyrics_wrap_detail),
+                )
+            }
+            row {
+                ImmersiveSwitchRow(
+                    stringResource(R.string.vn_player_volume_buttons_title),
+                    checked = com.music.spotui.data.preferences.PlayerVolumeButtonsPref.enabled,
+                    onChecked = { com.music.spotui.data.preferences.PlayerVolumeButtonsPref.setEnabled(ctx, it) },
+                    detail = stringResource(R.string.vn_player_volume_buttons_detail),
+                )
+            }
+            if (com.music.spotui.data.preferences.PlayerVolumeButtonsPref.enabled) row {
+                val step = com.music.spotui.data.preferences.PlayerVolumeButtonsPref.step
+                ImmersiveGroupRow(
+                    title = stringResource(R.string.vn_player_volume_step_title),
+                    detail = stringResource(R.string.vn_player_volume_step_detail),
+                    value = "$step%",
+                    onClick = {
+                        val next = when (step) { 1 -> 2; 2 -> 5; 5 -> 10; 10 -> 15; else -> 1 }
+                        com.music.spotui.data.preferences.PlayerVolumeButtonsPref.setStep(ctx, next)
+                    },
+                )
+            }
             if (look == com.music.spotui.data.preferences.Look.IMMERSIVE) row {
                 val glass = com.music.spotui.ui.immersive.shell.liquidGlassAvailability()
                 val unsupported = glass == com.music.spotui.ui.immersive.shell.LiquidGlassAvailability.UNSUPPORTED
@@ -1238,6 +1268,7 @@ private fun AppPage(navController: NavController, back: () -> Unit) {
     val scope = rememberCoroutineScope()
     val check = com.music.spotui.data.api.rememberUpdateCheckState(ctx)
     ImmersivePage(title = stringResource(R.string.settings_section_app), onBack = back) {
+        item { com.music.spotui.ui.screens.VnSettingsBackupRow() }
         immersiveGroup("updates") {
             row {
                 ImmersiveSwitchRow(stringResource(R.string.settings_auto_update_title), checked = com.music.spotui.data.preferences.AutoUpdateCheckPref.on,

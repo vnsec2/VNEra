@@ -41,6 +41,14 @@
     <string name="ab_loop_clear" tools:ignore="MissingTranslation">Clear</string>
     <string name="ab_loop_waiting_b" tools:ignore="MissingTranslation">A: %1$s · Set B</string>
     <string name="ab_loop_active" tools:ignore="MissingTranslation">Loop %1$s – %2$s</string>
+    <string name="vn_player_lyrics_wrap_title" tools:ignore="MissingTranslation">Wrap long lyric lines</string>
+    <string name="vn_lyrics_swipe_expand_title" tools:ignore="MissingTranslation">Swipe to expand lyrics</string>
+    <string name="vn_lyrics_swipe_expand_detail" tools:ignore="MissingTranslation">Swipe down on lyrics for full screen; swipe up to return to the player.</string>
+    <string name="vn_player_lyrics_wrap_detail" tools:ignore="MissingTranslation">Show the rest of the current lyric underneath instead of replacing it with the next lyric. On by default.</string>
+    <string name="vn_player_volume_buttons_title" tools:ignore="MissingTranslation">Volume buttons</string>
+    <string name="vn_player_volume_buttons_detail" tools:ignore="MissingTranslation">Tap the volume icons beside the slider to raise or lower volume. Off by default.</string>
+    <string name="vn_player_volume_step_title" tools:ignore="MissingTranslation">Volume step</string>
+    <string name="vn_player_volume_step_detail" tools:ignore="MissingTranslation">Percentage changed with each tap. Tap to cycle: 1, 2, 5, 10, 15%.</string>
     <string name="settings_player_lyrics_two_lines_title" tools:ignore="MissingTranslation">Lyrics preview lines</string>
     <string name="settings_player_lyrics_two_lines_detail" tools:ignore="MissingTranslation">Scroll 1, 2, or 3 lines in the player\u2019s fixed lyric strip</string>
     <string name="settings_player_lyrics_lines_1" tools:ignore="MissingTranslation">1 line</string>
