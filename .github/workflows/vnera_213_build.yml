@@ -86,7 +86,15 @@ jobs:
           git remote add upstream https://revera.caruno.wtf/carunodev/Revera.git
           git fetch upstream +refs/heads/*:refs/remotes/upstream/* +refs/tags/*:refs/tags/* --prune
 
-          git archive refs/tags/v1.0.9 | tar -x -C /tmp/revera_109
+          REVERA_BASE_TAG="v1.0.9"
+          git rev-parse --verify "refs/tags/${REVERA_BASE_TAG}^{commit}" >/dev/null || {
+            echo "ERROR: Δεν βρέθηκε το Revera source tag ${REVERA_BASE_TAG}"
+            exit 1
+          }
+          REVERA_BASE_COMMIT=$(git rev-parse "refs/tags/${REVERA_BASE_TAG}^{commit}")
+          echo "Using exact Revera source: ${REVERA_BASE_TAG} (${REVERA_BASE_COMMIT})"
+
+          git archive "refs/tags/${REVERA_BASE_TAG}" | tar -x -C /tmp/revera_109
           NEW_SETTINGS=$(find /tmp/revera_109 -maxdepth 3 \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1)
           [ -n "$NEW_SETTINGS" ] || { echo "ERROR: Δεν βρέθηκε Gradle root στο Revera v1.0.9"; exit 1; }
           NEW_BASE_ROOT=$(dirname "$NEW_SETTINGS")
@@ -133,10 +141,10 @@ jobs:
           cp -a /tmp/vnera_custom/. .
           git add -A && git commit --allow-empty -q -m "VNEra custom changes"
 
-          git checkout -q -b revera-108 master
+          git checkout -q -b revera-109 master
           find . -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
           cp -a "$NEW_BASE_ROOT"/. .
-          git add -A && git commit --allow-empty -q -m "Revera 1.0.8 base"
+          git add -A && git commit --allow-empty -q -m "Revera 1.0.9 base"
 
           if ! git cherry-pick --allow-empty -X theirs vnera-custom; then
             echo "Cherry-pick had conflicts; attempting to keep VNEra custom versions for conflicted paths."
