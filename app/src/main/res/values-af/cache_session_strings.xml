@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Vee tydelike media by volgende sessie uit</string>
+    <string name="settings_storage_clear_on_start_detail">Af by verstek. Afgelaaide lêers word behou.</string>
+</resources>

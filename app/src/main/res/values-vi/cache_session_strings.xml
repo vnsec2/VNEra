@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Xóa nội dung tạm trong phiên tiếp theo</string>
+    <string name="settings_storage_clear_on_start_detail">Mặc định tắt. Các tệp tải xuống được giữ lại.</string>
+</resources>

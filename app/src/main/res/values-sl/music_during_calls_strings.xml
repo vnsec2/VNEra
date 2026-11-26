@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Glasba med klici</string>
+    <string name="music_during_calls_detail">Predvajanje se nadaljuje, če Android to dovoli. Klici lahko kljub temu začasno ustavijo predvajanje ali utišajo zvok.</string>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">เพลงระหว่างการโทร</string>
+    <string name="music_during_calls_detail">เล่นต่อเมื่อ Android อนุญาต การโทรอาจยังหยุดเล่นชั่วคราวหรือปิดเสียงได้</string>
+</resources>

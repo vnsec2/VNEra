@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">新会话时清除临时媒体</string>
+    <string name="settings_storage_clear_on_start_detail">默认关闭。保留已下载文件。</string>
+</resources>

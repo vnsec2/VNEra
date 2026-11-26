@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Ideiglenes média törlése a következő munkamenetben</string>
+    <string name="settings_storage_clear_on_start_detail">Alapértelmezés szerint kikapcsolva. A letöltések megmaradnak.</string>
+</resources>

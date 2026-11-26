@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">مسح الوسائط المؤقتة في الجلسة التالية</string>
+    <string name="settings_storage_clear_on_start_detail">معطل افتراضياً. يتم الاحتفاظ بالتنزيلات.</string>
+</resources>

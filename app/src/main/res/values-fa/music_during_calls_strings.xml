@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">موسیقی هنگام تماس</string>
+    <string name="music_during_calls_detail">اگر Android اجازه دهد، پخش ادامه می‌یابد. تماس‌ها همچنان ممکن است پخش را موقتاً متوقف یا بی‌صدا کنند.</string>
+</resources>

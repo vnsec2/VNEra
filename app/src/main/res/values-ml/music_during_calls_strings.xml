@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">കോളുകൾക്കിടെ സംഗീതം</string>
+    <string name="music_during_calls_detail">Android അനുവദിക്കുമ്പോൾ സംഗീതം തുടരും. എന്നിരുന്നാലും കോളുകൾ സംഗീതം താൽക്കാലികമായി നിർത്തുകയോ ശബ്ദം നിശ്ശബ്ദമാക്കുകയോ ചെയ്തേക്കാം.</string>
+</resources>

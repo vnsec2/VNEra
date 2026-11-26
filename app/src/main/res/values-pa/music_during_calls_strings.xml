@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">ਕਾਲਾਂ ਦੌਰਾਨ ਸੰਗੀਤ</string>
+    <string name="music_during_calls_detail">ਜੇ Android ਇਜਾਜ਼ਤ ਦੇਵੇ ਤਾਂ ਸੰਗੀਤ ਵੱਜਦਾ ਰਹੇਗਾ। ਕਾਲਾਂ ਫਿਰ ਵੀ ਸੰਗੀਤ ਨੂੰ ਰੋਕ ਸਕਦੀਆਂ ਹਨ ਜਾਂ ਇਸ ਦੀ ਆਵਾਜ਼ ਬੰਦ ਕਰ ਸਕਦੀਆਂ ਹਨ।</string>
+</resources>

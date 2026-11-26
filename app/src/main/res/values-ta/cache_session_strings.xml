@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">அடுத்த அமர்வில் தற்காலிக ஊடகத்தை அழி</string>
+    <string name="settings_storage_clear_on_start_detail">இயல்பாக முடக்கப்பட்டுள்ளது. பதிவிறக்கங்கள் பாதுகாக்கப்படும்.</string>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">በሚቀጥለው ክፍለ ጊዜ ጊዜያዊ ሚዲያን አጽዳ</string>
+    <string name="settings_storage_clear_on_start_detail">በነባሪ ጠፍቷል። የወረዱ ፋይሎች ይቀመጣሉ።</string>
+</resources>

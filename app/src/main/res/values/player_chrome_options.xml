@@ -1,0 +1,10 @@
+<resources>
+    <string name="chrome_handle">Show player drag handle</string>
+    <string name="chrome_handle_detail">Keep the swipe gesture even when the handle is hidden</string>
+    <string name="chrome_stats">Stats shortcut</string>
+    <string name="chrome_stats_detail">Show Stats for nerds in the bottom-right corner of the player</string>
+    <string name="chrome_canvas">Unobstructed Canvas</string>
+    <string name="chrome_canvas_detail">Hide playback controls while Canvas plays; tap the video to show them</string>
+    <string name="player_cover_fullscreen">Full-screen cover art</string>
+    <string name="player_cover_fullscreen_detail">Off shows the album cover as a contained square</string>
+</resources>

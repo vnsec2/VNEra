@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">다음 세션에서 임시 미디어 삭제</string>
+    <string name="settings_storage_clear_on_start_detail">기본적으로 꺼져 있습니다. 다운로드는 유지됩니다.</string>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">Zənglər zamanı musiqi</string>
+    <string name="music_during_calls_detail">Android icazə verdikdə oxutma davam edir. Zənglər yenə də oxutmanı dayandıra və ya səsini kəsə bilər.</string>
+</resources>

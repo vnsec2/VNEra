@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="music_during_calls_title">কলের সময় সঙ্গীত</string>
+    <string name="music_during_calls_detail">Android অনুমতি দিলে সঙ্গীত বাজতে থাকবে। তবে কলের কারণে সঙ্গীত থামতে পারে বা শব্দ বন্ধ হতে পারে।</string>
+</resources>

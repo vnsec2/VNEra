@@ -1,0 +1,4 @@
+<resources>
+    <string name="settings_storage_clear_on_start">Εκκαθάριση προσωρινών πολυμέσων στην επόμενη συνεδρία</string>
+    <string name="settings_storage_clear_on_start_detail">Ανενεργό από προεπιλογή. Οι λήψεις διατηρούνται.</string>
+</resources>
