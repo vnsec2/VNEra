@@ -2375,14 +2375,27 @@ jobs:
                   tn = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', rf'\g<1>.set({fallback_sdk})', re.sub(r'(compileSdk|targetSdk)\s*=\s*37', rf'\g<1> = {fallback_sdk}', t))
                   if t != tn: gf.write_text(tn)
 
-          for sp in Path("app/src/main/res").rglob("strings.xml"):
+          # Rebrand app_name across ALL source sets (including src/debug/res/values/strings.xml)
+          for sp in Path("app/src").rglob("strings.xml"):
               sx = sp.read_text()
               sxn = re.sub(r'<string name="app_name"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', sx)
               if sx != sxn: sp.write_text(sxn)
 
+          for mf in Path("app/src").rglob("AndroidManifest.xml"):
+              mt = mf.read_text()
+              mtn = re.sub(r'android:label\s*=\s*"Revera[^"]*"', 'android:label="@string/app_name"', mt, flags=re.I)
+              if mt != mtn: mf.write_text(mtn)
+
           if gradle.exists():
               t = gradle.read_text()
-              t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
+              if re.search(r'applicationId\s*=', t):
+                  t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
+              else:
+                  t = re.sub(r'(defaultConfig\s*\{)', r'\1\n        applicationId = "app.vnera.music"', t, count=1)
+              t = re.sub(r'(?m)^\s*applicationIdSuffix\s*=\s*".*?"\s*\n?', '', t)
+              t = re.sub(r'(?m)^\s*versionNameSuffix\s*=\s*".*?"\s*\n?', '', t)
+              t = re.sub(r'resValue\(\s*"string"\s*,\s*"app_name"\s*,\s*"[^"]*"\s*\)', 'resValue("string", "app_name", "VNEra")', t)
+              t = re.sub(r'("appName"\s*(?:to|=)\s*)"[^"]*"', r'\1"VNEra"', t)
               t = re.sub(r'versionName\s*=\s*".*?"', f'versionName = "{app_version}"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
@@ -2392,6 +2405,12 @@ jobs:
               if "META-INF/versions/9/OSGI-INF/MANIFEST.MF" not in t:
                   t += '\nandroid { packaging { resources { excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"; excludes += "META-INF/versions/9/module-info.class" } } }\n'
               gradle.write_text(t)
+
+          for kf_brand in sorted(Path("app/src/main/java").rglob("*.kt")):
+              if kf_brand.name == "VnFrameRateManager.kt": continue
+              kbt = kf_brand.read_text()
+              kbtn = re.sub(r'"Revera(?:\s+(?:dev|Dev|Music))?"', '"VNEra"', kbt)
+              if kbt != kbtn: kf_brand.write_text(kbtn)
 
           upd = Path("app/src/main/java/com/music/spotui/data/api/UpdateChecker.kt")
           if upd.exists():
@@ -3031,7 +3050,6 @@ jobs:
               count = 0
               out = src
 
-              # 1. Direct function identifier pass: onClick = onToggleShuffle / onClick = onShuffle
               out, n1 = re.subn(
                   r'(\bonClick\s*=\s*)(onToggleShuffle|onShuffle)\b(?!\s*\()',
                   r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); \2() }',
@@ -3039,7 +3057,6 @@ jobs:
               )
               count += n1
 
-              # 2. Method/property references: onClick = foo::toggleShuffle or foo.toggleShuffle
               out, n2 = re.subn(
                   r'(\b(?:onClick|onToggleShuffle|onShuffle)\s*=\s*)([A-Za-z0-9_.]+)(?:::|\.)(toggleShuffle|onToggleShuffle|shuffleQueue|toggleQueueShuffle)\b(?!\s*\()',
                   r'\1{ com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle(); \2.\3() }',
@@ -3047,7 +3064,6 @@ jobs:
               )
               count += n2
 
-              # 3. Lambda bodies (multiline + nested-brace safe) calling any shuffle action
               lines = out.splitlines(keepends=True)
               i = 0
               while i < len(lines):
@@ -3083,7 +3099,6 @@ jobs:
                   i += 1
               out = "".join(lines)
 
-              # 4. Any button/clickable block rendering Icons.*.Shuffle or ShuffleOn (catches Queue header button)
               lines = out.splitlines(keepends=True)
               for idx, line in enumerate(lines):
                   if re.search(r'\bIcons\.[A-Za-z0-9_]+\.Shuffle(?:On)?\b', line):
@@ -3126,7 +3141,6 @@ jobs:
                                   break
               out = "".join(lines)
 
-              # 5. ViewModel / Controller toggleShuffle functions
               out, n5 = re.subn(
                   r'(?m)^([ \t]*(?:override\s+)?fun\s+(?:toggleShuffle|toggleQueueShuffle)\s*\([^)]*\)\s*(?::\s*[A-Za-z0-9_<>?]+\s*)?\{)',
                   r'\1\n        com.music.spotui.ui.screens.VnShuffleGuard.onUserToggleShuffle()',
