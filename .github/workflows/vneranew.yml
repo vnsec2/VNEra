@@ -2327,7 +2327,7 @@ jobs:
           EOF
 
           python3 <<'PY'
-          import os, re
+          import os, re, shutil
           from pathlib import Path
 
           has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
@@ -2365,6 +2365,8 @@ jobs:
           for p in [Path("gradle/libs.versions.toml"), Path("build.gradle.kts"), Path("settings.gradle.kts")]:
               if p.exists():
                   t = p.read_text().replace("2.4.10", "2.2.20").replace("2.4.21", "2.2.20").replace("9.4.1", target_agp)
+                  if p.name == "settings.gradle.kts":
+                      t = re.sub(r'rootProject\.name\s*=\s*"[^"]*"', 'rootProject.name = "VNEra"', t)
                   if not has_sdk_37:
                       t = re.sub(r'(compileSdk|targetSdk)\s*=\s*"?37"?', rf'\g<1> = "{fallback_sdk}"', t)
                   p.write_text(t)
@@ -2375,33 +2377,63 @@ jobs:
                   tn = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', rf'\g<1>.set({fallback_sdk})', re.sub(r'(compileSdk|targetSdk)\s*=\s*37', rf'\g<1> = {fallback_sdk}', t))
                   if t != tn: gf.write_text(tn)
 
-          # Rebrand app_name across ALL source sets (including src/debug/res/values/strings.xml)
+          # Rebrand app_name across ALL source sets (main, debug, release)
           for sp in Path("app/src").rglob("strings.xml"):
               sx = sp.read_text()
-              sxn = re.sub(r'<string name="app_name"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', sx)
+              sxn = re.sub(r'<string\s+name="app_name[^"]*"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', sx, flags=re.DOTALL)
               if sx != sxn: sp.write_text(sxn)
 
+          # Force <application android:label="@string/app_name"> in ALL AndroidManifest.xml files
           for mf in Path("app/src").rglob("AndroidManifest.xml"):
               mt = mf.read_text()
-              mtn = re.sub(r'android:label\s*=\s*"Revera[^"]*"', 'android:label="@string/app_name"', mt, flags=re.I)
+              def repl_app_tag(m):
+                  tag = m.group(0)
+                  if 'android:label=' in tag:
+                      return re.sub(r'android:label\s*=\s*"[^"]*"', 'android:label="@string/app_name"', tag)
+                  return tag
+              mtn = re.sub(r'<application\b[^>]*>', repl_app_tag, mt, flags=re.DOTALL)
               if mt != mtn: mf.write_text(mtn)
 
           if gradle.exists():
               t = gradle.read_text()
-              if re.search(r'applicationId\s*=', t):
-                  t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              else:
-                  t = re.sub(r'(defaultConfig\s*\{)', r'\1\n        applicationId = "app.vnera.music"', t, count=1)
-              t = re.sub(r'(?m)^\s*applicationIdSuffix\s*=\s*".*?"\s*\n?', '', t)
-              t = re.sub(r'(?m)^\s*versionNameSuffix\s*=\s*".*?"\s*\n?', '', t)
-              t = re.sub(r'resValue\(\s*"string"\s*,\s*"app_name"\s*,\s*"[^"]*"\s*\)', 'resValue("string", "app_name", "VNEra")', t)
+              t = re.sub(r'resValue\([^)]*"[^"]*Revera[^"]*"[^)]*\)', 'resValue("string", "app_name", "VNEra")', t, flags=re.I)
               t = re.sub(r'("appName"\s*(?:to|=)\s*)"[^"]*"', r'\1"VNEra"', t)
               t = re.sub(r'versionName\s*=\s*".*?"', f'versionName = "{app_version}"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
               t = re.sub(r'\nandroid \{\n\s*signingConfigs \{ getByName\("debug"\) \{[^}]+\} \}\n\s*buildTypes \{ getByName\("debug"\) \{[^}]+\} \}\n\}\n', '\n', t)
-              t += f'\nandroid {{\n    signingConfigs {{ getByName("debug") {{ storeFile = file("vnera-debug.keystore"); storePassword = "{store_pass}"; keyAlias = "{key_alias}"; keyPassword = "{key_pass}" }} }}\n    buildTypes {{ getByName("debug") {{ signingConfig = signingConfigs.getByName("debug") }} }}\n}}\n'
+              # Explicit final block overriding any earlier applicationId, applicationIdSuffix, or Revera dev resValue
+              t += f'''
+          android {{
+              defaultConfig {{
+                  applicationId = "app.vnera.music"
+                  versionCode = {build_vcode}
+                  versionName = "{app_version}"
+                  resValue("string", "app_name", "VNEra")
+                  manifestPlaceholders["appName"] = "VNEra"
+                  manifestPlaceholders["appLabel"] = "VNEra"
+              }}
+              signingConfigs {{
+                  getByName("debug") {{
+                      storeFile = file("vnera-debug.keystore")
+                      storePassword = "{store_pass}"
+                      keyAlias = "{key_alias}"
+                      keyPassword = "{key_pass}"
+                  }}
+              }}
+              buildTypes {{
+                  getByName("debug") {{
+                      applicationIdSuffix = null
+                      versionNameSuffix = null
+                      resValue("string", "app_name", "VNEra")
+                      manifestPlaceholders["appName"] = "VNEra"
+                      manifestPlaceholders["appLabel"] = "VNEra"
+                      signingConfig = signingConfigs.getByName("debug")
+                  }}
+              }}
+          }}
+          '''
               if "META-INF/versions/9/OSGI-INF/MANIFEST.MF" not in t:
                   t += '\nandroid { packaging { resources { excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"; excludes += "META-INF/versions/9/module-info.class" } } }\n'
               gradle.write_text(t)
@@ -3814,6 +3846,17 @@ jobs:
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
           ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="$APP_VERSION" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+
+      - name: Verify Compiled APK Package Name & Label
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          AAPT2=$(find "$SDK_ROOT/build-tools" -name aapt2 | sort -V | tail -n 1)
+          APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          BADGING=$("$AAPT2" dump badging "$APK_FILE")
+          echo "$BADGING" | grep -E "^(package:|application-label)"
+          echo "$BADGING" | grep -q "package: name='app.vnera.music'" || { echo "ERROR: APK package is not app.vnera.music"; exit 1; }
+          echo "$BADGING" | grep -q "application-label:'VNEra'" || { echo "ERROR: APK label is not VNEra"; exit 1; }
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
