@@ -3,6 +3,7 @@ name: Build VNEra Debug APK (1.0.9 Base)
 on:
   push:
     branches:
+      - vnera2-3-1
       - VNERA2-1-3
       - vnera-2.3.1
   workflow_dispatch:
@@ -37,13 +38,15 @@ jobs:
           KEY_PASS="android"
 
           if [ -n "${VN_KEYSTORE_B64:-}" ]; then
-            echo "Using custom signing keystore from VN_KEYSTORE_B64 secret for in-place update."
+            echo "OK: Using persistent signing keystore from VN_KEYSTORE_B64 secret for in-place updates."
             printf '%s' "$VN_KEYSTORE_B64" | base64 -d > "$KEYSTORE"
             [ -n "${VN_STORE_PASS:-}" ] && STORE_PASS="$VN_STORE_PASS"
             [ -n "${VN_KEY_ALIAS:-}" ] && KEY_ALIAS="$VN_KEY_ALIAS"
             [ -n "${VN_KEY_PASS:-}" ] && KEY_PASS="$VN_KEY_PASS"
-          elif [ ! -f "$KEYSTORE" ]; then
-            echo "No existing debug keystore found on main; generating a key for this run."
+          elif [ -f "$KEYSTORE" ]; then
+            echo "OK: Using committed keystore from main/.github/vnera-debug.keystore."
+          else
+            echo "WARNING: No persistent keystore found! Future builds will NOT update in-place unless VN_KEYSTORE_B64 is set."
             keytool -genkeypair -v \
               -keystore "$KEYSTORE" \
               -storepass "$STORE_PASS" -alias "$KEY_ALIAS" -keypass "$KEY_PASS" \
@@ -89,9 +92,10 @@ jobs:
           [ -d "$SDK_ROOT/platforms/android-37" ] && export HAS_SDK_37="true"
           export FALLBACK_SDK="35"
           [ -d "$SDK_ROOT/platforms/android-36" ] && export FALLBACK_SDK="36"
-          export BUILD_VERSION_CODE=$((300000 + ${GITHUB_RUN_NUMBER:-1}))
+          export BUILD_VERSION_CODE=$(( $(date +%s) / 10 ))
           echo "HAS_SDK_37=$HAS_SDK_37" >> "$GITHUB_ENV"
           echo "BUILD_VERSION_CODE=$BUILD_VERSION_CODE" >> "$GITHUB_ENV"
+          echo "Using monotonically increasing BUILD_VERSION_CODE=$BUILD_VERSION_CODE"
 
           mkdir -p app/src/main/java/com/music/spotui/ui/screens
           cat <<'EOF' > app/src/main/java/com/music/spotui/ui/screens/VnFrameRateManager.kt
@@ -2518,7 +2522,7 @@ jobs:
 
           has_sdk_37 = os.environ.get("HAS_SDK_37") == "true"
           fallback_sdk = os.environ.get("FALLBACK_SDK", "35")
-          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "300001"))
+          build_vcode = int(os.environ.get("BUILD_VERSION_CODE", "179570540"))
           target_agp = "9.1.0" if has_sdk_37 else "8.7.2"
           store_pass = os.environ.get("VN_STORE_PASS", "android")
           key_alias = os.environ.get("VN_KEY_ALIAS", "androiddebugkey")
