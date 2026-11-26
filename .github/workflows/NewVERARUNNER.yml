@@ -1263,14 +1263,10 @@ jobs:
               val shuffleLockedByUser: Boolean get() = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
               var onForceEnableShuffle: (() -> Unit)? = null
               @Volatile private var lastReenableMs = 0L
-              @Volatile private var lastUserTapMs = 0L
-              @Volatile private var userTogglePending = false
-              @Volatile private var userTogglePendingUntilMs = 0L
-              @Volatile private var pendingToggleBaseline: Boolean? = null
-              @Volatile private var pendingFromNormalShuffle = false
+              @Volatile private var userGraceUntilMs = 0L
+              @Volatile private var awaitingUserSettlement = false
               @Volatile private var isInternalRestoring = false
               @Volatile private var lastObservedShuffleState: Boolean? = null
-              @Volatile private var lastObservedSmartState = false
               @Volatile private var prefsInitialized = false
               @Volatile private var smartShuffleActive = false
               @Volatile private var pendingAutoRestoreUntilMs = 0L
@@ -1283,71 +1279,53 @@ jobs:
                   try { block() } finally { isInternalRestoring = false }
               }
 
+              private fun isInUserGraceWindow(now: Long = SystemClock.elapsedRealtime()): Boolean =
+                  awaitingUserSettlement || now <= userGraceUntilMs
+
+              fun onUserShuffleControlTouched(c: Context? = null) {
+                  if (isInternalRestoring) return
+                  val now = SystemClock.elapsedRealtime()
+                  userGraceUntilMs = now + 5_000L
+                  awaitingUserSettlement = true
+                  pendingAutoRestoreUntilMs = 0L
+                  activeBannerMessage = null
+                  if (lastKnownShuffleOn || lastObservedShuffleState == true) {
+                      manualShuffleOffByUser = true
+                      userWantsShuffle = false
+                      userOverrideUntilPlayerClose = true
+                      VnFpsPref.saveShuffleStateAtomic(c, enabled = false, manualOff = true)
+                  }
+              }
+
               fun onUserPressedToggleShuffle(
                   currentShuffleState: Boolean? = null,
                   currentSmartState: Boolean? = null,
                   c: Context? = null
               ) {
-                  if (isInternalRestoring) return
-                  val now = SystemClock.elapsedRealtime()
-                  if ((now - lastUserTapMs) in 0L..180L) return
-                  val baselineShuffle = currentShuffleState ?: lastObservedShuffleState ?: lastKnownShuffleOn
-                  val baselineSmart = currentSmartState ?: lastObservedSmartState
-                  lastUserTapMs = now
-                  pendingAutoRestoreUntilMs = 0L
-                  activeBannerMessage = null
-
-                  if (!baselineShuffle) {
-                      userTogglePending = true
-                      userTogglePendingUntilMs = now + 4_000L
-                      pendingToggleBaseline = false
-                      pendingFromNormalShuffle = false
-                      manualShuffleOffByUser = false
-                      userWantsShuffle = true
-                      lastKnownShuffleOn = true
-                      userOverrideUntilPlayerClose = false
-                      VnFpsPref.saveShuffleStateAtomic(c, enabled = true, manualOff = false)
-                  } else if (baselineSmart) {
-                      userTogglePending = true
-                      userTogglePendingUntilMs = now + 4_000L
-                      pendingToggleBaseline = true
-                      pendingFromNormalShuffle = false
-                      manualShuffleOffByUser = true
-                      userWantsShuffle = false
-                      lastKnownShuffleOn = false
-                      userOverrideUntilPlayerClose = true
-                      VnFpsPref.saveShuffleStateAtomic(c, enabled = false, manualOff = true)
-                  } else {
-                      userTogglePending = true
-                      userTogglePendingUntilMs = now + 4_000L
-                      pendingToggleBaseline = true
-                      pendingFromNormalShuffle = true
-                      manualShuffleOffByUser = true
-                      userWantsShuffle = false
-                      lastKnownShuffleOn = false
-                      userOverrideUntilPlayerClose = true
-                      VnFpsPref.saveShuffleStateAtomic(c, enabled = false, manualOff = true)
-                  }
+                  onUserShuffleControlTouched(c)
               }
 
               fun onPlayerListenerShuffleChanged(enabled: Boolean, c: Context? = null) {
                   if (isInternalRestoring) return
                   val now = SystemClock.elapsedRealtime()
                   lastObservedShuffleState = enabled
-                  if (userTogglePending && now <= userTogglePendingUntilMs) {
-                      val baseline = pendingToggleBaseline
-                      if (baseline == null || enabled != baseline) {
-                          userTogglePending = false
-                          pendingToggleBaseline = null
-                          pendingFromNormalShuffle = false
-                          userTogglePendingUntilMs = 0L
-                          manualShuffleOffByUser = !enabled
-                          userWantsShuffle = enabled
-                          lastKnownShuffleOn = enabled
-                          userOverrideUntilPlayerClose = !enabled
-                          VnFpsPref.saveShuffleStateAtomic(c, enabled = enabled, manualOff = !enabled)
-                          return
+                  if (isInUserGraceWindow(now)) {
+                      if (!enabled) {
+                          manualShuffleOffByUser = true
+                          userWantsShuffle = false
+                          lastKnownShuffleOn = false
+                          smartShuffleActive = false
+                          userOverrideUntilPlayerClose = true
+                          awaitingUserSettlement = false
+                          VnFpsPref.saveShuffleStateAtomic(c, enabled = false, manualOff = true)
+                      } else {
+                          manualShuffleOffByUser = false
+                          userWantsShuffle = true
+                          lastKnownShuffleOn = true
+                          userOverrideUntilPlayerClose = false
+                          VnFpsPref.saveShuffleStateAtomic(c, enabled = true, manualOff = false)
                       }
+                      return
                   }
                   if (shouldRestorePlayerState(enabled)) {
                       runCatching { onForceEnableShuffle?.invoke() }
@@ -1355,19 +1333,12 @@ jobs:
               }
 
               fun syncFromPrefs(remembered: Boolean, manualOff: Boolean) {
-                  val now = SystemClock.elapsedRealtime()
-                  if (userTogglePending && now <= userTogglePendingUntilMs) {
-                      return
-                  }
+                  if (isInUserGraceWindow()) return
                   manualShuffleOffByUser = manualOff
                   val effective = if (manualOff) false else remembered
                   userWantsShuffle = effective
                   lastKnownShuffleOn = effective
                   userOverrideUntilPlayerClose = manualOff
-                  userTogglePending = false
-                  pendingToggleBaseline = null
-                  pendingFromNormalShuffle = false
-                  userTogglePendingUntilMs = 0L
                   pendingAutoRestoreUntilMs = 0L
                   if (!prefsInitialized) {
                       prefsInitialized = true
@@ -1377,10 +1348,8 @@ jobs:
               }
 
               fun applyImportedManualOff(manualOff: Boolean, remembered: Boolean = VnFpsPref.rememberedShuffleState) {
-                  userTogglePending = false
-                  pendingToggleBaseline = null
-                  pendingFromNormalShuffle = false
-                  userTogglePendingUntilMs = 0L
+                  userGraceUntilMs = 0L
+                  awaitingUserSettlement = false
                   pendingAutoRestoreUntilMs = 0L
                   manualShuffleOffByUser = manualOff
                   val desired = if (manualOff) false else remembered
@@ -1392,7 +1361,7 @@ jobs:
               }
 
               fun markUserShuffleInteraction() {
-                  onUserPressedToggleShuffle(c = VnFpsPref.resolveAppContext())
+                  onUserShuffleControlTouched(VnFpsPref.resolveAppContext())
               }
 
               fun onUserTappedShuffleButton(wasShuffleOn: Boolean, c: Context? = null) {
@@ -1402,10 +1371,8 @@ jobs:
               fun onSettingChanged(enabled: Boolean, remembered: Boolean, manualOff: Boolean = false, c: Context? = null) {
                   smartShuffleActive = false
                   lastObservedShuffleState = null
-                  userTogglePending = false
-                  pendingToggleBaseline = null
-                  pendingFromNormalShuffle = false
-                  userTogglePendingUntilMs = 0L
+                  userGraceUntilMs = 0L
+                  awaitingUserSettlement = false
                   pendingAutoRestoreUntilMs = 0L
                   if (!enabled) {
                       userWantsShuffle = false
@@ -1423,11 +1390,8 @@ jobs:
 
               fun onUserExplicitShuffleToggle(newShuffleState: Boolean, c: Context? = null) {
                   if (isInternalRestoring) return
-                  lastUserTapMs = SystemClock.elapsedRealtime()
-                  userTogglePending = false
-                  pendingToggleBaseline = null
-                  pendingFromNormalShuffle = false
-                  userTogglePendingUntilMs = 0L
+                  userGraceUntilMs = SystemClock.elapsedRealtime() + 5_000L
+                  awaitingUserSettlement = false
                   pendingAutoRestoreUntilMs = 0L
                   manualShuffleOffByUser = !newShuffleState
                   userOverrideUntilPlayerClose = !newShuffleState
@@ -1439,38 +1403,33 @@ jobs:
               }
 
               fun onSmartShuffleActivated(isSmart: Boolean) {
+                  if (isInUserGraceWindow()) return
                   smartShuffleActive = isSmart
                   if (isSmart) {
                       manualShuffleOffByUser = false
                       userWantsShuffle = true
-                      userOverrideUntilPlayerClose = false
-                  } else if (userWantsShuffle && !manualShuffleOffByUser) {
                       userOverrideUntilPlayerClose = false
                   }
               }
 
               fun onPlayerClosed() {
                   lastObservedShuffleState = null
-                  userTogglePending = false
-                  pendingToggleBaseline = null
-                  pendingFromNormalShuffle = false
-                  userTogglePendingUntilMs = 0L
+                  userGraceUntilMs = 0L
+                  awaitingUserSettlement = false
                   pendingAutoRestoreUntilMs = 0L
                   smartShuffleActive = false
               }
 
               fun shouldRestorePlayerState(currentState: Boolean): Boolean {
                   val now = SystemClock.elapsedRealtime()
-                  if (userTogglePending && now <= userTogglePendingUntilMs) return false
-                  if ((now - lastUserTapMs) in 0L..3_000L) return false
+                  if (isInUserGraceWindow(now)) return false
                   return VnFpsPref.keepShuffleEnabled && userWantsShuffle &&
                       !manualShuffleOffByUser && !currentState && !smartShuffleActive
               }
 
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
                   val now = SystemClock.elapsedRealtime()
-                  if (userTogglePending && now <= userTogglePendingUntilMs) return
-                  if ((now - lastUserTapMs) in 0L..3_000L) return
+                  if (isInUserGraceWindow(now)) return
                   if (now <= pendingAutoRestoreUntilMs) return
                   if (!VnFpsPref.keepShuffleEnabled || !userWantsShuffle || manualShuffleOffByUser || smartShuffleActive) return
                   if (playerObj == null) return
@@ -1503,80 +1462,53 @@ jobs:
                   VnFpsPref.ensureInit(c)
                   onForceEnableShuffle = reEnableWithoutBreakingQueue
                   val now = SystemClock.elapsedRealtime()
-
-                  if (userTogglePending) {
-                      val baseline = pendingToggleBaseline
-                      if (now <= userTogglePendingUntilMs) {
-                          if (pendingFromNormalShuffle && isShuffleOn && isSmartShuffle) {
-                              userTogglePending = false
-                              pendingToggleBaseline = null
-                              pendingFromNormalShuffle = false
-                              userTogglePendingUntilMs = 0L
-                              smartShuffleActive = true
-                              manualShuffleOffByUser = false
-                              userWantsShuffle = true
-                              lastKnownShuffleOn = true
-                              lastObservedShuffleState = true
-                              lastObservedSmartState = true
-                              userOverrideUntilPlayerClose = false
-                              VnFpsPref.saveShuffleStateAtomic(c, enabled = true, manualOff = false)
-                              return
-                          }
-                          if (baseline != null && isShuffleOn == baseline) return
-                          if (baseline == null || isShuffleOn != baseline) {
-                              userTogglePending = false
-                              pendingToggleBaseline = null
-                              pendingFromNormalShuffle = false
-                              userTogglePendingUntilMs = 0L
-                              smartShuffleActive = isSmartShuffle
-                              manualShuffleOffByUser = !isShuffleOn
-                              userWantsShuffle = isShuffleOn
-                              lastKnownShuffleOn = isShuffleOn
-                              lastObservedShuffleState = isShuffleOn
-                              lastObservedSmartState = isSmartShuffle
-                              userOverrideUntilPlayerClose = !isShuffleOn
-                              VnFpsPref.saveShuffleStateAtomic(c, enabled = isShuffleOn, manualOff = !isShuffleOn)
-                              return
-                          }
-                      } else {
-                          userTogglePending = false
-                          pendingToggleBaseline = null
-                          pendingFromNormalShuffle = false
-                          userTogglePendingUntilMs = 0L
-                      }
-                  }
-
                   lastObservedShuffleState = isShuffleOn
-                  lastObservedSmartState = isSmartShuffle
-                  if (!VnFpsPref.keepShuffleEnabled) {
-                      lastKnownShuffleOn = isShuffleOn
-                      return
-                  }
-                  if (isSmartShuffle) {
-                      smartShuffleActive = true
-                      manualShuffleOffByUser = false
-                      userWantsShuffle = true
-                      lastKnownShuffleOn = isShuffleOn
-                      return
-                  }
-                  smartShuffleActive = false
-                  if (now <= pendingAutoRestoreUntilMs) {
-                      if (isShuffleOn) pendingAutoRestoreUntilMs = 0L
-                      lastKnownShuffleOn = isShuffleOn
+
+                  if (isInUserGraceWindow(now)) {
+                      if (!isShuffleOn) {
+                          manualShuffleOffByUser = true
+                          userWantsShuffle = false
+                          lastKnownShuffleOn = false
+                          smartShuffleActive = false
+                          userOverrideUntilPlayerClose = true
+                          awaitingUserSettlement = false
+                          VnFpsPref.saveShuffleStateAtomic(c, enabled = false, manualOff = true)
+                      } else {
+                          manualShuffleOffByUser = false
+                          userWantsShuffle = true
+                          lastKnownShuffleOn = true
+                          smartShuffleActive = isSmartShuffle
+                          userOverrideUntilPlayerClose = false
+                          VnFpsPref.saveShuffleStateAtomic(c, enabled = true, manualOff = false)
+                      }
                       return
                   }
 
-                  if (manualShuffleOffByUser || !userWantsShuffle) {
+                  if (!VnFpsPref.keepShuffleEnabled) {
                       lastKnownShuffleOn = isShuffleOn
                       return
                   }
 
                   if (isShuffleOn) {
-                      lastKnownShuffleOn = true
+                      smartShuffleActive = isSmartShuffle
+                      if (!manualShuffleOffByUser) {
+                          userWantsShuffle = true
+                          lastKnownShuffleOn = true
+                      }
                       return
                   }
 
-                  if ((now - lastUserTapMs) in 0L..3_000L) return
+                  smartShuffleActive = false
+                  if (now <= pendingAutoRestoreUntilMs) {
+                      lastKnownShuffleOn = false
+                      return
+                  }
+
+                  if (manualShuffleOffByUser || !userWantsShuffle) {
+                      lastKnownShuffleOn = false
+                      return
+                  }
+
                   if (now - lastReenableMs > 1_200L) {
                       lastReenableMs = now
                       pendingAutoRestoreUntilMs = now + 2_500L
@@ -3329,29 +3261,21 @@ jobs:
               r'\b(?:actions\s*(?:\.|::)\s*toggleShuffle|onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle|setShuffleModeEnabled|setShuffleEnabled)\b'
           )
           SHUFFLE_ICON_RX = re.compile(
-              r'(?:Icons\.(?:Rounded|Outlined|Default|Filled|TwoTone|Sharp)\.(?:Shuffle|ShuffleOn)\b|R\.drawable\.[A-Za-z0-9_]*shuffle[A-Za-z0-9_]*|contentDescription\s*=\s*[^,\n\)]*(?:shuffle|τυχαία))',
+              r'(?:BitChordPlayerIcons\.Shuffle\b|Icons\.(?:Rounded|Outlined|Default|Filled|TwoTone|Sharp)\.(?:Shuffle|ShuffleOn)\b|R\.drawable\.[A-Za-z0-9_]*shuffle[A-Za-z0-9_]*|contentDescription\s*=\s*[^,\n\)]*(?:shuffle|τυχαία))',
               re.I
           )
-
-          def enclosing_fun_slice(lines: list[str], line_idx: int) -> str:
-              start = 0
-              for back in range(line_idx, -1, -1):
-                  if re.match(r'^\s*(?:@[A-Za-z0-9_.]+\s+)*(?:private\s+|internal\s+|public\s+)?fun\s+', lines[back]):
-                      start = back
-                      break
-              return "".join(lines[start:line_idx + 1])
 
           def get_enclosing_button_block(lines: list[str], click_line: int) -> str:
               n = len(lines)
               btn_start = click_line
-              for back in range(click_line, max(-1, click_line - 5), -1):
-                  if re.search(r'\b(?:IconButton|FilledIconButton|FilledTonalIconButton|OutlinedIconButton|Box|Surface)\s*\(', lines[back]):
+              for back in range(click_line, max(-1, click_line - 15), -1):
+                  if re.search(r'\b(?:PillSegment|BottomGlyph|CircleGlyph|IconButton|FilledIconButton|FilledTonalIconButton|OutlinedIconButton|Box|Surface)\s*\(', lines[back]):
                       btn_start = back
                       break
               p_depth = 0
               saw_p = False
               after_paren_line = btn_start
-              for li in range(btn_start, min(n, btn_start + 15)):
+              for li in range(btn_start, min(n, btn_start + 25)):
                   s_clean = strip_line_strings_and_comments(lines[li])
                   for ch in s_clean:
                       if ch == '(':
@@ -3378,35 +3302,20 @@ jobs:
                       break
               return "".join(lines[btn_start:end_block_line + 1])
 
-          def detect_shuffle_state_args(src_chunk: str, use_live_state: bool = False) -> str:
-              if use_live_state and "state.shuffle" in src_chunk and "state.smart" in src_chunk:
-                  return "state.shuffle, state.smart"
-              has_shuf = bool(re.search(r'\bshuffleEnabled\s*:\s*Boolean\b', src_chunk))
-              has_smart = bool(re.search(r'\bsmartEnabled\s*:\s*Boolean\b', src_chunk))
-              if has_shuf and has_smart:
-                  return "shuffleEnabled, smartEnabled"
-              if has_shuf:
-                  return "shuffleEnabled, false"
-              if re.search(r'\bisShuffleEnabled\s*:\s*Boolean\b', src_chunk):
-                  return "isShuffleEnabled, false"
-              return ""
-
-          def wrap_user_toggle_shuffle_calls(src: str, use_live_state: bool = False) -> str:
+          def wrap_user_toggle_shuffle_calls(src: str) -> str:
               lines = src.splitlines(keepends=True)
               n = len(lines)
+              guard_stmt = "com.music.spotui.ui.screens.VnShuffleGuard.onUserShuffleControlTouched(); "
 
               for i in range(n):
                   ln = lines[i]
-                  if "onUserPressedToggleShuffle" in ln or "VnShuffleGuard" in ln:
+                  if "onUserShuffleControlTouched" in ln or "VnShuffleGuard" in ln:
                       continue
                   if re.match(r'^\s*(?:override\s+)?fun\b', ln):
                       continue
 
-                  state_args = detect_shuffle_state_args(enclosing_fun_slice(lines, i), use_live_state=use_live_state)
-                  guard_stmt = f"com.music.spotui.ui.screens.VnShuffleGuard.onUserPressedToggleShuffle({state_args}); "
-
                   m_ref = re.search(
-                      r'\bonClick\s*=\s*((?:[A-Za-z0-9_]+\s*::\s*)?(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle))\b(?!\s*\()',
+                      r'\bonClick\s*=\s*((?:[A-Za-z0-9_]+\s*(?:\.|::)\s*)?(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle))\b(?!\s*\()',
                       ln
                   )
                   if m_ref:
@@ -3416,7 +3325,7 @@ jobs:
                       continue
 
                   m_pos = re.search(
-                      r'(\b(?:IconButton|FilledIconButton|FilledTonalIconButton|OutlinedIconButton)\s*\(\s*)((?:[A-Za-z0-9_]+\s*::\s*)?(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle))(\s*[,\)])',
+                      r'(\b(?:PillSegment|BottomGlyph|CircleGlyph|IconButton|FilledIconButton|FilledTonalIconButton|OutlinedIconButton)\s*\(\s*)((?:[A-Za-z0-9_]+\s*(?:\.|::)\s*)?(?:onToggleShuffle|toggleShuffle|onShuffleClick|onShuffleToggle|toggleShuffleMode|onShuffleModeClick|onShuffle|changeShuffle|onChangeShuffle))(\s*[,\)])',
                       ln
                   )
                   if m_pos:
@@ -3485,8 +3394,7 @@ jobs:
                       if depth != 0:
                           raise RuntimeError("Could not find end of PlayerControlsBlock")
                       before_fn = wrap_user_toggle_shuffle_calls(src_shuffle[:m_shuffle_fn.start()])
-                      player_fn = src_shuffle[m_shuffle_fn.start():pos]
-                      player_fn = wrap_user_toggle_shuffle_calls(player_fn, use_live_state=True)
+                      player_fn = wrap_user_toggle_shuffle_calls(src_shuffle[m_shuffle_fn.start():pos])
                       body_offset = m_shuffle_fn.end() - m_shuffle_fn.start()
                       guard = (
                           "\n    val vnShuffleContext = androidx.compose.ui.platform.LocalContext.current\n"
@@ -3510,43 +3418,15 @@ jobs:
               if shuffle_ui_kt.name in ("VnFrameRateManager.kt", "ImmersivePlayer.kt"):
                   continue
               st_ui = shuffle_ui_kt.read_text()
-              orig_st_ui = st_ui
               if SHUFFLE_CB_RX.search(st_ui) or SHUFFLE_ICON_RX.search(st_ui):
-                  st_ui = wrap_user_toggle_shuffle_calls(st_ui)
+                  patched_st = wrap_user_toggle_shuffle_calls(st_ui)
+                  if patched_st != st_ui:
+                      shuffle_ui_kt.write_text(patched_st)
+                      print(f"Patched shuffle PillSegment tap interception in {shuffle_ui_kt}")
 
-              if "observeShuffleState" not in st_ui and "@Composable" in st_ui:
-                  lines_s = st_ui.splitlines(keepends=True)
-                  for idx_s, ls in enumerate(lines_s):
-                      if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', ls):
-                          p_cnt = 0
-                          se_s = None
-                          for j_s in range(idx_s, min(len(lines_s), idx_s + 35)):
-                              cls_s = strip_line_strings_and_comments(lines_s[j_s])
-                              p_cnt += cls_s.count("(") - cls_s.count(")")
-                              if p_cnt <= 0 and "{" in cls_s:
-                                  se_s = j_s
-                                  break
-                          if se_s is not None:
-                              sig_s = "".join(lines_s[idx_s:se_s + 1])
-                              m_shuf_p = re.search(r'\b(shuffleEnabled|isShuffleEnabled)\s*:\s*Boolean\b', sig_s)
-                              m_cb_p = re.search(r'\b(onToggleShuffle|onShuffleClick|onShuffleToggle|onShuffle|toggleShuffle)\s*:\s*\(\s*\)\s*->\s*Unit\b', sig_s)
-                              if m_shuf_p and m_cb_p:
-                                  shuf_var = m_shuf_p.group(1)
-                                  cb_var = m_cb_p.group(1)
-                                  smart_expr = "smartEnabled" if re.search(r'\bsmartEnabled\s*:\s*Boolean\b', sig_s) else "false"
-                                  lines_s[se_s] += (
-                                      "    val vnCtrlShuffleCtx = androidx.compose.ui.platform.LocalContext.current\n"
-                                      f"    androidx.compose.runtime.LaunchedEffect({shuf_var}, {smart_expr}, com.music.spotui.ui.screens.VnFpsPref.keepShuffleEnabled, com.music.spotui.ui.screens.VnShuffleGuard.userWantsShuffle, com.music.spotui.ui.screens.VnShuffleGuard.userOverrideUntilPlayerClose) {{\n"
-                                      f"        com.music.spotui.ui.screens.VnShuffleGuard.observeShuffleState(vnCtrlShuffleCtx, {shuf_var}, {smart_expr}) {{ {cb_var}() }}\n"
-                                      "    }\n"
-                                  )
-                                  st_ui = "".join(lines_s)
-                                  print(f"Attached live shuffle observer to {shuffle_ui_kt}")
-                                  break
-
-              if st_ui != orig_st_ui:
-                  shuffle_ui_kt.write_text(st_ui)
-                  print(f"Patched shuffle button tap interception in {shuffle_ui_kt}")
+          pc_file = Path("app/src/main/java/com/music/spotui/ui/immersive/player/PlayerControls.kt")
+          if pc_file.exists() and "onUserShuffleControlTouched" not in pc_file.read_text():
+              raise RuntimeError("Failed to patch Shuffle PillSegment in PlayerControls.kt")
 
           extra_c = ", ".join(f"Color(0xFF{c})" for c in ["E53935","FF5722","FF9800","FFC107","00BFA5","00BCD4","3F51B5","7C4DFF","E040FB","FF4081","64FFDA","FFAB91","B388FF","ECEFF1"])
           for kf in sorted(Path("app/src/main/java").rglob("*.kt")):
