@@ -305,6 +305,18 @@ fun SettingsScreen(navController: NavController) {
                     com.music.spotui.data.api.LyricsApi.forgetAll()
                 },
             )
+            OptionRow(
+                label = stringResource(R.string.vn_player_lyrics_wrap_title),
+                detail = stringResource(R.string.vn_player_lyrics_wrap_detail),
+                checked = com.music.spotui.data.preferences.PlayerLyricsWrapPref.on,
+                onChecked = { com.music.spotui.data.preferences.PlayerLyricsWrapPref.set(ctx, it) },
+            )
+            OptionRow(
+                label = stringResource(R.string.vn_lyrics_swipe_expand_title),
+                detail = stringResource(R.string.vn_lyrics_swipe_expand_detail),
+                checked = com.music.spotui.data.preferences.LyricsSwipeExpandPref.on,
+                onChecked = { com.music.spotui.data.preferences.LyricsSwipeExpandPref.set(ctx, it) },
+            )
             // NetEase and Genius after Spotify and LRCLIB (also in the lyrics' own menu).
             var lyricsExtra by remember { mutableStateOf(com.music.spotui.data.preferences.isLyricsExtraSources(ctx)) }
             OptionRow(
@@ -522,6 +534,7 @@ fun SettingsScreen(navController: NavController) {
             }
             }
             if (tab == 5) {
+            VnSettingsBackupRow()
             Section(R.string.settings_section_app)
             AboutRow()
             // A18: the launch check can be turned off; the manual check below keeps working.
@@ -838,9 +851,8 @@ private fun TransitionsRow() {
             listOf(R.string.settings_automix_style_blend, R.string.settings_automix_style_cut, R.string.settings_automix_style_fade),
             automix.style, automix::changeStyle)
         Choices(R.string.settings_automix_length, R.string.settings_automix_length_detail,
-            listOf(R.string.settings_automix_length_short, R.string.settings_automix_length_auto, R.string.settings_automix_length_long),
+            listOf(R.string.settings_automix_length_short, R.string.settings_automix_length_auto, R.string.settings_automix_length_long, R.string.settings_automix_length_very_long),
             automix.mixLength, automix::changeMixLength)
-        AutoMixDurationBoundsRow()
         OptionRow(stringResource(R.string.settings_automix_performance), stringResource(R.string.settings_automix_performance_detail),
             checked = automix.performancePriority, onChecked = automix::changePerformancePriority)
         Choices(R.string.settings_automix_tempo, R.string.settings_automix_tempo_detail,
@@ -863,34 +875,6 @@ private fun TransitionsRow() {
             }
         },
     )
-}
-
-@Composable
-private fun AutoMixDurationBoundsRow() {
-    val automix = com.music.spotui.automix.AutoMix
-    var minText by androidx.compose.runtime.remember(automix.minDurationSeconds) { androidx.compose.runtime.mutableStateOf(automix.minDurationSeconds.toString()) }
-    var maxText by androidx.compose.runtime.remember(automix.maxDurationSeconds) { androidx.compose.runtime.mutableStateOf(automix.maxDurationSeconds.toString()) }
-    val minValue = minText.toIntOrNull()?.takeIf { it in 0..90 }
-    val maxValue = maxText.toIntOrNull()?.takeIf { it in 0..90 }
-    val valid = minValue != null && maxValue != null && (maxValue == 0 || minValue <= maxValue)
-    androidx.compose.foundation.layout.Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
-        Text(stringResource(R.string.settings_automix_duration), color = AppText, fontSize = 16.sp)
-        Text(stringResource(R.string.settings_automix_duration_detail), color = AppMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
-        Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 8.dp)) {
-            androidx.compose.material3.OutlinedTextField(minText, { minText = it.filter(Char::isDigit).take(2) }, label = { Text(stringResource(R.string.settings_automix_duration_min)) },
-                singleLine = true, isError = minValue == null || (maxValue != null && maxValue > 0 && minValue != null && minValue > maxValue),
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number), modifier = Modifier.weight(1f))
-            androidx.compose.material3.OutlinedTextField(maxText, { maxText = it.filter(Char::isDigit).take(2) }, label = { Text(stringResource(R.string.settings_automix_duration_max)) },
-                singleLine = true, isError = maxValue == null || (minValue != null && maxValue != 0 && minValue > maxValue),
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number), modifier = Modifier.weight(1f))
-        }
-        if (!valid) Text(stringResource(R.string.settings_automix_duration_error), color = com.music.spotui.ui.theme.AppAccent, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
-        else if (minValue != automix.minDurationSeconds || maxValue != automix.maxDurationSeconds) {
-            androidx.compose.material3.TextButton(onClick = { automix.changeDurationBounds(minValue!!, maxValue!!) }, modifier = Modifier.align(androidx.compose.ui.Alignment.End)) {
-                Text(stringResource(R.string.settings_automix_duration_apply))
-            }
-        }
-    }
 }
 
 /** Event-driven status and recent AutoMix events; copied text is redacted before leaving the app. */

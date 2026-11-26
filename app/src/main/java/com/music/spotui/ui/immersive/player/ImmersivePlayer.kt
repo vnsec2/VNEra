@@ -575,6 +575,7 @@ fun ImmersivePlayer(
             )
         }
     }
+    var lyricsExpanded by rememberSaveable { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
     var showQuality by remember { mutableStateOf(false) }
@@ -656,8 +657,10 @@ fun ImmersivePlayer(
     }
 
     // Back leaves the panel first; the sheet (outside) closes on the next one.
-    BackHandler(enabled = panel != Panel.NONE) {
-        if (lyricsFullscreen) lyricsFullscreen = false else panel = Panel.NONE
+    BackHandler(enabled = lyricsExpanded || panel != Panel.NONE) {
+        if (lyricsExpanded) lyricsExpanded = false
+        else if (lyricsFullscreen) lyricsFullscreen = false
+        else panel = Panel.NONE
     }
 
     // The wave that leaves the cover when a mix is over, over everything.
@@ -774,7 +777,14 @@ fun ImmersivePlayer(
                     ) { shown ->
                         val inset = PaddingValues(start = left, end = left, top = 12.dp, bottom = 12.dp)
                         when (shown) {
-                            Panel.LYRICS -> lyricsContent(inset)
+                            Panel.LYRICS -> Box(
+                                Modifier.fillMaxSize().lyricsExpandGesture(
+                                    enabled = com.music.spotui.data.preferences.LyricsSwipeExpandPref.on && !lyricsExpanded,
+                                    onExpand = { lyricsExpanded = true },
+                                )
+                            ) {
+                                lyricsContent(inset)
+                            }
                             Panel.QUEUE -> ImmersiveQueuePanel(Modifier.fillMaxSize(), inset)
                             else -> Box(Modifier.fillMaxSize())
                         }
@@ -997,9 +1007,23 @@ fun ImmersivePlayer(
             }
         }
         }
-        if (com.music.spotui.data.preferences.ImmersiveChromePref.stats && panel == Panel.NONE) {
+        if (com.music.spotui.data.preferences.ImmersiveChromePref.stats && panel == Panel.NONE && !lyricsExpanded) {
             androidx.compose.material3.IconButton(onClick = { showNerd = true }, modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 4.dp)) {
                 androidx.compose.material3.Icon(Icons.Rounded.Equalizer, stringResource(R.string.nerd_title), tint = tint)
+            }
+        }
+        AnimatedVisibility(
+            visible = lyricsExpanded && panel == Panel.LYRICS,
+            modifier = Modifier.fillMaxSize().zIndex(20f),
+            enter = fadeIn(tween(180)) + slideInVertically(tween(280, easing = FastOutSlowInEasing)) { it / 8 },
+            exit = fadeOut(tween(150)) + slideOutVertically(tween(220, easing = FastOutSlowInEasing)) { it / 8 },
+        ) {
+            Box(Modifier.fillMaxSize().background(Color.Black).navigationBarsPadding().statusBarsPadding()
+                .lyricsExpandGesture(
+                    enabled = com.music.spotui.data.preferences.LyricsSwipeExpandPref.on,
+                    onCollapse = { lyricsExpanded = false; panel = Panel.NONE },
+                )) {
+                ImmersiveLyricsPanel(Modifier.fillMaxSize(), PaddingValues(horizontal = 18.dp, vertical = 8.dp))
             }
         }
         }
@@ -1019,6 +1043,35 @@ fun ImmersivePlayer(
             onOpenQueue = { panel = Panel.QUEUE },
             lyricsOpen = lyricsOpen,
         )
+    }
+}
+
+/** Vertical gesture used only to move between the compact and full-screen lyrics views. */
+private fun Modifier.lyricsExpandGesture(
+    enabled: Boolean,
+    onExpand: () -> Unit = {},
+    onCollapse: () -> Unit = {},
+): Modifier = if (!enabled) this else pointerInput(enabled) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var total = 0f
+        var triggered = false
+        while (!triggered) {
+            val event = awaitPointerEvent()
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            total += change.positionChange().y
+            val threshold = 76.dp.toPx()
+            if (total >= threshold) {
+                change.consume()
+                onExpand()
+                triggered = true
+            } else if (total <= -threshold) {
+                change.consume()
+                onCollapse()
+                triggered = true
+            }
+            if (!change.pressed) break
+        }
     }
 }
 

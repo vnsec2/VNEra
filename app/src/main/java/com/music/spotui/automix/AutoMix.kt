@@ -33,14 +33,11 @@ object AutoMix {
     private const val KEY_PERFORMANCE_PRIORITY = "automix_performance_priority"
 
     private fun loadDurationPair(): Pair<Int, Int> {
-        val p = Graph.app.getSharedPreferences(PREFS, 0)
-        val rawMin = runCatching { p.getInt(KEY_DURATION_MIN, 0) }.getOrDefault(-1)
-        val rawMax = runCatching { p.getInt(KEY_DURATION_MAX, 0) }.getOrDefault(-1)
-        val pair = normalizeDurationPair(rawMin, rawMax)
-        if (pair.first != rawMin || pair.second != rawMax) {
-            p.edit().putInt(KEY_DURATION_MIN, pair.first).putInt(KEY_DURATION_MAX, pair.second).apply()
-        }
-        return pair
+        // VNEra 2.0.0 replaces the old manual Minimum/Maximum controls with mix-length presets.
+        // Clear legacy bounds so an old custom value cannot silently constrain the new presets.
+        Graph.app.getSharedPreferences(PREFS, 0).edit()
+            .putInt(KEY_DURATION_MIN, 0).putInt(KEY_DURATION_MAX, 0).apply()
+        return 0 to 0
     }
     private val initialDurationPair = loadDurationPair()
 
@@ -80,7 +77,7 @@ object AutoMix {
     var showInPlayer by mutableStateOf(Graph.app.getSharedPreferences(PREFS, 0).getBoolean("automix_show", true))
         private set
     /** Mix length: 0 short, 1 as the music says, 2 long. */
-    var mixLength by mutableStateOf(Graph.app.getSharedPreferences(PREFS, 0).getInt("automix_length", 1).coerceIn(0, 2))
+    var mixLength by mutableStateOf(Graph.app.getSharedPreferences(PREFS, 0).getInt("automix_length", 1).coerceIn(0, 3))
         private set
     fun changeMixLength(value: Int) { mixLength = value; Graph.app.getSharedPreferences(PREFS, 0).edit().putInt("automix_length", value).apply(); com.music.spotui.di.LocalPlayer.autoMixSettingsChanged() }
 
@@ -171,14 +168,14 @@ object AutoMix {
 
     fun settings(playbackRate: Double = com.music.spotui.di.LocalPlayer.rate().toDouble()) = MixPlanner.Settings(
         maxStretch = doubleArrayOf(0.04, 0.12, 0.16)[tempoRange],
-        maxSec = if (mixLength == 2) 90.0 else 48.0,
+        maxSec = when (mixLength) { 2 -> 90.0; 3 -> 95.0; else -> 48.0 },
         lengthBias = mixLength - 1,
         style = arrayOf(MixPlan.Style.BLEND, MixPlan.Style.CUT, MixPlan.Style.FADE)[style],
-        minBars = intArrayOf(4, 8, 12)[mixLength],
-        maxBars = intArrayOf(8, 16, 32)[mixLength],
+        minBars = intArrayOf(4, 8, 12, 12)[mixLength],
+        maxBars = intArrayOf(8, 16, 32, 34)[mixLength],
         keyWeight = if (harmonic) 2.0 else 0.0,
-        smoothSec = doubleArrayOf(4.0, 8.0, 14.0)[mixLength],
-        filterSec = doubleArrayOf(6.0, 10.0, 14.0)[mixLength],
+        smoothSec = doubleArrayOf(4.0, 8.0, 14.0, 15.0)[mixLength],
+        filterSec = doubleArrayOf(6.0, 10.0, 14.0, 15.0)[mixLength],
         djMode = sessionDj,
         durationBounds = configuredDurationBounds().forPlaybackRate(playbackRate),
     )
@@ -219,7 +216,7 @@ object AutoMix {
             maxRatePpm = if (orpheon && tempoRange > 0) null else ((if (orpheon) ORPHEON_NARROW_TEMPO else s.maxStretch) * 1e6).toLong(),
             maxBars = s.maxBars, eq = djEq, harmonic = harmonic, sameAlbum = sameAlbum,
             durationBounds = configuredDurationBounds(), genreA = genreA, genreB = genreB,
-            minBars = s.minBars, fadeSec = doubleArrayOf(6.0, 10.0, 14.0)[mixLength],
+            minBars = s.minBars, fadeSec = doubleArrayOf(6.0, 10.0, 14.0, 15.0)[mixLength],
             tuning = app.myspoti.automix.segue.SegueTuning(planner = if (orpheon) app.myspoti.automix.segue.SegueTuning.PLANNER_ORPHEON else app.myspoti.automix.segue.SegueTuning.PLANNER_COMPACT,
                 ideas = if (orpheon) ideas else 0)))
         val plan = d.plan ?: return d
@@ -550,5 +547,5 @@ object AutoMix {
 
 /** Invalid persisted pairs recover together to Auto; max=0 means no configured maximum. */
 internal fun normalizeDurationPair(minSeconds: Int, maxSeconds: Int): Pair<Int, Int> =
-    if (minSeconds !in 0..90 || maxSeconds !in 0..90 || (maxSeconds != 0 && minSeconds > maxSeconds)) 0 to 0
+    if (minSeconds !in 0..95 || maxSeconds !in 0..95 || (maxSeconds != 0 && minSeconds > maxSeconds)) 0 to 0
     else minSeconds to maxSeconds
