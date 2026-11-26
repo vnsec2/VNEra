@@ -14,9 +14,9 @@ on:
         default: '1.0.9cleaned'
         type: string
       old_custom_branch:
-        description: 'Branch 1.0.9 με τις δικές σου αλλαγές'
+        description: 'Branch 1.0.9 με τις δικές σου αλλαγές (π.χ. work/1.0.9)'
         required: true
-        default: 'VNEraBase1.0.9'
+        default: 'work/1.0.9'
         type: string
       zip_url:
         description: 'Προαιρετικό direct link για το Revera zip (κενό = αυτόματο από GitHub tag)'
@@ -50,8 +50,22 @@ jobs:
         run: |
           set -euo pipefail
           NEW_V="${NEW_V#v}"
+          OLD_V=$(echo "$OLD_CLEAN" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
 
-          # 1. Λήψη & αποσυμπίεση του Revera zip -> branch Revera1.0.10
+          # 1. Έλεγχος ότι παίρνουμε ΜΟΝΟ τις δικές σου αλλαγές (όχι αρχεία του 1.0.9)
+          git -C _repo fetch origin "$OLD_CLEAN" "$OLD_CUSTOM"
+          CHANGED_COUNT=$(git -C _repo diff --name-only "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" -- . ':!.github/workflows' | wc -l)
+          echo "=== Αρχεία που θα μεταφερθούν από το ${OLD_CUSTOM} ($CHANGED_COUNT) ==="
+          git -C _repo diff --name-status "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" -- . ':!.github/workflows'
+
+          if [ "$CHANGED_COUNT" -eq 0 ] || [ "$CHANGED_COUNT" -gt 60 ]; then
+            echo "ERROR: Βρέθηκαν $CHANGED_COUNT αρχεία. Έλεγξε ότι το '$OLD_CLEAN' και το '$OLD_CUSTOM' είναι της ίδιας έκδοσης."
+            exit 1
+          fi
+
+          git -C _repo diff --binary "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" -- . ':!.github/workflows' > /tmp/vnera.patch
+
+          # 2. Λήψη & αποσυμπίεση του Revera zip -> branch Revera1.0.10
           mkdir -p _zip _clean
           if [ -n "$ZIP_URL" ]; then
             curl -fsSL "$ZIP_URL" -o _zip/revera.zip
@@ -79,21 +93,20 @@ jobs:
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git push -f origin "Revera${NEW_V}"
 
-          # 2. Εφαρμογή όλων των δικών σου αλλαγών (1.0.9cleaned -> old_custom_branch) -> VNERaBase1.0.10
+          # 3. Εφαρμογή μόνο των δικών σου αλλαγών πάνω στο Revera1.0.10 -> VNERaBase1.0.10
           git checkout -b "VNERaBase${NEW_V}"
-          git -C ../_repo fetch origin "$OLD_CLEAN" "$OLD_CUSTOM"
-          git -C ../_repo diff --binary "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" -- . ':!.github/workflows' > /tmp/vnera.patch
+          export GIT_ALTERNATE_OBJECT_DIRECTORIES="$(realpath ../_repo/.git/objects)"
 
-          if [ ! -s /tmp/vnera.patch ]; then
-            echo "ERROR: Δεν βρέθηκαν διαφορές ανάμεσα στα $OLD_CLEAN και $OLD_CUSTOM."
+          if ! git apply --3way --ignore-whitespace /tmp/vnera.patch; then
+            echo "ERROR: Υπήρξε conflict κατά τη συγχώνευση των αλλαγών σου πάνω στην ${NEW_V}. Δες παραπάνω ποιο αρχείο κόλλησε."
             exit 1
           fi
 
-          git apply --3way --ignore-whitespace /tmp/vnera.patch || true
-          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-            echo "ERROR: Υπάρχουν conflicts στα εξής αρχεία:"
-            git diff --name-only --diff-filter=U
-            exit 1
+          # Μην υποβαθμιστεί τυχαία το versionName στη νέα έκδοση
+          if [ -n "$OLD_V" ] && [ "$OLD_V" != "$NEW_V" ]; then
+            for gf in app/build.gradle.kts gradle/libs.versions.toml; do
+              [ -f "$gf" ] && sed -i "s/\"${OLD_V}\"/\"${NEW_V}\"/g" "$gf"
+            done
           fi
 
           git add -A && git commit -m "VNERaBase ${NEW_V} (base + custom changes)"
