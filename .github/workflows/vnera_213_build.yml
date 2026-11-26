@@ -377,11 +377,12 @@ jobs:
                   playbackAlertsEnabled = sp.getBoolean(KEY_PLAYBACK_ALERTS, true)
                   val legacyRemember = sp.getBoolean(KEY_REMEMBER_SHUFFLE, false)
                   val keep = sp.getBoolean(KEY_KEEP_SHUFFLE, false) || legacyRemember
-                  val manualOff = sp.getBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
-                  val rem = if (manualOff) false else sp.getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
+                  val rem = sp.getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
                   keepShuffleEnabled = keep
                   rememberedShuffleState = rem
-                  VnShuffleGuard.syncFromPrefs(keep && rem, manualOff)
+                  // Manual OFF is a runtime guard, not a persistent override.
+                  // On a fresh app process, restore only the last saved ON state.
+                  VnShuffleGuard.syncFromPrefs(keep && rem, false)
                   cachedExtensionsText = sp.getString(KEY_LAST_BACKUP_EXTENSIONS, "").orEmpty()
                   lyricsCustomColorArgb = sp.getLong(KEY_LYRICS_COLOR, 0L)
                   lyricsBeautifulEnabled = sp.getBoolean(KEY_LYRICS_BEAUTIFUL, false) || (lyricsCustomColorArgb != 0L)
@@ -441,18 +442,18 @@ jobs:
                       .putBoolean(KEY_KEEP_SHUFFLE, en)
                       .putBoolean(KEY_REMEMBER_SHUFFLE, false)
                       .putBoolean(KEY_REMEMBERED_SHUFFLE_STATE, if (en) shouldRemember else false)
-                      .putBoolean(KEY_SHUFFLE_MANUAL_OFF, if (en) VnShuffleGuard.isManualShuffleOff else false)
+                      .putBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
                       .apply()
                   VnShuffleGuard.onSettingChanged(en, if (en) shouldRemember else false, c)
               }
               fun saveShuffleStateAtomic(c: Context?, enabled: Boolean) {
-                  val manualOff = !enabled
                   rememberedShuffleState = enabled
                   val ctx = c ?: resolveAppContext()
                   ctx?.let {
                       prefs(it).edit()
                           .putBoolean(KEY_REMEMBERED_SHUFFLE_STATE, enabled)
-                          .putBoolean(KEY_SHUFFLE_MANUAL_OFF, manualOff)
+                          // Never persist the session-only manual-off lock.
+                          .putBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
                           .apply()
                   }
               }
@@ -725,9 +726,8 @@ jobs:
                       }
                       ed.apply()
                       loadFromPrefs(prefs(c))
-                      val importedManualOff = prefs(c).getBoolean(KEY_SHUFFLE_MANUAL_OFF, false)
-                      val importedRemembered = if (importedManualOff) false else prefs(c).getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
-                      VnShuffleGuard.applyImportedManualOff(importedManualOff, importedRemembered)
+                      val importedRemembered = prefs(c).getBoolean(KEY_REMEMBERED_SHUFFLE_STATE, false)
+                      VnShuffleGuard.applyImportedManualOff(false, importedRemembered)
                       pruneBackupJsonInPlace(root)
                   } catch (e: Exception) {
                       throw IllegalArgumentException("Backup import failed: ${e.message ?: e.javaClass.simpleName}", e)
@@ -1372,7 +1372,7 @@ jobs:
               @Volatile private var lastUserTapMs = 0L
               @Volatile private var userTogglePending = false
               @Volatile private var userTogglePendingUntilMs = 0L
-              @Volatile private var shuffleStateBeforeUserToggle: Boolean? = null
+              @Volatile private var pendingToggleBaseline: Boolean? = null
               @Volatile private var isInternalRestoring = false
               @Volatile private var lastObservedShuffleState: Boolean? = null
               @Volatile private var prefsInitialized = false
@@ -1384,40 +1384,40 @@ jobs:
 
               fun runInternalRestore(block: () -> Unit) {
                   isInternalRestoring = true
-                  try {
-                      block()
-                  } finally {
-                      isInternalRestoring = false
-                  }
+                  try { block() } finally { isInternalRestoring = false }
               }
 
+              // Called immediately before EVERY user-facing Shuffle toggle.
+              // The currently observed state is only a baseline; the player callback
+              // confirms the result. This avoids guessing from a stale remembered value.
               fun onUserPressedToggleShuffle(c: Context? = null) {
                   if (isInternalRestoring) return
                   val now = SystemClock.elapsedRealtime()
-                  // Every intercepted Shuffle control is a real manual choice.
-                  // Predict the resulting state from the most recent player observation,
-                  // persist it immediately, then let the observer confirm the UI update.
-                  val currentState = lastObservedShuffleState ?: lastKnownShuffleOn
+                  val baseline = lastObservedShuffleState ?: lastKnownShuffleOn
+                  val desired = !baseline
                   lastUserTapMs = now
-                  shuffleStateBeforeUserToggle = currentState
                   userTogglePending = true
-                  userTogglePendingUntilMs = now + 5_000L
+                  userTogglePendingUntilMs = now + 3_500L
+                  pendingToggleBaseline = baseline
                   pendingAutoRestoreUntilMs = 0L
-                  // Do not commit a predicted state here. Different player controls can
-                  // deliver callbacks in a different order; the observed player state
-                  // after the tap is the source of truth.
+                  manualShuffleOffByUser = !desired
+                  userWantsShuffle = desired
+                  lastKnownShuffleOn = desired
+                  userOverrideUntilPlayerClose = !desired
                   activeBannerMessage = null
+                  VnFpsPref.saveShuffleStateAtomic(c, desired)
               }
 
               fun syncFromPrefs(remembered: Boolean, manualOff: Boolean) {
-                  if (userTogglePending && SystemClock.elapsedRealtime() <= userTogglePendingUntilMs) {
-                      return
-                  }
-                  manualShuffleOffByUser = manualOff
-                  val effective = if (manualOff) false else remembered
-                  userWantsShuffle = effective
-                  lastKnownShuffleOn = effective
-                  userOverrideUntilPlayerClose = !effective
+                  // A new app process starts with no manual-session lock.
+                  manualShuffleOffByUser = false
+                  userWantsShuffle = remembered
+                  lastKnownShuffleOn = remembered
+                  userOverrideUntilPlayerClose = false
+                  userTogglePending = false
+                  pendingToggleBaseline = null
+                  userTogglePendingUntilMs = 0L
+                  pendingAutoRestoreUntilMs = 0L
                   if (!prefsInitialized) {
                       prefsInitialized = true
                       lastObservedShuffleState = null
@@ -1427,21 +1427,19 @@ jobs:
 
               fun applyImportedManualOff(manualOff: Boolean, remembered: Boolean = VnFpsPref.rememberedShuffleState) {
                   userTogglePending = false
+                  pendingToggleBaseline = null
                   userTogglePendingUntilMs = 0L
-                  shuffleStateBeforeUserToggle = null
                   pendingAutoRestoreUntilMs = 0L
-                  manualShuffleOffByUser = manualOff
-                  val desired = if (manualOff) false else remembered
+                  manualShuffleOffByUser = false
+                  val desired = remembered
                   userWantsShuffle = desired
                   lastKnownShuffleOn = desired
                   lastObservedShuffleState = null
                   smartShuffleActive = false
-                  userOverrideUntilPlayerClose = !desired
+                  userOverrideUntilPlayerClose = false
               }
 
-              fun markUserShuffleInteraction() {
-                  onUserPressedToggleShuffle(VnFpsPref.resolveAppContext())
-              }
+              fun markUserShuffleInteraction() { onUserPressedToggleShuffle(VnFpsPref.resolveAppContext()) }
 
               fun onUserTappedShuffleButton(wasShuffleOn: Boolean, c: Context? = null) {
                   onUserExplicitShuffleToggle(!wasShuffleOn, c)
@@ -1451,35 +1449,34 @@ jobs:
                   smartShuffleActive = false
                   lastObservedShuffleState = null
                   userTogglePending = false
+                  pendingToggleBaseline = null
                   userTogglePendingUntilMs = 0L
-                  shuffleStateBeforeUserToggle = null
                   pendingAutoRestoreUntilMs = 0L
                   if (!enabled) {
                       userWantsShuffle = false
                       lastKnownShuffleOn = false
+                      manualShuffleOffByUser = false
                       userOverrideUntilPlayerClose = false
                   } else {
-                      val desired = if (manualShuffleOffByUser) false else remembered
-                      userWantsShuffle = desired
-                      lastKnownShuffleOn = desired
-                      userOverrideUntilPlayerClose = !desired
+                      userWantsShuffle = remembered
+                      lastKnownShuffleOn = remembered
+                      userOverrideUntilPlayerClose = false
                   }
               }
 
               fun onUserExplicitShuffleToggle(newShuffleState: Boolean, c: Context? = null) {
                   if (isInternalRestoring) return
-                  val now = SystemClock.elapsedRealtime()
-                  lastUserTapMs = now
+                  lastUserTapMs = SystemClock.elapsedRealtime()
                   userTogglePending = false
+                  pendingToggleBaseline = null
                   userTogglePendingUntilMs = 0L
-                  shuffleStateBeforeUserToggle = null
                   pendingAutoRestoreUntilMs = 0L
                   manualShuffleOffByUser = !newShuffleState
                   userOverrideUntilPlayerClose = !newShuffleState
                   userWantsShuffle = newShuffleState
                   lastKnownShuffleOn = newShuffleState
-                  activeBannerMessage = null
                   lastObservedShuffleState = newShuffleState
+                  activeBannerMessage = null
                   VnFpsPref.saveShuffleStateAtomic(c, newShuffleState)
               }
 
@@ -1492,23 +1489,19 @@ jobs:
               fun onPlayerClosed() {
                   lastObservedShuffleState = null
                   userTogglePending = false
+                  pendingToggleBaseline = null
                   userTogglePendingUntilMs = 0L
                   pendingAutoRestoreUntilMs = 0L
-                  val keepActive = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
-                  userOverrideUntilPlayerClose = !keepActive
                   smartShuffleActive = false
+                  // Keep manual OFF for the rest of this app process.
               }
 
               fun shouldRestorePlayerState(currentState: Boolean): Boolean {
                   val now = SystemClock.elapsedRealtime()
                   if (userTogglePending && now <= userTogglePendingUntilMs) return false
                   if ((now - lastUserTapMs) in 0L..2_500L) return false
-                  return VnFpsPref.keepShuffleEnabled &&
-                      !manualShuffleOffByUser &&
-                      userWantsShuffle &&
-                      !currentState &&
-                      !smartShuffleActive &&
-                      !userOverrideUntilPlayerClose
+                  return VnFpsPref.keepShuffleEnabled && userWantsShuffle &&
+                      !manualShuffleOffByUser && !currentState && !smartShuffleActive
               }
 
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
@@ -1516,7 +1509,7 @@ jobs:
                   if (userTogglePending && now <= userTogglePendingUntilMs) return
                   if ((now - lastUserTapMs) in 0L..2_500L) return
                   if (now <= pendingAutoRestoreUntilMs) return
-                  if (!VnFpsPref.keepShuffleEnabled || manualShuffleOffByUser || !userWantsShuffle || smartShuffleActive || userOverrideUntilPlayerClose) return
+                  if (!VnFpsPref.keepShuffleEnabled || !userWantsShuffle || manualShuffleOffByUser || smartShuffleActive) return
                   if (playerObj == null) return
                   runCatching {
                       val getter = playerObj.javaClass.methods.firstOrNull {
@@ -1549,68 +1542,50 @@ jobs:
                   val now = SystemClock.elapsedRealtime()
 
                   if (userTogglePending) {
+                      val baseline = pendingToggleBaseline
                       if (now <= userTogglePendingUntilMs) {
-                          if (isSmartShuffle) {
-                              smartShuffleActive = true
-                              lastObservedShuffleState = isShuffleOn
-                              userOverrideUntilPlayerClose = true
-                              return
-                          }
-                          val before = shuffleStateBeforeUserToggle
-                          // A real state transition after the user's tap confirms the
-                          // result for every intercepted Shuffle control. Persist that
-                          // actual result, never the pre-tap prediction.
-                          if (before != null && isShuffleOn != before) {
+                          // Ignore the stale value emitted before the user's tap.
+                          if (baseline != null && isShuffleOn == baseline) return
+                          // A changed value is the actual result of the manual toggle.
+                          if (baseline == null || isShuffleOn != baseline) {
+                              userTogglePending = false
+                              pendingToggleBaseline = null
+                              userTogglePendingUntilMs = 0L
                               manualShuffleOffByUser = !isShuffleOn
-                              userOverrideUntilPlayerClose = !isShuffleOn
                               userWantsShuffle = isShuffleOn
                               lastKnownShuffleOn = isShuffleOn
                               lastObservedShuffleState = isShuffleOn
-                              userTogglePending = false
-                              userTogglePendingUntilMs = 0L
-                              shuffleStateBeforeUserToggle = null
-                              smartShuffleActive = false
+                              userOverrideUntilPlayerClose = !isShuffleOn
                               VnFpsPref.saveShuffleStateAtomic(c, isShuffleOn)
                               return
                           }
-                          // No state transition yet: wait for the player's actual
-                          // callback rather than guessing or allowing auto-restore.
-                          lastObservedShuffleState = isShuffleOn
-                          return
                       } else {
                           userTogglePending = false
+                          pendingToggleBaseline = null
                           userTogglePendingUntilMs = 0L
-                          shuffleStateBeforeUserToggle = null
                       }
                   }
 
-                  val prevObserved = lastObservedShuffleState
                   lastObservedShuffleState = isShuffleOn
-
                   if (!VnFpsPref.keepShuffleEnabled) {
                       lastKnownShuffleOn = isShuffleOn
                       return
                   }
-
                   if (isSmartShuffle) {
                       smartShuffleActive = true
                       lastKnownShuffleOn = isShuffleOn
                       return
                   }
                   smartShuffleActive = false
-
                   if (now <= pendingAutoRestoreUntilMs) {
-                      if (isShuffleOn) {
-                          pendingAutoRestoreUntilMs = 0L
-                          lastKnownShuffleOn = true
-                      }
+                      if (isShuffleOn) pendingAutoRestoreUntilMs = 0L
+                      lastKnownShuffleOn = isShuffleOn
                       return
                   }
 
+                  // Manual OFF is an absolute stop for this app session.
                   if (manualShuffleOffByUser || !userWantsShuffle) {
-                      // OFF is a persisted manual choice. Never reinterpret a player
-                      // callback as a new user-ON action and never change the saved intent.
-                      lastKnownShuffleOn = false
+                      lastKnownShuffleOn = isShuffleOn
                       return
                   }
 
@@ -1619,15 +1594,9 @@ jobs:
                       return
                   }
 
-                  if ((now - lastUserTapMs) in 0L..2_500L) {
-                      manualShuffleOffByUser = true
-                      userOverrideUntilPlayerClose = true
-                      userWantsShuffle = false
-                      lastKnownShuffleOn = false
-                      VnFpsPref.saveShuffleStateAtomic(c, false)
-                      return
-                  }
-
+                  // Only this path represents the player turning Shuffle OFF by itself:
+                  // the user's saved intent is ON and there was no manual OFF interaction.
+                  if ((now - lastUserTapMs) in 0L..2_500L) return
                   if (now - lastReenableMs > 1_200L) {
                       lastReenableMs = now
                       pendingAutoRestoreUntilMs = now + 2_500L
