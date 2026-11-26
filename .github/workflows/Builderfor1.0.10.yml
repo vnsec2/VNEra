@@ -27,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Create Revera & VNERaBase Branches
         env:
@@ -41,9 +43,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # 1. Φέρνουμε το main και βρίσκουμε το Revera-1.0.10.zip
+          # 1. Φέρνουμε το main (μαζί με τυχόν LFS αρχεία) και βρίσκουμε το Revera-1.0.10.zip
           git fetch origin main "$OLD_CLEAN" "$OLD_CUSTOM"
           git checkout -B "Revera${NEW_V}" origin/main
+          git lfs pull origin main 2>/dev/null || true
 
           ZIP_FILE=$(find . -maxdepth 3 -name "Revera-${NEW_V}.zip" | head -n 1)
           if [ -z "$ZIP_FILE" ]; then
@@ -51,8 +54,18 @@ jobs:
             exit 1
           fi
 
+          ls -lh "$ZIP_FILE"
+          file "$ZIP_FILE"
+
           mkdir -p /tmp/zip_out
-          unzip -q "$ZIP_FILE" -d /tmp/zip_out
+          if ! unzip -q "$ZIP_FILE" -d /tmp/zip_out 2>/dev/null; then
+            rm -rf /tmp/zip_out/*
+            if ! 7z x -y "$ZIP_FILE" -o/tmp/zip_out >/dev/null 2>&1; then
+              echo "ERROR: Το $ZIP_FILE δεν είναι έγκυρο αρχείο zip/archive (πιθανώς ανέβηκε κατεστραμμένο ή μισό στο main)."
+              head -c 200 "$ZIP_FILE" || true
+              exit 1
+            fi
+          fi
 
           # Αφαιρούμε τα upstream workflows από το zip για να μην μπλοκάρει το push
           find /tmp/zip_out -path "*/.github/workflows" -exec rm -rf {} + 2>/dev/null || true
