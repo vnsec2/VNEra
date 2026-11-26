@@ -52,15 +52,12 @@ jobs:
           curl -fSL "$ZIP_URL" -o /tmp/revera.zip
           mkdir -p /tmp/zip_out
           unzip -q /tmp/revera.zip -d /tmp/zip_out
-
-          # Αφαίρεση upstream workflows για να μην μπλοκάρει το push
           find /tmp/zip_out -path "*/.github/workflows" -exec rm -rf {} + 2>/dev/null || true
 
-          # Εντοπισμός της ρίζας του Gradle project
           GRADLE_ROOT=$(find /tmp/zip_out -maxdepth 4 \( -name "settings.gradle.kts" -o -name "settings.gradle" -o -name "gradlew" \) -printf '%h\n' | head -n 1)
           SRC_DIR="${GRADLE_ROOT:-/tmp/zip_out}"
 
-          # 2. Δημιουργία Revera branch (κρατώντας μόνο τα δικά σου .github/workflows)
+          # 2. Branch 1: Καθαρό Revera1.0.10 (κρατώντας τα δικά σου workflows)
           git fetch origin main "$OLD_CLEAN" "$OLD_CUSTOM"
           git checkout -B "Revera${NEW_V}" origin/main
 
@@ -73,15 +70,11 @@ jobs:
           git commit -m "Revera ${NEW_V}"
           git push -f origin "Revera${NEW_V}"
 
-          # 3. Εφαρμογή των δικών σου αλλαγών -> VNERaBase branch
+          # 3. Branch 2: VNERaBase1.0.10 (Revera 1.0.10 + όλες οι δικές σου αλλαγές)
           git checkout -B "VNERaBase${NEW_V}"
           EXCLUDES=(-- . ':!.github/workflows' ':!*.zip' ':!extract-source.yml')
-
-          echo "=== Αρχεία που μεταφέρονται από ${OLD_CUSTOM} ==="
-          git diff --name-status "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" "${EXCLUDES[@]}"
           git diff --binary "origin/${OLD_CLEAN}" "origin/${OLD_CUSTOM}" "${EXCLUDES[@]}" > /tmp/vnera.patch
 
-          # Αυτόματη αντιστοίχιση μονοπατιών & package (com.music.spotui -> app.myspoti / kotlin)
           python3 - <<'PY'
           from pathlib import Path
 
@@ -109,20 +102,13 @@ jobs:
                   return old_p
               for cand in candidate_paths(old_p):
                   if Path(cand).exists():
-                      if cand != old_p:
-                          print(f"Path mapped: {old_p} -> {cand}")
                       return cand
-
               for cand in candidate_paths(old_p):
                   if Path(cand).parent.exists():
-                      if cand != old_p:
-                          print(f"New file mapped: {old_p} -> {cand}")
                       return cand
-
               name = Path(old_p).name
               top_dir = Path(old_p).parts[0] if Path(old_p).parts else ""
               parent_name = Path(old_p).parent.name
-
               matches = [f for f in all_files if Path(f).name == name]
               if top_dir:
                   scoped = [f for f in matches if Path(f).parts[0] == top_dir]
@@ -132,10 +118,7 @@ jobs:
                   by_parent = [f for f in matches if Path(f).parent.name == parent_name]
                   if by_parent:
                       matches = by_parent
-              if len(matches) == 1:
-                  print(f"Path mapped: {old_p} -> {matches[0]}")
-                  return matches[0]
-              return old_p
+              return matches[0] if len(matches) == 1 else old_p
 
           mapping = {}
           for line in patch.splitlines():
@@ -155,16 +138,18 @@ jobs:
                   )
 
           if pkg_migrated:
-              print("Package migrated in patch: com.music.spotui -> app.myspoti")
               patch = patch.replace("com.music.spotui", "app.myspoti")
 
           patch_file.write_text(patch)
           PY
 
-          if ! git apply --3way --ignore-whitespace /tmp/vnera.patch; then
-            echo "ERROR: Conflict στα παρακάτω αρχεία:"
-            git diff --name-only --diff-filter=U
-            exit 1
+          # Εφαρμογή χωρίς να διακόπτεται το push αν υπάρξει conflict
+          git apply --3way --ignore-whitespace /tmp/vnera.patch || true
+
+          CONFLICTS=$(git diff --name-only --diff-filter=U || true)
+          if [ -n "$CONFLICTS" ]; then
+            echo "=== ΠΡΟΣΟΧΗ: Ανέβηκε κανονικά το VNERaBase${NEW_V}, αλλά τα παρακάτω αρχεία έχουν σημάδια <<<<<<< για έλεγχο ==="
+            echo "$CONFLICTS"
           fi
 
           if [ -n "$OLD_V" ] && [ "$OLD_V" != "$CLEAN_NEW_V" ]; then
