@@ -1,4 +1,4 @@
-name: Build VNEra 2.2.9 Debug APK
+name: Build VNEra 2.3.0 Debug APK
 
 on:
   push:
@@ -1393,13 +1393,21 @@ jobs:
               fun onUserPressedToggleShuffle(c: Context? = null) {
                   if (isInternalRestoring) return
                   val now = SystemClock.elapsedRealtime()
-                  // Mark only the user action here. lastKnownShuffleOn can be stale
-                  // during player recreation, so never infer the requested state from it.
+                  // Every intercepted Shuffle control is a real manual choice.
+                  // Predict the resulting state from the most recent player observation,
+                  // persist it immediately, then let the observer confirm the UI update.
+                  val currentState = lastObservedShuffleState ?: lastKnownShuffleOn
+                  val desiredState = !currentState
                   lastUserTapMs = now
                   userTogglePending = true
                   userTogglePendingUntilMs = now + 3_500L
                   pendingAutoRestoreUntilMs = 0L
+                  manualShuffleOffByUser = !desiredState
+                  userWantsShuffle = desiredState
+                  lastKnownShuffleOn = desiredState
+                  userOverrideUntilPlayerClose = !desiredState
                   activeBannerMessage = null
+                  VnFpsPref.saveShuffleStateAtomic(c, desiredState)
               }
 
               fun syncFromPrefs(remembered: Boolean, manualOff: Boolean) {
@@ -1410,9 +1418,7 @@ jobs:
                   val effective = if (manualOff) false else remembered
                   userWantsShuffle = effective
                   lastKnownShuffleOn = effective
-                  // Rebuild the startup restore permission from the persisted user choice.
-                  // If the user last left shuffle ON, allow the player to restore it after restart.
-                  userOverrideUntilPlayerClose = manualOff
+                  userOverrideUntilPlayerClose = !effective
                   if (!prefsInitialized) {
                       prefsInitialized = true
                       lastObservedShuffleState = null
@@ -1430,7 +1436,7 @@ jobs:
                   lastKnownShuffleOn = desired
                   lastObservedShuffleState = null
                   smartShuffleActive = false
-                  userOverrideUntilPlayerClose = manualOff
+                  userOverrideUntilPlayerClose = !desired
               }
 
               fun markUserShuffleInteraction() {
@@ -1487,11 +1493,6 @@ jobs:
                   userTogglePendingUntilMs = 0L
                   pendingAutoRestoreUntilMs = 0L
                   val keepActive = VnFpsPref.keepShuffleEnabled && userWantsShuffle && !manualShuffleOffByUser
-                  // Persist the user's last ON choice when the player screen/app is closed.
-                  // This is what lets startup restoration survive a full app restart.
-                  if (keepActive) {
-                      VnFpsPref.saveShuffleStateAtomic(VnFpsPref.resolveAppContext(), true)
-                  }
                   userOverrideUntilPlayerClose = !keepActive
                   smartShuffleActive = false
               }
@@ -1499,6 +1500,7 @@ jobs:
               fun shouldRestorePlayerState(currentState: Boolean): Boolean {
                   val now = SystemClock.elapsedRealtime()
                   if (userTogglePending && now <= userTogglePendingUntilMs) return false
+                  if ((now - lastUserTapMs) in 0L..2_500L) return false
                   return VnFpsPref.keepShuffleEnabled &&
                       !manualShuffleOffByUser &&
                       userWantsShuffle &&
@@ -1510,6 +1512,7 @@ jobs:
               fun enforceOnPlayerIfNeeded(playerObj: Any?) {
                   val now = SystemClock.elapsedRealtime()
                   if (userTogglePending && now <= userTogglePendingUntilMs) return
+                  if ((now - lastUserTapMs) in 0L..2_500L) return
                   if (now <= pendingAutoRestoreUntilMs) return
                   if (!VnFpsPref.keepShuffleEnabled || manualShuffleOffByUser || !userWantsShuffle || smartShuffleActive || userOverrideUntilPlayerClose) return
                   if (playerObj == null) return
@@ -1545,24 +1548,21 @@ jobs:
 
                   if (userTogglePending) {
                       if (now <= userTogglePendingUntilMs) {
-                          val prev = lastObservedShuffleState
-                          if (prev != null && prev == isShuffleOn && isSmartShuffle == smartShuffleActive) {
-                              return
-                          }
-                          lastObservedShuffleState = isShuffleOn
-                          userTogglePending = false
-                          userTogglePendingUntilMs = 0L
                           if (isSmartShuffle) {
                               smartShuffleActive = true
+                              lastObservedShuffleState = isShuffleOn
                               userOverrideUntilPlayerClose = true
                               return
                           }
-                          smartShuffleActive = false
-                          manualShuffleOffByUser = !isShuffleOn
-                          userOverrideUntilPlayerClose = !isShuffleOn
-                          userWantsShuffle = isShuffleOn
-                          lastKnownShuffleOn = isShuffleOn
-                          VnFpsPref.saveShuffleStateAtomic(c, isShuffleOn)
+                          // Ignore stale/pre-toggle callbacks. The manual choice was
+                          // already saved by onUserPressedToggleShuffle; only confirm it
+                          // when the player reports the expected resulting state.
+                          if (isShuffleOn == userWantsShuffle) {
+                              lastObservedShuffleState = isShuffleOn
+                              userTogglePending = false
+                              userTogglePendingUntilMs = 0L
+                              smartShuffleActive = false
+                          }
                           return
                       } else {
                           userTogglePending = false
@@ -1594,9 +1594,9 @@ jobs:
                   }
 
                   if (manualShuffleOffByUser || !userWantsShuffle) {
-                      // Preserve an explicit manual OFF. Only a fresh user toggle,
-                      // resolved by userTogglePending above, can change this preference.
-                      lastKnownShuffleOn = isShuffleOn
+                      // OFF is a persisted manual choice. Never reinterpret a player
+                      // callback as a new user-ON action and never change the saved intent.
+                      lastKnownShuffleOn = false
                       return
                   }
 
@@ -1605,6 +1605,14 @@ jobs:
                       return
                   }
 
+                  if ((now - lastUserTapMs) in 0L..2_500L) {
+                      manualShuffleOffByUser = true
+                      userOverrideUntilPlayerClose = true
+                      userWantsShuffle = false
+                      lastKnownShuffleOn = false
+                      VnFpsPref.saveShuffleStateAtomic(c, false)
+                      return
+                  }
 
                   if (now - lastReenableMs > 1_200L) {
                       lastReenableMs = now
@@ -2683,7 +2691,7 @@ jobs:
           if gradle.exists():
               t = gradle.read_text()
               t = re.sub(r'applicationId\s*=\s*"[^"]+"', 'applicationId = "app.vnera.music"', t)
-              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.2.9"', t)
+              t = re.sub(r'versionName\s*=\s*".*?"', 'versionName = "2.3.0"', t)
               t = re.sub(r'versionCode\s*=\s*\d+', f'versionCode = {build_vcode}', t)
               if "projectUrl" in t and not re.search(r'\b(val|var)\s+projectUrl\b', t):
                   t = re.sub(r'(?m)^(\s*android\s*\{)', r'val projectUrl = providers.gradleProperty("projectUrl").orElse("https://github.com/vnsec2/VNEra").get()\n\n\1', t, count=1)
@@ -4047,12 +4055,12 @@ jobs:
           chmod +x gradlew
           EXTRA_FLAGS=""
           [ "$HAS_SDK_37" != "true" ] && EXTRA_FLAGS="-Pandroid.suppressUnsupportedCompileSdk=37"
-          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.2.9" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
+          ./gradlew :app:assembleDebug $EXTRA_FLAGS -PappVersionName="2.3.0" -PappVersionCode="$BUILD_VERSION_CODE" -Pabis=arm64-v8a -PupdateRepo=vnsec2/VNEra --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: VNEra-2.2.9-Debug
+          name: VNEra-2.3.0-Debug
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 14
