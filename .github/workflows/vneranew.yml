@@ -2392,7 +2392,7 @@ jobs:
               val savedOffsetsCount = VnFpsPref.savedLyricOffsetsCount
 
               VnSectionBlock(sectionTitle = "VNERA · ΣΤΙΧΟΙ", modifier = modifier) {
-                  // Immersive fullscreen mode removed; normal fullscreen lyrics remain.                  VnNativeSwitchRow(
+                  VnNativeSwitchRow(
                       title = "Κουμπιά Χρονισμού Στίχων (-0.2s / +0.2s)",
                       subtitle = "Εμφάνιση των κουμπιών ρύθμισης χρονισμού κάτω από το κουμπί πλήρους οθόνης",
                       checked = VnFpsPref.lyricsOffsetControlsEnabled,
