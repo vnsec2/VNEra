@@ -1990,22 +1990,38 @@ jobs:
                   return runCatching { field?.get(obj) as? Bundle }.getOrNull()
               }
 
+              private fun isLikelyVideoUrl(u: String): Boolean {
+                  val t = u.trim()
+                  if (!t.startsWith("http://", true) && !t.startsWith("https://", true) &&
+                      !t.startsWith("content://", true) && !t.startsWith("file://", true)) return false
+                  val l = t.lowercase(Locale.ROOT)
+                  if (l.contains("youtube.com/watch") || l.contains("youtu.be/") || l.contains("youtube.com/shorts") ||
+                      l.contains("vimeo.com/") || l.contains("dailymotion.com/") || l.contains("tiktok.com/") ||
+                      l.endsWith(".mp4") || l.endsWith(".m3u8") || l.endsWith(".webm") || l.endsWith(".mkv") ||
+                      l.endsWith(".mov") || l.contains("video") || l.contains("clip") || l.contains("/mv")) {
+                      return true
+                  }
+                  return false
+              }
+
               private fun extractVideoUrlFromCandidates(candidates: List<Any?>): String {
                   val urlRegex = Regex("""https?://[^\s"'<>\]\)]+""")
+                  val propNames = arrayOf(
+                      "videoUrl", "videoUri", "clipUrl", "mvUrl", "musicVideoUrl",
+                      "streamVideoUrl", "videoStreamUrl", "video", "clip", "mv",
+                      "mediaUrl", "streamUrl", "playUrl", "watchUrl", "url", "uri"
+                  )
                   for (cand in candidates) {
                       if (cand == null) continue
-                      val direct = readProp(
-                          cand,
-                          "videoUrl", "videoUri", "clipUrl", "mvUrl", "musicVideoUrl",
-                          "streamVideoUrl", "videoStreamUrl", "video"
-                      )
-                      if (direct.startsWith("http://") || direct.startsWith("https://")) {
-                          return direct
+                      for (pn in propNames) {
+                          val v = readProp(cand, pn)
+                          if (v.isNotEmpty() && isLikelyVideoUrl(v)) {
+                              return v
+                          }
                       }
                       val rawStr = cand.toString()
-                      if (rawStr.contains("video", ignoreCase = true) || rawStr.contains("mv", ignoreCase = true)) {
-                          val match = urlRegex.find(rawStr)?.value.orEmpty()
-                          if (match.isNotEmpty()) return match
+                      if (rawStr.contains("video", ignoreCase = true) || rawStr.contains("clip", ignoreCase = true) || rawStr.contains("mv", ignoreCase = true)) {
+                          urlRegex.findAll(rawStr).map { it.value }.firstOrNull(::isLikelyVideoUrl)?.let { return it }
                       }
                   }
                   return ""
