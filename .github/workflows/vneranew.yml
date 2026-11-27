@@ -143,6 +143,7 @@ jobs:
           import androidx.compose.ui.platform.LocalConfiguration
           import androidx.compose.ui.platform.LocalContext
           import androidx.compose.ui.platform.LocalDensity
+          import androidx.compose.ui.platform.LocalView
           import androidx.compose.ui.text.AnnotatedString
           import androidx.compose.ui.text.TextStyle
           import androidx.compose.ui.text.buildAnnotatedString
@@ -150,6 +151,7 @@ jobs:
           import androidx.compose.ui.unit.*
           import androidx.compose.ui.window.Dialog
           import androidx.compose.ui.window.DialogProperties
+          import androidx.compose.ui.window.DialogWindowProvider
           import androidx.compose.ui.window.Popup
           import androidx.compose.ui.window.PopupProperties
           import androidx.core.view.*
@@ -167,6 +169,7 @@ jobs:
               const val PREFS_NAME = "vnera_display_prefs"
               const val KEY_TARGET_FPS = "target_fps"
               const val KEY_LYRICS_IMMERSIVE = "lyrics_immersive_fullscreen"
+              const val KEY_LYRICS_OFFSET_CONTROLS = "lyrics_offset_controls_enabled"
               const val KEY_CUSTOM_COLOR = "custom_accent_color_argb"
               const val KEY_ANIM_ENABLED = "element_animation_enabled"
               const val KEY_ANIM_MODE = "element_animation_mode"
@@ -191,6 +194,7 @@ jobs:
 
               var targetFps by mutableIntStateOf(0); private set
               var lyricsImmersiveEnabled by mutableStateOf(true); private set
+              var lyricsOffsetControlsEnabled by mutableStateOf(true); private set
               var lyricsBarsHidden by mutableStateOf(false)
               var lyricsFullscreenOpen by mutableStateOf(false)
               var nativeLyricsScreenActive by mutableStateOf(false)
@@ -392,6 +396,7 @@ jobs:
               private fun loadFromPrefs(sp: SharedPreferences) {
                   targetFps = sp.getInt(KEY_TARGET_FPS, 0)
                   lyricsImmersiveEnabled = sp.getBoolean(KEY_LYRICS_IMMERSIVE, true)
+                  lyricsOffsetControlsEnabled = sp.getBoolean(KEY_LYRICS_OFFSET_CONTROLS, true)
                   customAccentColorArgb = sp.getLong(KEY_CUSTOM_COLOR, 0L)
                   elementAnimEnabled = sp.getBoolean(KEY_ANIM_ENABLED, false)
                   elementAnimMode = sp.getInt(KEY_ANIM_MODE, 1).coerceIn(1, 3)
@@ -442,6 +447,7 @@ jobs:
 
               fun update(c: Context, fps: Int) { targetFps = fps; prefs(c).edit().putInt(KEY_TARGET_FPS, fps).apply(); c.findActivity()?.let { applyWindowFrameRate(it, fps, true) } }
               fun updateLyricsImmersive(c: Context, en: Boolean) { lyricsImmersiveEnabled = en; prefs(c).edit().putBoolean(KEY_LYRICS_IMMERSIVE, en).apply() }
+              fun updateLyricsOffsetControls(c: Context, en: Boolean) { lyricsOffsetControlsEnabled = en; prefs(c).edit().putBoolean(KEY_LYRICS_OFFSET_CONTROLS, en).apply() }
               fun updateCustomColor(c: Context, argb: Long) { customAccentColorArgb = argb; prefs(c).edit().putLong(KEY_CUSTOM_COLOR, argb).apply() }
               fun updateElementAnim(c: Context, en: Boolean, mode: Int = elementAnimMode) {
                   val m = mode.coerceIn(1, 3); elementAnimEnabled = en; elementAnimMode = m
@@ -577,23 +583,53 @@ jobs:
                   return true
               }
 
-              fun setSystemBarsHidden(act: Activity?, hidden: Boolean) {
-                  lyricsBarsHidden = hidden
-                  val w = act?.window ?: return
-                  WindowCompat.getInsetsController(w, w.decorView).apply {
-                      if (hidden) {
-                          systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                          hide(WindowInsetsCompat.Type.systemBars())
-                      } else {
-                          show(WindowInsetsCompat.Type.systemBars())
+              private tailrec fun findWindowFromParent(parent: ViewParent?): Window? = when (parent) {
+                  is DialogWindowProvider -> parent.window
+                  is View -> findWindowFromParent(parent.parent)
+                  else -> null
+              }
+
+              private fun applySystemBarsToWindow(w: Window?, targetView: View?, hidden: Boolean) {
+                  if (w == null) return
+                  val v = targetView ?: w.decorView
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                      w.attributes = w.attributes.apply {
+                          layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                              WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                          } else {
+                              WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                          }
                       }
                   }
+                  WindowCompat.setDecorFitsSystemWindows(w, false)
+                  val controller = WindowCompat.getInsetsController(w, v)
+                  if (hidden) {
+                      controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                      controller.hide(WindowInsetsCompat.Type.systemBars())
+                  } else {
+                      controller.show(WindowInsetsCompat.Type.systemBars())
+                  }
               }
-              fun toggleSystemBars(act: Activity?) = setSystemBarsHidden(act, !lyricsBarsHidden)
+
+              fun setSystemBarsHidden(act: Activity?, hidden: Boolean, view: View? = null) {
+                  lyricsBarsHidden = hidden
+                  val dialogWin = view?.let { findWindowFromParent(it.parent) }
+                  val actWin = act?.window
+                  if (dialogWin != null) {
+                      applySystemBarsToWindow(dialogWin, view, hidden)
+                  }
+                  if (actWin != null && actWin !== dialogWin) {
+                      applySystemBarsToWindow(actWin, actWin.decorView, hidden)
+                  }
+              }
+
+              fun toggleSystemBars(act: Activity?, view: View? = null) =
+                  setSystemBarsHidden(act, !lyricsBarsHidden, view)
 
               private val vneraBackupKeys = setOf(
                   KEY_TARGET_FPS,
                   KEY_LYRICS_IMMERSIVE,
+                  KEY_LYRICS_OFFSET_CONTROLS,
                   KEY_CUSTOM_COLOR,
                   KEY_ANIM_ENABLED,
                   KEY_ANIM_MODE,
@@ -1158,68 +1194,108 @@ jobs:
           }
 
           @Composable
+          fun VnKeepSystemBarsHidden(hidden: Boolean) {
+              val c = LocalContext.current
+              val act = remember(c) { c.findActivity() }
+              val view = LocalView.current
+              LaunchedEffect(act, view, hidden) {
+                  VnFpsPref.setSystemBarsHidden(act, hidden, view)
+                  if (hidden) {
+                      view.post { VnFpsPref.setSystemBarsHidden(act, true, view) }
+                      delay(120L)
+                      VnFpsPref.setSystemBarsHidden(act, true, view)
+                  }
+              }
+              DisposableEffect(act, view) {
+                  val observer = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+                      if (hasFocus && VnFpsPref.lyricsBarsHidden) {
+                          VnFpsPref.setSystemBarsHidden(act, true, view)
+                      }
+                  }
+                  view.viewTreeObserver.addOnWindowFocusChangeListener(observer)
+                  onDispose {
+                      view.viewTreeObserver.removeOnWindowFocusChangeListener(observer)
+                      VnFpsPref.setSystemBarsHidden(act, false, view)
+                  }
+              }
+          }
+
+          @Composable
           fun VnLyricsOffsetControlPill(modifier: Modifier = Modifier) {
               val c = LocalContext.current
               VnFpsPref.ensureInit(c)
+              if (!VnFpsPref.lyricsOffsetControlsEnabled) return
               val offsetMs = VnFpsPref.currentLyricOffsetMs
               val activeTint = vnResolveSelectedLyricColor()
               Surface(
                   modifier = modifier
                       .zIndex(99f)
-                      .height(46.dp),
-                  shape = RoundedCornerShape(15.dp),
+                      .width(46.dp),
+                  shape = RoundedCornerShape(13.dp),
                   color = Color(0xE6161820),
                   border = BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
-                  shadowElevation = 12.dp
+                  shadowElevation = 10.dp
               ) {
-                  Row(
-                      modifier = Modifier.padding(horizontal = 4.dp),
-                      verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(2.dp)
+                  Column(
+                      modifier = Modifier.padding(horizontal = 3.dp, vertical = 3.dp),
+                      horizontalAlignment = Alignment.CenterHorizontally,
+                      verticalArrangement = Arrangement.spacedBy(2.dp)
                   ) {
                       Box(
                           modifier = Modifier
-                              .clip(RoundedCornerShape(11.dp))
-                              .clickable { VnFpsPref.adjustCurrentLyricOffset(c, -200) }
-                              .padding(horizontal = 10.dp, vertical = 8.dp),
-                          contentAlignment = Alignment.Center
-                      ) {
-                          Text(
-                              text = "-0.2s",
-                              style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
-                              fontWeight = FontWeight.Bold,
-                              color = Color.White.copy(alpha = 0.90f)
-                          )
-                      }
-                      Box(
-                          modifier = Modifier
-                              .clip(RoundedCornerShape(10.dp))
-                              .background(if (offsetMs != 0) activeTint.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.06f))
-                              .clickable(enabled = offsetMs != 0) {
-                                  VnFpsPref.resetCurrentLyricOffset(c)
-                              }
-                              .padding(horizontal = 8.dp, vertical = 6.dp),
-                          contentAlignment = Alignment.Center
-                      ) {
-                          Text(
-                              text = VnFpsPref.formatOffsetSeconds(offsetMs),
-                              style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
-                              fontWeight = FontWeight.ExtraBold,
-                              color = if (offsetMs != 0) activeTint else Color.White.copy(alpha = 0.72f)
-                          )
-                      }
-                      Box(
-                          modifier = Modifier
-                              .clip(RoundedCornerShape(11.dp))
+                              .fillMaxWidth()
+                              .clip(RoundedCornerShape(9.dp))
                               .clickable { VnFpsPref.adjustCurrentLyricOffset(c, +200) }
-                              .padding(horizontal = 10.dp, vertical = 8.dp),
+                              .padding(vertical = 5.dp),
                           contentAlignment = Alignment.Center
                       ) {
                           Text(
                               text = "+0.2s",
-                              style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
+                              fontSize = 10.sp,
+                              lineHeight = 12.sp,
+                              style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
                               fontWeight = FontWeight.Bold,
-                              color = Color.White.copy(alpha = 0.90f)
+                              color = Color.White.copy(alpha = 0.92f),
+                              maxLines = 1
+                          )
+                      }
+                      Box(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .clip(RoundedCornerShape(8.dp))
+                              .background(if (offsetMs != 0) activeTint.copy(alpha = 0.24f) else Color.White.copy(alpha = 0.07f))
+                              .clickable(enabled = offsetMs != 0) {
+                                  VnFpsPref.resetCurrentLyricOffset(c)
+                              }
+                              .padding(vertical = 4.dp),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Text(
+                              text = VnFpsPref.formatOffsetSeconds(offsetMs),
+                              fontSize = 10.sp,
+                              lineHeight = 12.sp,
+                              style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                              fontWeight = FontWeight.ExtraBold,
+                              color = if (offsetMs != 0) activeTint else Color.White.copy(alpha = 0.72f),
+                              maxLines = 1
+                          )
+                      }
+                      Box(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .clip(RoundedCornerShape(9.dp))
+                              .clickable { VnFpsPref.adjustCurrentLyricOffset(c, -200) }
+                              .padding(vertical = 5.dp),
+                          contentAlignment = Alignment.Center
+                      ) {
+                          Text(
+                              text = "-0.2s",
+                              fontSize = 10.sp,
+                              lineHeight = 12.sp,
+                              style = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum"),
+                              fontWeight = FontWeight.Bold,
+                              color = Color.White.copy(alpha = 0.92f),
+                              maxLines = 1
                           )
                       }
                   }
@@ -1241,8 +1317,8 @@ jobs:
                   onClick = onClick,
                   modifier = Modifier
                       .zIndex(99f)
-                      .size(if (isFullscreen) 48.dp else 46.dp),
-                  shape = RoundedCornerShape(if (isFullscreen) 16.dp else 15.dp),
+                      .size(46.dp),
+                  shape = RoundedCornerShape(15.dp),
                   color = Color(0xE6161820),
                   border = BorderStroke(1.dp, Color.White.copy(alpha = 0.20f)),
                   shadowElevation = 12.dp
@@ -1260,6 +1336,27 @@ jobs:
                               .size(if (isFullscreen) 22.dp else 24.dp)
                       )
                   }
+              }
+          }
+
+          @Composable
+          fun VnLyricsTopRightControls(
+              isFullscreen: Boolean,
+              ownerId: String = "default",
+              onClick: () -> Unit,
+              modifier: Modifier = Modifier
+          ) {
+              Column(
+                  modifier = modifier.zIndex(99f),
+                  horizontalAlignment = Alignment.End,
+                  verticalArrangement = Arrangement.spacedBy(8.dp)
+              ) {
+                  VnLyricsFullscreenButton(
+                      isFullscreen = isFullscreen,
+                      ownerId = ownerId,
+                      onClick = onClick
+                  )
+                  VnLyricsOffsetControlPill()
               }
           }
 
@@ -1285,17 +1382,11 @@ jobs:
                   }
               }
 
-              LaunchedEffect(VnFpsPref.lyricsImmersiveEnabled) {
-                  VnFpsPref.setSystemBarsHidden(act, VnFpsPref.lyricsImmersiveEnabled)
-              }
-              DisposableEffect(Unit) {
-                  onDispose { VnFpsPref.setSystemBarsHidden(act, false) }
-              }
-
               Dialog(
                   onDismissRequest = closeOverlay,
                   properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
               ) {
+                  VnKeepSystemBarsHidden(VnFpsPref.lyricsImmersiveEnabled)
                   CompositionLocalProvider(LocalVnIsPlayerInlineLyric provides false, LocalVnFullscreenOverlayContent provides true) {
                       BackHandler(onBack = closeOverlay)
                       Box(
@@ -1311,20 +1402,14 @@ jobs:
                               modifier = Modifier.fillMaxSize(),
                               contentPadding = PaddingValues(top = 56.dp, bottom = 76.dp)
                           )
-                          Box(
-                              modifier = Modifier.align(Alignment.TopStart).padding(top = 10.dp, start = 12.dp).zIndex(99f)
-                          ) {
-                              VnLyricsOffsetControlPill()
-                          }
-                          Box(
-                              modifier = Modifier.align(Alignment.TopEnd).padding(top = 10.dp, end = 12.dp).zIndex(99f)
-                          ) {
-                              VnLyricsFullscreenButton(
-                                  isFullscreen = true,
-                                  ownerId = "overlay_fullscreen",
-                                  onClick = closeOverlay
-                              )
-                          }
+                          VnLyricsTopRightControls(
+                              isFullscreen = true,
+                              ownerId = "overlay_fullscreen",
+                              onClick = closeOverlay,
+                              modifier = Modifier
+                                  .align(Alignment.TopEnd)
+                                  .padding(top = 10.dp, end = 12.dp)
+                          )
                       }
                   }
               }
@@ -1386,6 +1471,7 @@ jobs:
               onCollapseToPlayer: (() -> Unit)? = null
           ): Modifier = composed {
               val c = LocalContext.current
+              val view = LocalView.current
               val density = LocalDensity.current
               val thresholdPx = with(density) { 48.dp.toPx() }
               var accumDown by remember { mutableFloatStateOf(0f) }
@@ -1434,11 +1520,11 @@ jobs:
 
               this
                   .nestedScroll(nested)
-                  .pointerInput(act) {
+                  .pointerInput(act, view) {
                       detectTapGestures { offset ->
                           val w = size.width.toFloat()
                           if (w > 0f && offset.x in (w * 0.25f)..(w * 0.75f)) {
-                              VnFpsPref.toggleSystemBars(act)
+                              VnFpsPref.toggleSystemBars(act, view)
                           }
                       }
                   }
@@ -1908,15 +1994,14 @@ jobs:
 
           @Composable
           fun VnLyricsFullscreenEffect() {
-              val c = LocalContext.current; val act = remember(c) { c.findActivity() }
+              val c = LocalContext.current
               VnFpsPref.ensureInit(c)
               val imm = VnFpsPref.lyricsImmersiveEnabled
-              DisposableEffect(act, imm) {
+              VnKeepSystemBarsHidden(imm)
+              DisposableEffect(Unit) {
                   VnFpsPref.nativeLyricsScreenActive = true
-                  VnFpsPref.setSystemBarsHidden(act, imm)
                   onDispose {
                       VnFpsPref.nativeLyricsScreenActive = false
-                      VnFpsPref.setSystemBarsHidden(act, false)
                   }
               }
           }
@@ -2326,6 +2411,15 @@ jobs:
                       subtitle = "Απόκρυψη μπαρών συστήματος στη μαύρη πλήρη οθόνη στίχων",
                       checked = VnFpsPref.lyricsImmersiveEnabled,
                       onCheckedChange = { VnFpsPref.updateLyricsImmersive(c, it) }
+                  )
+
+                  VnCardDivider()
+
+                  VnNativeSwitchRow(
+                      title = "Κουμπιά Χρονισμού Στίχων (-0.2s / +0.2s)",
+                      subtitle = "Εμφάνιση των κουμπιών ρύθμισης χρονισμού κάτω από το κουμπί πλήρους οθόνης",
+                      checked = VnFpsPref.lyricsOffsetControlsEnabled,
+                      onCheckedChange = { VnFpsPref.updateLyricsOffsetControls(c, it) }
                   )
 
                   VnCardDivider()
@@ -2980,7 +3074,7 @@ jobs:
               s1 = hook_lazy_cols(s0, "VnRegisterLyricsScrollState")
               s1 = suppress_duplicate_top_fullscreen_icons(s1)
               s1 = apply_lyric_timing_offset_hooks(s1)
-              if "VnLyricsFullscreenButton" not in s1:
+              if "VnLyricsTopRightControls" not in s1:
                   lines = s1.splitlines(keepends=True)
                   for i in range(len(lines)):
                       if re.search(r'\bfun\s+[A-Za-z0-9_]+\s*\(', lines[i]):
@@ -3021,16 +3115,12 @@ jobs:
                                       "    ) {\n"
                                   )
                                   lines[be] = (
-                                      "        androidx.compose.foundation.layout.Box(\n"
-                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopStart).statusBarsPadding().padding(top = 14.dp, start = 16.dp).zIndex(99f)\n"
-                                      "        ) {\n"
-                                      "            com.music.spotui.ui.screens.VnLyricsOffsetControlPill()\n"
-                                      "        }\n"
-                                      "        androidx.compose.foundation.layout.Box(\n"
-                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).statusBarsPadding().padding(top = 14.dp, end = 16.dp).zIndex(99f)\n"
-                                      "        ) {\n"
-                                      "            com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = true, ownerId = \"lyrics_screen\", onClick = vnTriggerClose)\n"
-                                      "        }\n"
+                                      "        com.music.spotui.ui.screens.VnLyricsTopRightControls(\n"
+                                      "            isFullscreen = true,\n"
+                                      "            ownerId = \"lyrics_screen\",\n"
+                                      "            onClick = vnTriggerClose,\n"
+                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).statusBarsPadding().padding(top = 14.dp, end = 16.dp)\n"
+                                      "        )\n"
                                       "    }\n"
                                       "    }\n"
                                   ) + lines[be]
@@ -3039,7 +3129,6 @@ jobs:
                                       "androidx.compose.foundation.layout.padding",
                                       "androidx.compose.foundation.layout.statusBarsPadding",
                                       "androidx.compose.ui.unit.dp",
-                                      "androidx.compose.ui.zIndex",
                                       "com.music.spotui.ui.screens.findActivity",
                                       "com.music.spotui.ui.screens.vnFullscreenSlideContainer",
                                       "com.music.spotui.ui.screens.vnSmartLyricsSwipe",
@@ -3054,7 +3143,7 @@ jobs:
               t1 = hook_lazy_cols(t0, "VnRegisterLyricsScrollState")
               t1 = suppress_duplicate_top_fullscreen_icons(t1)
               t1 = apply_lyric_timing_offset_hooks(t1)
-              if "VnLyricsFullscreenButton" not in t1:
+              if "VnLyricsTopRightControls" not in t1:
                   lines = t1.splitlines(keepends=True)
                   for i in range(len(lines)):
                       if re.search(r'\bfun\s+ImmersiveLyricsPanel\b', lines[i]):
@@ -3076,6 +3165,9 @@ jobs:
                                       "    var vnImmClosingDown by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }\n"
                                       "    val vnImmScope = androidx.compose.runtime.rememberCoroutineScope()\n"
                                       "    val vnIsFullscreen = com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen\n"
+                                      "    if (vnIsFullscreen && !com.music.spotui.ui.screens.LocalVnFullscreenOverlayContent.current) {\n"
+                                      "        com.music.spotui.ui.screens.VnKeepSystemBarsHidden(com.music.spotui.ui.screens.VnFpsPref.lyricsImmersiveEnabled)\n"
+                                      "    }\n"
                                       "    androidx.compose.runtime.DisposableEffect(Unit) {\n"
                                       "        com.music.spotui.ui.screens.VnFpsPref.immersivePanelActive = true\n"
                                       "        onDispose { com.music.spotui.ui.screens.VnFpsPref.immersivePanelActive = false }\n"
@@ -3102,15 +3194,13 @@ jobs:
                                       "    ) {\n"
                                   )
                                   lines[be] = (
-                                      "        androidx.compose.foundation.layout.Box(\n"
-                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopStart).statusBarsPadding().padding(top = 14.dp, start = 16.dp).zIndex(99f)\n"
-                                      "        ) {\n"
-                                      "            if (!com.music.spotui.ui.screens.LocalVnFullscreenOverlayContent.current) com.music.spotui.ui.screens.VnLyricsOffsetControlPill()\n"
-                                      "        }\n"
-                                      "        androidx.compose.foundation.layout.Box(\n"
-                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).statusBarsPadding().padding(top = 14.dp, end = 16.dp).zIndex(99f)\n"
-                                      "        ) {\n"
-                                      "            if (!com.music.spotui.ui.screens.LocalVnFullscreenOverlayContent.current) com.music.spotui.ui.screens.VnLyricsFullscreenButton(isFullscreen = vnIsFullscreen, ownerId = \"immersive_panel\", onClick = { if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() })\n"
+                                      "        if (!com.music.spotui.ui.screens.LocalVnFullscreenOverlayContent.current) {\n"
+                                      "            com.music.spotui.ui.screens.VnLyricsTopRightControls(\n"
+                                      "                isFullscreen = vnIsFullscreen,\n"
+                                      "                ownerId = \"immersive_panel\",\n"
+                                      "                onClick = { if (vnIsFullscreen) vnOnCloseFs() else vnOnOpenFs() },\n"
+                                      "                modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).statusBarsPadding().padding(top = 14.dp, end = 16.dp)\n"
+                                      "            )\n"
                                       "        }\n"
                                       "    }\n"
                                       "    }\n"
@@ -3120,7 +3210,6 @@ jobs:
                                       "androidx.compose.foundation.layout.padding",
                                       "androidx.compose.foundation.layout.statusBarsPadding",
                                       "androidx.compose.ui.unit.dp",
-                                      "androidx.compose.ui.zIndex",
                                       "com.music.spotui.ui.screens.findActivity",
                                       "com.music.spotui.ui.screens.vnFullscreenSlideContainer",
                                       "com.music.spotui.ui.screens.vnSmartLyricsSwipe",
