@@ -3083,6 +3083,12 @@ jobs:
                                       "            .then(Modifier.vnSmartLyricsSwipe(vnLyricsActivity, isExpanded = true, onCollapseToPlayer = vnTriggerClose))\n"
                                       "    ) {\n"
                                   )
+                                  lines.insert(se + 1,
+                                      "        com.music.spotui.ui.screens.VnLyricsOffsetControlPill(\n"
+                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = 12.dp, end = 12.dp)\n"
+                                      "        )\n"
+                                  )
+                                  be += 1
                                   lines[be] = (
                                       "    }\n"
                                       "    }\n"
@@ -3157,6 +3163,12 @@ jobs:
                                       "            .then(Modifier.vnSmartLyricsSwipe(vnImmLyricsActivity, isExpanded = vnIsFullscreen, onExpandToFullscreen = vnOnOpenFs, onCollapseToPlayer = vnOnCloseFs))\n"
                                       "    ) {\n"
                                   )
+                                  lines.insert(se + 1,
+                                      "        com.music.spotui.ui.screens.VnLyricsOffsetControlPill(\n"
+                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = 12.dp, end = 12.dp)\n"
+                                      "        )\n"
+                                  )
+                                  be += 1
                                   lines[be] = (
                                       "    }\n"
                                       "    }\n"
