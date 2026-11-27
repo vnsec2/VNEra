@@ -1202,6 +1202,11 @@ jobs:
               val hasCustomActive = vnHasCustomLyricColorEnabled()
               if (!hasCustomBg && !hasCustomActive) return style
 
+              // Keep karaoke/word-by-word brush untouched so swept word progress stays accurate
+              if (style.brush != null) {
+                  return style
+              }
+
               var updated = style
               if (style.color.isSpecified) {
                   updated = updated.copy(
@@ -1211,15 +1216,6 @@ jobs:
                           isActiveLine = isActiveLine
                       )
                   )
-              }
-              if (style.brush != null && hasCustomActive && isActiveLine) {
-                  val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
-                  val dimChosen = if (hasCustomBg) {
-                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
-                  } else {
-                      activeChosen.copy(alpha = 0.35f)
-                  }
-                  updated = updated.copy(brush = Brush.horizontalGradient(listOf(activeChosen, dimChosen)))
               }
               return updated
           }
@@ -1232,10 +1228,16 @@ jobs:
           ): AnnotatedString {
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasColorSpans = raw.spanStyles.any { it.item.color.isSpecified }
+              val hasBrushSpans = raw.spanStyles.any { it.item.brush != null }
               val isLineActive = isActiveLine && (
-                  !hasColorSpans || raw.spanStyles.any { it.item.color.isSpecified && !vnIsDimOrInactiveColor(it.item.color) }
+                  hasBrushSpans || !hasColorSpans || raw.spanStyles.any { it.item.color.isSpecified && !vnIsDimOrInactiveColor(it.item.color) }
               )
               VnFpsPref.captureLyricLine(raw.text, isActive = isLineActive)
+
+              // Do not rewrite karaoke/word-by-word brush spans with static colors/gradients
+              if (hasBrushSpans) {
+                  return raw
+              }
 
               val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
               val hasCustomActive = vnHasCustomLyricColorEnabled()
@@ -1256,16 +1258,7 @@ jobs:
                       val span = range.item
                       val c = span.color
                       var styledSpan = span
-                      if (span.brush != null && hasCustomActive && isLineActive) {
-                          val stopTint = if (hasCustomBg) {
-                              Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
-                          } else {
-                              activeChosen.copy(alpha = 0.35f)
-                          }
-                          styledSpan = styledSpan.copy(
-                              brush = Brush.horizontalGradient(listOf(activeChosen, stopTint))
-                          )
-                      } else if (c.isSpecified && c.alpha > 0.01f) {
+                      if (c.isSpecified && c.alpha > 0.01f) {
                           if (!isActiveLine || vnIsDimOrInactiveColor(c)) {
                               styledSpan = if (inactiveChosen.isSpecified) {
                                   styledSpan.copy(color = inactiveChosen)
@@ -1368,6 +1361,7 @@ jobs:
               return l.endsWith(".mp4") || l.endsWith(".m3u8") || l.endsWith(".mpd") ||
                   l.endsWith(".webm") || l.endsWith(".mkv") || l.endsWith(".mov") ||
                   l.contains("googlevideo.com/videoplayback") ||
+                  l.contains("canvaz") || l.contains("canvas") ||
                   l.startsWith("content://") || l.startsWith("file://")
           }
 
@@ -1377,7 +1371,7 @@ jobs:
                   """<iframe src="https://www.youtube-nocookie.com/embed/$ytId?autoplay=1&playsinline=1&rel=0&modestbranding=1&iv_load_policy=3" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen frameborder="0"></iframe>"""
               } else {
                   val safeSrc = videoUrl.replace("\"", "&quot;")
-                  """<video src="$safeSrc" autoplay controls playsinline preload="auto"></video>"""
+                  """<video src="$safeSrc" autoplay loop playsinline preload="auto"></video>"""
               }
               return """
                   <!DOCTYPE html>
@@ -1397,7 +1391,7 @@ jobs:
           @Composable
           fun VnVideoclipButtonBelowSync(modifier: Modifier = Modifier) {
               val videoUrl = VnFpsPref.currentVideoClipUrl
-              if (!VnFpsPref.immersivePanelActive || videoUrl.isBlank()) return
+              if (videoUrl.isBlank()) return
               val primary = vnResolveSelectedLyricColor()
               Surface(
                   onClick = { VnFpsPref.openVideoclipScreen() },
@@ -2155,6 +2149,7 @@ jobs:
                       l.endsWith(".mp4") || l.endsWith(".m3u8") || l.endsWith(".mpd") ||
                       l.endsWith(".webm") || l.endsWith(".mkv") || l.endsWith(".mov") ||
                       (l.contains("googlevideo.com/videoplayback") && l.contains("mime=video")) ||
+                      l.contains("canvaz") || l.contains("canvas") ||
                       l.contains("video") || l.contains("clip") || l.contains("/mv")) {
                       return t
                   }
@@ -2195,9 +2190,10 @@ jobs:
                   val urlRegex = Regex("""https?://[^\s"'<>\]\)]+""")
                   val explicitVideoProps = arrayOf(
                       "videoUrl", "videoUri", "clipUrl", "mvUrl", "musicVideoUrl",
-                      "streamVideoUrl", "videoStreamUrl", "canvasUrl", "canvasVideoUrl",
+                      "streamVideoUrl", "videoStreamUrl", "videoStream", "streamUri",
+                      "canvasUrl", "canvasUri", "canvasVideoUrl", "videoPreviewUrl", "previewUrl",
                       "youtubeUrl", "ytUrl", "officialVideoUrl", "videoLink", "clipLink", "mvLink",
-                      "video_url", "clip_url", "mv_url", "canvas_url", "youtube_url",
+                      "video_url", "clip_url", "mv_url", "canvas_url", "canvas_uri", "youtube_url",
                       "videoId", "youtubeId", "youtubeVideoId", "ytVideoId", "ytId",
                       "mvId", "clipId", "canvasId", "video_id", "youtube_id",
                       "video", "clip", "mv", "canvas"
@@ -2217,7 +2213,8 @@ jobs:
                       }
                       val rawStr = cand.toString()
                       if (rawStr.contains("video", ignoreCase = true) || rawStr.contains("clip", ignoreCase = true) ||
-                          rawStr.contains("mv", ignoreCase = true) || rawStr.contains("youtube", ignoreCase = true)) {
+                          rawStr.contains("mv", ignoreCase = true) || rawStr.contains("canvas", ignoreCase = true) ||
+                          rawStr.contains("youtube", ignoreCase = true)) {
                           urlRegex.findAll(rawStr).mapNotNull {
                               normalizeCandidateVideoValue(it.value, fromExplicitVideoKey = false).takeIf { u -> u.isNotEmpty() }
                           }.firstOrNull()?.let { return it }
