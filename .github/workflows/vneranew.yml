@@ -434,8 +434,10 @@ jobs:
               }
 
               fun init(c: Context) {
+                  // ensureInit() performs the first load and installs the preference listener.
+                  // Loading again here duplicated all SharedPreferences reads and lyric-offset
+                  // JSON parsing during the first Compose frame.
                   ensureInit(c)
-                  loadFromPrefs(prefs(c))
               }
 
               fun reportPlayerIsPlaying(playing: Boolean) {
@@ -3111,7 +3113,8 @@ jobs:
               t0 = il.read_text()
               t1 = hook_lazy_cols(t0, "VnRegisterLyricsScrollState")
               t1 = suppress_duplicate_top_fullscreen_icons(t1)
-              t1 = apply_lyric_timing_offset_hooks(t1)
+              # ImmersiveLyricClock already applies currentLyricOffsetMs at the playhead
+              # source. Wrapping positions again here double-shifts karaoke word timing.
               # Keep the application original LyricsToggle fullscreen button intact.
               if "VnLyricsTopRightControls" not in t1:
                   lines = t1.splitlines(keepends=True)
@@ -3465,7 +3468,7 @@ jobs:
               orig_src = src
               is_player_scope = ui_kt.name != "ImmersiveLyricsPanel.kt"
 
-              if is_lyric_comp:
+              if is_lyric_comp and ui_kt.name != "ImmersiveLyricsPanel.kt":
                   src = apply_lyric_timing_offset_hooks(src)
 
               if is_player_file:
