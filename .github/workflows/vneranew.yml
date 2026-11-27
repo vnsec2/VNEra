@@ -122,7 +122,6 @@ jobs:
           import android.widget.Toast
           import androidx.activity.compose.BackHandler
           import androidx.compose.animation.AnimatedVisibility
-          import androidx.compose.animation.animateColorAsState
           import androidx.compose.animation.core.*
           import androidx.compose.animation.fadeIn
           import androidx.compose.animation.fadeOut
@@ -288,18 +287,21 @@ jobs:
 
               fun updateVideoClipUrl(url: String?) {
                   val valid = normalizeYoutubeWatchOrEmbedUrl(url.orEmpty())
-                  if (currentVideoClipUrl != valid) {
+                  if (valid.isNotEmpty() && currentVideoClipUrl != valid) {
                       currentVideoClipUrl = valid
-                      if (valid.isEmpty()) {
-                          videoclipDialogOpen = false
-                      }
+                  } else if (valid.isEmpty() && currentVideoClipUrl.isNotEmpty()) {
+                      currentVideoClipUrl = ""
+                      videoclipDialogOpen = false
                   }
               }
 
               fun openVideoclipScreen() {
-                  if (currentVideoClipUrl.isNotBlank()) {
-                      videoclipDialogOpen = true
+                  val targetUrl = currentVideoClipUrl.ifBlank {
+                      val q = Uri.encode(currentTrackDisplayTitle.ifBlank { "official music video" })
+                      "https://m.youtube.com/results?search_query=$q"
                   }
+                  currentVideoClipUrl = targetUrl
+                  videoclipDialogOpen = true
               }
 
               fun closeVideoclipScreen() {
@@ -1122,11 +1124,8 @@ jobs:
               isPlayer: Boolean = true,
               isActiveLine: Boolean = true
           ): AnnotatedString {
-              return vnStyleLyricAnnotatedString(
-                  raw = rawText,
-                  isPlayer = isPlayer,
-                  isActiveLine = isActiveLine
-              )
+              VnFpsPref.captureLyricLine(rawText.text, isActive = isActiveLine)
+              return rawText
           }
 
           fun vnResolveSelectedLyricColor(): Color {
@@ -1154,17 +1153,7 @@ jobs:
 
           @Composable
           fun vnLyricSecondaryColor(original: Color, isPlayer: Boolean = true): Color {
-              val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
-              val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
-              if (hasCustomBg) {
-                  return Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
-              }
-              if (!original.isSpecified) return original
-              return if (original.alpha >= 0.92f) {
-                  original.copy(alpha = 0.45f)
-              } else {
-                  original.copy(alpha = minOf(original.alpha, 0.45f))
-              }
+              return original
           }
 
           @Composable
@@ -1173,22 +1162,7 @@ jobs:
               isPlayer: Boolean = true,
               isActiveLine: Boolean = true
           ): Color {
-              val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
-              val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
-              val hasCustomActive = vnHasCustomLyricColorEnabled()
-              if (!hasCustomBg && !hasCustomActive) return original
-
-              if (!isActiveLine || vnIsDimOrInactiveColor(original)) {
-                  return vnLyricSecondaryColor(original, effectivePlayer)
-              }
-              if (!hasCustomActive) return original
-              val chosen = vnResolveSelectedLyricColor()
-              val animatedActiveColor by animateColorAsState(
-                  targetValue = chosen.copy(alpha = 1.0f),
-                  animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
-                  label = "vn_karaoke_active_color"
-              )
-              return animatedActiveColor
+              return original
           }
 
           @Composable
@@ -1197,27 +1171,7 @@ jobs:
               isPlayer: Boolean = true,
               isActiveLine: Boolean = true
           ): TextStyle {
-              val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
-              val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
-              val hasCustomActive = vnHasCustomLyricColorEnabled()
-              if (!hasCustomBg && !hasCustomActive) return style
-
-              // Keep karaoke/word-by-word brush untouched so swept word progress stays accurate
-              if (style.brush != null) {
-                  return style
-              }
-
-              var updated = style
-              if (style.color.isSpecified) {
-                  updated = updated.copy(
-                      color = vnPlayerInlineLyricColor(
-                          style.color,
-                          isPlayer = effectivePlayer,
-                          isActiveLine = isActiveLine
-                      )
-                  )
-              }
-              return updated
+              return style
           }
 
           @Composable
@@ -1226,52 +1180,8 @@ jobs:
               isPlayer: Boolean = true,
               isActiveLine: Boolean = true
           ): AnnotatedString {
-              val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
-              val hasColorSpans = raw.spanStyles.any { it.item.color.isSpecified }
-              val hasBrushSpans = raw.spanStyles.any { it.item.brush != null }
-              val isLineActive = isActiveLine && (
-                  hasBrushSpans || !hasColorSpans || raw.spanStyles.any { it.item.color.isSpecified && !vnIsDimOrInactiveColor(it.item.color) }
-              )
-              VnFpsPref.captureLyricLine(raw.text, isActive = isLineActive)
-
-              // Do not rewrite karaoke/word-by-word brush spans with static colors/gradients
-              if (hasBrushSpans) {
-                  return raw
-              }
-
-              val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
-              val hasCustomActive = vnHasCustomLyricColorEnabled()
-              if (!hasCustomBg && !hasCustomActive) return raw
-              if (raw.spanStyles.isEmpty()) return raw
-
-              val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
-              val inactiveChosen = if (hasCustomBg) {
-                  Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
-              } else {
-                  Color.Unspecified
-              }
-
-              return buildAnnotatedString {
-                  append(raw.text)
-                  raw.paragraphStyles.forEach { addStyle(it.item, it.start, it.end) }
-                  raw.spanStyles.forEach { range ->
-                      val span = range.item
-                      val c = span.color
-                      var styledSpan = span
-                      if (c.isSpecified && c.alpha > 0.01f) {
-                          if (!isActiveLine || vnIsDimOrInactiveColor(c)) {
-                              styledSpan = if (inactiveChosen.isSpecified) {
-                                  styledSpan.copy(color = inactiveChosen)
-                              } else {
-                                  styledSpan.copy(color = c.copy(alpha = minOf(c.alpha, 0.45f)))
-                              }
-                          } else if (hasCustomActive) {
-                              styledSpan = styledSpan.copy(color = activeChosen)
-                          }
-                      }
-                      addStyle(styledSpan, range.start, range.end)
-                  }
-              }
+              VnFpsPref.captureLyricLine(raw.text, isActive = isActiveLine)
+              return raw
           }
 
           @Composable
@@ -1390,8 +1300,6 @@ jobs:
 
           @Composable
           fun VnVideoclipButtonBelowSync(modifier: Modifier = Modifier) {
-              val videoUrl = VnFpsPref.currentVideoClipUrl
-              if (videoUrl.isBlank()) return
               val primary = vnResolveSelectedLyricColor()
               Surface(
                   onClick = { VnFpsPref.openVideoclipScreen() },
@@ -1426,8 +1334,11 @@ jobs:
 
           @Composable
           fun VnVideoclipPlayerDialog() {
-              val videoUrl = VnFpsPref.currentVideoClipUrl
-              if (!VnFpsPref.videoclipDialogOpen || videoUrl.isBlank()) return
+              if (!VnFpsPref.videoclipDialogOpen) return
+              val videoUrl = VnFpsPref.currentVideoClipUrl.ifBlank {
+                  val q = Uri.encode(VnFpsPref.currentTrackDisplayTitle.ifBlank { "official music video" })
+                  "https://m.youtube.com/results?search_query=$q"
+              }
               val context = LocalContext.current
               val isLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
               val title = VnFpsPref.currentTrackDisplayTitle.ifBlank { "Videoclip" }
@@ -3541,9 +3452,14 @@ jobs:
                                       "    ) {\n"
                                   )
                                   lines.insert(se + 1,
-                                      "        com.music.spotui.ui.screens.VnLyricsOffsetControlPill(\n"
-                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = 12.dp, end = 12.dp)\n"
-                                      "        )\n"
+                                      "        androidx.compose.foundation.layout.Column(\n"
+                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = 12.dp, end = 12.dp),\n"
+                                      "            horizontalAlignment = androidx.compose.ui.Alignment.End,\n"
+                                      "            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)\n"
+                                      "        ) {\n"
+                                      "            com.music.spotui.ui.screens.VnLyricsOffsetControlPill()\n"
+                                      "            com.music.spotui.ui.screens.VnVideoclipButtonBelowSync()\n"
+                                      "        }\n"
                                   )
                                   be += 1
                                   lines[be] = (
@@ -3771,7 +3687,6 @@ jobs:
               if not args:
                   return call_block, False
 
-              has_color = False
               modified = False
               rebuilt_segments = []
 
@@ -3791,17 +3706,6 @@ jobs:
                               pval = f"com.music.spotui.ui.screens.vnCaptureAndStyleLyric({pval}, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
                               modified = True
                           rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
-                      elif pname == "color":
-                          has_color = True
-                          if "vnPlayerInlineLyricColor" not in pval:
-                              pval = f"com.music.spotui.ui.screens.vnPlayerInlineLyricColor({pval}, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
-                              modified = True
-                          rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
-                      elif pname == "style":
-                          if "vnPlayerInlineLyricStyle" not in pval:
-                              pval = f"com.music.spotui.ui.screens.vnPlayerInlineLyricStyle({pval}, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
-                              modified = True
-                          rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
                       else:
                           rebuilt_segments.append(seg)
                   else:
@@ -3812,25 +3716,9 @@ jobs:
                       else:
                           rebuilt_segments.append(seg)
 
-              new_body = ",".join(rebuilt_segments)
-              if not has_color:
-                  color_arg = f"color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
-                  if new_body.strip():
-                      m_trail = re.search(r'(,\s*)$', new_body)
-                      if m_trail:
-                          ws_after_comma = m_trail.group(1)[1:]
-                          prefix = new_body[:m_trail.start()]
-                          sep = ws_after_comma if "\n" in ws_after_comma else " "
-                          new_body = f"{prefix},{sep}{color_arg}{ws_after_comma}"
-                      else:
-                          new_body = new_body.rstrip() + f", {color_arg}"
-                  else:
-                      new_body = color_arg
-                  modified = True
-
               if not modified:
                   return call_block, False
-              return f"{head}{new_body}{tail}", True
+              return f"{head}{','.join(rebuilt_segments)}{tail}", True
 
           def wrap_player_controls_lyric_block(src: str) -> str:
               if "VnPlayerOnlyLyricScope" in src:
