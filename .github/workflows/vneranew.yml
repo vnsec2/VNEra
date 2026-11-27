@@ -271,14 +271,23 @@ jobs:
                   return ac.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
               }
 
+              fun normalizeYoutubeWatchOrEmbedUrl(raw: String): String {
+                  val t = raw.trim()
+                  if (t.isEmpty()) return ""
+                  if (Regex("""^[A-Za-z0-9_-]{11}$""").matches(t)) {
+                      return "https://www.youtube.com/watch?v=$t"
+                  }
+                  if (
+                      t.startsWith("http://", ignoreCase = true) ||
+                      t.startsWith("https://", ignoreCase = true) ||
+                      t.startsWith("content://", ignoreCase = true) ||
+                      t.startsWith("file://", ignoreCase = true)
+                  ) return t
+                  return ""
+              }
+
               fun updateVideoClipUrl(url: String?) {
-                  val cleaned = url?.trim().orEmpty()
-                  val valid = if (
-                      cleaned.startsWith("http://", ignoreCase = true) ||
-                      cleaned.startsWith("https://", ignoreCase = true) ||
-                      cleaned.startsWith("content://", ignoreCase = true) ||
-                      cleaned.startsWith("file://", ignoreCase = true)
-                  ) cleaned else ""
+                  val valid = normalizeYoutubeWatchOrEmbedUrl(url.orEmpty())
                   if (currentVideoClipUrl != valid) {
                       currentVideoClipUrl = valid
                       if (valid.isEmpty()) {
@@ -359,10 +368,15 @@ jobs:
                   (c ?: resolveAppContext())?.let { ensureInit(it) }
                   val newKey = buildCompactTrackKey(rawId, title, artist)
                   if (newKey.isEmpty()) return
+                  val prevNormTitle = currentTrackDisplayTitle.trim().lowercase(Locale.ROOT)
+                  val nextNormTitle = title.trim().lowercase(Locale.ROOT)
+                  val isDifferentSong = prevNormTitle.isNotEmpty() && nextNormTitle.isNotEmpty() && prevNormTitle != nextNormTitle
                   if (newKey != currentTrackOffsetKey) {
                       currentTrackOffsetKey = newKey
-                      currentTrackDisplayTitle = title.trim()
-                      updateVideoClipUrl("")
+                      if (title.isNotBlank()) currentTrackDisplayTitle = title.trim()
+                      if (isDifferentSong) {
+                          updateVideoClipUrl("")
+                      }
                       synchronized(lyricOffsetsMap) {
                           currentLyricOffsetMs = lyricOffsetsMap[newKey] ?: 0
                       }
@@ -1093,14 +1107,26 @@ jobs:
               return rawText
           }
 
-          fun vnCaptureAndStyleLyric(rawText: String, isPlayer: Boolean = true): String {
-              VnFpsPref.captureLyricLine(rawText, isActive = true)
+          fun vnCaptureAndStyleLyric(
+              rawText: String,
+              isPlayer: Boolean = true,
+              isActiveLine: Boolean = true
+          ): String {
+              VnFpsPref.captureLyricLine(rawText, isActive = isActiveLine)
               return rawText
           }
 
           @Composable
-          fun vnCaptureAndStyleLyric(rawText: AnnotatedString, isPlayer: Boolean = true): AnnotatedString {
-              return vnStyleLyricAnnotatedString(rawText, isPlayer = isPlayer)
+          fun vnCaptureAndStyleLyric(
+              rawText: AnnotatedString,
+              isPlayer: Boolean = true,
+              isActiveLine: Boolean = true
+          ): AnnotatedString {
+              return vnStyleLyricAnnotatedString(
+                  raw = rawText,
+                  isPlayer = isPlayer,
+                  isActiveLine = isActiveLine
+              )
           }
 
           fun vnResolveSelectedLyricColor(): Color {
@@ -1118,23 +1144,45 @@ jobs:
           fun vnHasCustomLyricColorEnabled(): Boolean =
               VnFpsPref.lyricsBeautifulEnabled || VnFpsPref.lyricsCustomColorArgb != 0L
 
+          private fun vnIsDimOrInactiveColor(c: Color): Boolean {
+              if (!c.isSpecified || c.alpha <= 0.01f) return false
+              if (c.alpha < 0.92f) return true
+              val maxCh = maxOf(c.red, c.green, c.blue)
+              val minCh = minOf(c.red, c.green, c.blue)
+              return maxCh <= 0.88f && (maxCh - minCh) < 0.14f
+          }
+
           @Composable
-          fun vnPlayerInlineLyricColor(original: Color, isPlayer: Boolean = true): Color {
+          fun vnLyricSecondaryColor(original: Color, isPlayer: Boolean = true): Color {
+              val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
+              val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
+              if (hasCustomBg) {
+                  return Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
+              }
+              if (!original.isSpecified) return original
+              return if (original.alpha >= 0.92f) {
+                  original.copy(alpha = 0.45f)
+              } else {
+                  original.copy(alpha = minOf(original.alpha, 0.45f))
+              }
+          }
+
+          @Composable
+          fun vnPlayerInlineLyricColor(
+              original: Color,
+              isPlayer: Boolean = true,
+              isActiveLine: Boolean = true
+          ): Color {
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
               val hasCustomActive = vnHasCustomLyricColorEnabled()
               if (!hasCustomBg && !hasCustomActive) return original
 
-              val chosen = vnResolveSelectedLyricColor()
-              val isDimBackground = original.isSpecified && original.alpha > 0.01f && original.alpha < 0.78f
-              if (isDimBackground) {
-                  return if (hasCustomBg) {
-                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
-                  } else {
-                      original.copy(alpha = minOf(original.alpha, 0.42f))
-                  }
+              if (!isActiveLine || vnIsDimOrInactiveColor(original)) {
+                  return vnLyricSecondaryColor(original, effectivePlayer)
               }
               if (!hasCustomActive) return original
+              val chosen = vnResolveSelectedLyricColor()
               val animatedActiveColor by animateColorAsState(
                   targetValue = chosen.copy(alpha = 1.0f),
                   animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
@@ -1144,7 +1192,11 @@ jobs:
           }
 
           @Composable
-          fun vnPlayerInlineLyricStyle(style: TextStyle, isPlayer: Boolean = true): TextStyle {
+          fun vnPlayerInlineLyricStyle(
+              style: TextStyle,
+              isPlayer: Boolean = true,
+              isActiveLine: Boolean = true
+          ): TextStyle {
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
               val hasCustomActive = vnHasCustomLyricColorEnabled()
@@ -1152,9 +1204,15 @@ jobs:
 
               var updated = style
               if (style.color.isSpecified) {
-                  updated = updated.copy(color = vnPlayerInlineLyricColor(style.color, isPlayer = effectivePlayer))
+                  updated = updated.copy(
+                      color = vnPlayerInlineLyricColor(
+                          style.color,
+                          isPlayer = effectivePlayer,
+                          isActiveLine = isActiveLine
+                      )
+                  )
               }
-              if (style.brush != null && hasCustomActive) {
+              if (style.brush != null && hasCustomActive && isActiveLine) {
                   val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
                   val dimChosen = if (hasCustomBg) {
                       Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
@@ -1167,10 +1225,16 @@ jobs:
           }
 
           @Composable
-          fun vnStyleLyricAnnotatedString(raw: AnnotatedString, isPlayer: Boolean = true): AnnotatedString {
+          fun vnStyleLyricAnnotatedString(
+              raw: AnnotatedString,
+              isPlayer: Boolean = true,
+              isActiveLine: Boolean = true
+          ): AnnotatedString {
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasColorSpans = raw.spanStyles.any { it.item.color.isSpecified }
-              val isLineActive = !hasColorSpans || raw.spanStyles.any { it.item.color.isSpecified && it.item.color.alpha >= 0.78f }
+              val isLineActive = isActiveLine && (
+                  !hasColorSpans || raw.spanStyles.any { it.item.color.isSpecified && !vnIsDimOrInactiveColor(it.item.color) }
+              )
               VnFpsPref.captureLyricLine(raw.text, isActive = isLineActive)
 
               val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
@@ -1202,11 +1266,11 @@ jobs:
                               brush = Brush.horizontalGradient(listOf(activeChosen, stopTint))
                           )
                       } else if (c.isSpecified && c.alpha > 0.01f) {
-                          if (c.alpha < 0.78f) {
-                              if (inactiveChosen.isSpecified) {
-                                  styledSpan = styledSpan.copy(color = inactiveChosen)
+                          if (!isActiveLine || vnIsDimOrInactiveColor(c)) {
+                              styledSpan = if (inactiveChosen.isSpecified) {
+                                  styledSpan.copy(color = inactiveChosen)
                               } else {
-                                  styledSpan = styledSpan.copy(color = c.copy(alpha = minOf(c.alpha, 0.42f)))
+                                  styledSpan.copy(color = c.copy(alpha = minOf(c.alpha, 0.45f)))
                               }
                           } else if (hasCustomActive) {
                               styledSpan = styledSpan.copy(color = activeChosen)
@@ -1228,11 +1292,9 @@ jobs:
               val scaledDensity = remember(baseDensity, scale) {
                   Density(density = baseDensity.density, fontScale = baseDensity.fontScale * scale)
               }
-              val activeColor = vnPlayerInlineLyricColor(LocalContentColor.current, isPlayer = true)
               CompositionLocalProvider(
                   LocalVnIsPlayerInlineLyric provides true,
-                  LocalDensity provides scaledDensity,
-                  LocalContentColor provides activeColor
+                  LocalDensity provides scaledDensity
               ) {
                   content()
               }
@@ -1287,34 +1349,80 @@ jobs:
               }
           }
 
+          private fun vnExtractYoutubeVideoId(url: String): String {
+              val patterns = listOf(
+                  Regex("""(?:youtube\.com/watch\?.*?[&?]v=|music\.youtube\.com/watch\?.*?[&?]v=)([A-Za-z0-9_-]{11})"""),
+                  Regex("""youtu\.be/([A-Za-z0-9_-]{11})"""),
+                  Regex("""youtube\.com/(?:embed|shorts|v)/([A-Za-z0-9_-]{11})"""),
+                  Regex("""youtube-nocookie\.com/embed/([A-Za-z0-9_-]{11})""")
+              )
+              for (rx in patterns) {
+                  val m = rx.find(url)
+                  if (m != null) return m.groupValues[1]
+              }
+              return ""
+          }
+
+          private fun vnIsDirectVideoStream(url: String): Boolean {
+              val l = url.lowercase(Locale.ROOT)
+              return l.endsWith(".mp4") || l.endsWith(".m3u8") || l.endsWith(".mpd") ||
+                  l.endsWith(".webm") || l.endsWith(".mkv") || l.endsWith(".mov") ||
+                  l.contains("googlevideo.com/videoplayback") ||
+                  l.startsWith("content://") || l.startsWith("file://")
+          }
+
+          private fun vnBuildAdaptiveVideoHtml(videoUrl: String): String {
+              val ytId = vnExtractYoutubeVideoId(videoUrl)
+              val bodyContent = if (ytId.isNotEmpty()) {
+                  """<iframe src="https://www.youtube-nocookie.com/embed/$ytId?autoplay=1&playsinline=1&rel=0&modestbranding=1&iv_load_policy=3" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen frameborder="0"></iframe>"""
+              } else {
+                  val safeSrc = videoUrl.replace("\"", "&quot;")
+                  """<video src="$safeSrc" autoplay controls playsinline preload="auto"></video>"""
+              }
+              return """
+                  <!DOCTYPE html>
+                  <html>
+                  <head>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+                    <style>
+                      html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
+                      iframe, video { position:fixed; inset:0; width:100%; height:100%; border:0; object-fit:contain; background:#000; }
+                    </style>
+                  </head>
+                  <body>$bodyContent</body>
+                  </html>
+              """.trimIndent()
+          }
+
           @Composable
           fun VnVideoclipButtonBelowSync(modifier: Modifier = Modifier) {
               val videoUrl = VnFpsPref.currentVideoClipUrl
               if (!VnFpsPref.immersivePanelActive || videoUrl.isBlank()) return
-              val primary = MaterialTheme.colorScheme.primary
+              val primary = vnResolveSelectedLyricColor()
               Surface(
                   onClick = { VnFpsPref.openVideoclipScreen() },
-                  modifier = modifier,
-                  shape = RoundedCornerShape(14.dp),
+                  modifier = modifier.zIndex(99f),
+                  shape = RoundedCornerShape(13.dp),
                   color = Color(0xE6161820),
-                  border = BorderStroke(1.dp, primary.copy(alpha = 0.55f)),
-                  shadowElevation = 8.dp
+                  border = BorderStroke(1.dp, primary.copy(alpha = 0.65f)),
+                  shadowElevation = 10.dp
               ) {
                   Row(
-                      modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                      modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                       verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(8.dp)
+                      horizontalArrangement = Arrangement.spacedBy(5.dp)
                   ) {
                       Icon(
                           imageVector = Icons.Rounded.PlayArrow,
                           contentDescription = "Άνοιγμα videoclip",
                           tint = primary,
-                          modifier = Modifier.size(18.dp)
+                          modifier = Modifier.size(16.dp)
                       )
                       Text(
                           text = "Videoclip",
-                          style = MaterialTheme.typography.labelLarge,
-                          fontWeight = FontWeight.SemiBold,
+                          fontSize = 11.sp,
+                          style = MaterialTheme.typography.labelSmall,
+                          fontWeight = FontWeight.Bold,
                           color = Color.White,
                           maxLines = 1
                       )
@@ -1327,7 +1435,15 @@ jobs:
               val videoUrl = VnFpsPref.currentVideoClipUrl
               if (!VnFpsPref.videoclipDialogOpen || videoUrl.isBlank()) return
               val context = LocalContext.current
+              val isLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
               val title = VnFpsPref.currentTrackDisplayTitle.ifBlank { "Videoclip" }
+              val accent = vnResolveSelectedLyricColor()
+              val useInlineHtml = remember(videoUrl) {
+                  vnExtractYoutubeVideoId(videoUrl).isNotEmpty() || vnIsDirectVideoStream(videoUrl)
+              }
+              val embedHtml = remember(videoUrl) {
+                  if (useInlineHtml) vnBuildAdaptiveVideoHtml(videoUrl) else ""
+              }
 
               Dialog(
                   onDismissRequest = { VnFpsPref.closeVideoclipScreen() },
@@ -1337,39 +1453,56 @@ jobs:
                   Box(
                       modifier = Modifier
                           .fillMaxSize()
-                          .background(Color(0xF207090F))
+                          .background(Color(0xF506080E))
                           .statusBarsPadding()
                           .navigationBarsPadding()
-                          .padding(16.dp),
+                          .padding(if (isLandscape) 8.dp else 16.dp),
                       contentAlignment = Alignment.Center
                   ) {
                       Surface(
-                          modifier = Modifier
-                              .fillMaxWidth()
-                              .wrapContentHeight(),
-                          shape = RoundedCornerShape(24.dp),
-                          color = Color(0xFF121622),
-                          border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
-                          shadowElevation = 16.dp
+                          modifier = if (isLandscape) {
+                              Modifier.fillMaxSize()
+                          } else {
+                              Modifier.fillMaxWidth().wrapContentHeight()
+                          },
+                          shape = RoundedCornerShape(if (isLandscape) 18.dp else 24.dp),
+                          color = Color(0xFF10141F),
+                          border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+                          shadowElevation = 18.dp
                       ) {
                           Column(
-                              modifier = Modifier.padding(14.dp),
-                              verticalArrangement = Arrangement.spacedBy(12.dp)
+                              modifier = Modifier.padding(if (isLandscape) 10.dp else 14.dp),
+                              verticalArrangement = Arrangement.spacedBy(10.dp)
                           ) {
                               Row(
                                   modifier = Modifier.fillMaxWidth(),
                                   verticalAlignment = Alignment.CenterVertically,
-                                  horizontalArrangement = Arrangement.SpaceBetween
+                                  horizontalArrangement = Arrangement.spacedBy(10.dp)
                               ) {
+                                  Surface(
+                                      shape = RoundedCornerShape(8.dp),
+                                      color = accent.copy(alpha = 0.20f)
+                                  ) {
+                                      Text(
+                                          text = "VIDEOCLIP",
+                                          fontSize = 10.sp,
+                                          fontWeight = FontWeight.ExtraBold,
+                                          color = accent,
+                                          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                      )
+                                  }
                                   Text(
                                       text = title,
-                                      style = MaterialTheme.typography.titleMedium,
+                                      style = MaterialTheme.typography.titleSmall,
                                       fontWeight = FontWeight.Bold,
                                       color = Color.White,
                                       maxLines = 1,
                                       modifier = Modifier.weight(1f)
                                   )
-                                  IconButton(onClick = { VnFpsPref.closeVideoclipScreen() }) {
+                                  IconButton(
+                                      onClick = { VnFpsPref.closeVideoclipScreen() },
+                                      modifier = Modifier.size(34.dp)
+                                  ) {
                                       Icon(
                                           imageVector = Icons.Rounded.Close,
                                           contentDescription = "Κλείσιμο videoclip",
@@ -1379,18 +1512,22 @@ jobs:
                               }
 
                               Box(
-                                  modifier = Modifier
-                                      .fillMaxWidth()
-                                      .aspectRatio(16f / 9f)
-                                      .clip(RoundedCornerShape(18.dp))
+                                  modifier = (
+                                      if (isLandscape) Modifier.fillMaxWidth().weight(1f)
+                                      else Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+                                  )
+                                      .clip(RoundedCornerShape(16.dp))
                                       .background(Color.Black)
                               ) {
                                   AndroidView(
                                       factory = { ctx ->
                                           WebView(ctx).apply {
+                                              setBackgroundColor(android.graphics.Color.BLACK)
                                               settings.javaScriptEnabled = true
                                               settings.mediaPlaybackRequiresUserGesture = false
                                               settings.domStorageEnabled = true
+                                              settings.loadWithOverviewMode = true
+                                              settings.useWideViewPort = true
                                               settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                                               webChromeClient = WebChromeClient()
                                               webViewClient = object : WebViewClient() {
@@ -1404,12 +1541,22 @@ jobs:
                                                       return false
                                                   }
                                               }
-                                              loadUrl(videoUrl)
+                                              tag = videoUrl
+                                              if (useInlineHtml) {
+                                                  loadDataWithBaseURL("https://www.youtube-nocookie.com", embedHtml, "text/html", "utf-8", null)
+                                              } else {
+                                                  loadUrl(videoUrl)
+                                              }
                                           }
                                       },
                                       update = { wv ->
-                                          if (wv.url != videoUrl) {
-                                              wv.loadUrl(videoUrl)
+                                          if (wv.tag != videoUrl) {
+                                              wv.tag = videoUrl
+                                              if (useInlineHtml) {
+                                                  wv.loadDataWithBaseURL("https://www.youtube-nocookie.com", embedHtml, "text/html", "utf-8", null)
+                                              } else {
+                                                  wv.loadUrl(videoUrl)
+                                              }
                                           }
                                       },
                                       onRelease = { wv ->
@@ -1605,6 +1752,7 @@ jobs:
                               modifier = Modifier.fillMaxSize(),
                               contentPadding = PaddingValues(top = 56.dp, bottom = 76.dp)
                           )
+                          VnVideoclipPlayerDialog()
                       }
                   }
               }
@@ -1990,38 +2138,89 @@ jobs:
                   return runCatching { field?.get(obj) as? Bundle }.getOrNull()
               }
 
-              private fun isLikelyVideoUrl(u: String): Boolean {
-                  val t = u.trim()
-                  if (!t.startsWith("http://", true) && !t.startsWith("https://", true) &&
-                      !t.startsWith("content://", true) && !t.startsWith("file://", true)) return false
-                  val l = t.lowercase(Locale.ROOT)
-                  if (l.contains("youtube.com/watch") || l.contains("youtu.be/") || l.contains("youtube.com/shorts") ||
-                      l.contains("vimeo.com/") || l.contains("dailymotion.com/") || l.contains("tiktok.com/") ||
-                      l.endsWith(".mp4") || l.endsWith(".m3u8") || l.endsWith(".webm") || l.endsWith(".mkv") ||
-                      l.endsWith(".mov") || l.contains("video") || l.contains("clip") || l.contains("/mv")) {
-                      return true
+              private fun normalizeCandidateVideoValue(raw: String, fromExplicitVideoKey: Boolean): String {
+                  val t = raw.trim()
+                  if (t.isEmpty()) return ""
+                  if (fromExplicitVideoKey && Regex("""^[A-Za-z0-9_-]{11}$""").matches(t)) {
+                      return "https://www.youtube.com/watch?v=$t"
                   }
-                  return false
+                  if (!t.startsWith("http://", true) && !t.startsWith("https://", true) &&
+                      !t.startsWith("content://", true) && !t.startsWith("file://", true)) return ""
+                  if (fromExplicitVideoKey) return t
+                  val l = t.lowercase(Locale.ROOT)
+                  if (l.contains("youtube.com/watch") || l.contains("music.youtube.com/watch") ||
+                      l.contains("youtu.be/") || l.contains("youtube.com/shorts") ||
+                      l.contains("youtube.com/embed") || l.contains("youtube-nocookie.com/embed") ||
+                      l.contains("vimeo.com/") || l.contains("dailymotion.com/") || l.contains("tiktok.com/") ||
+                      l.endsWith(".mp4") || l.endsWith(".m3u8") || l.endsWith(".mpd") ||
+                      l.endsWith(".webm") || l.endsWith(".mkv") || l.endsWith(".mov") ||
+                      (l.contains("googlevideo.com/videoplayback") && l.contains("mime=video")) ||
+                      l.contains("video") || l.contains("clip") || l.contains("/mv")) {
+                      return t
+                  }
+                  return ""
+              }
+
+              private fun collectNestedObjects(roots: List<Any?>): List<Any> {
+                  val result = ArrayList<Any>()
+                  val visited = java.util.IdentityHashMap<Any, Boolean>()
+                  val nestedKeys = arrayOf(
+                      "track", "currentTrack", "song", "currentSong", "mediaItem", "mediaMetadata",
+                      "video", "videoClip", "musicVideo", "canvas", "stream", "metadata", "item"
+                  )
+                  fun visit(obj: Any?, depth: Int) {
+                      if (obj == null || depth > 3) return
+                      if (obj is String || obj is Number || obj is Boolean) return
+                      if (visited.put(obj, true) != null) return
+                      result.add(obj)
+                      readExtrasBundle(obj)?.let { visit(it, depth + 1) }
+                      if (obj is Map<*, *>) {
+                          obj.values.forEach { visit(it, depth + 1) }
+                          return
+                      }
+                      val cls = obj.javaClass
+                      if (cls.name.startsWith("android.") || cls.name.startsWith("java.")) return
+                      for (nk in nestedKeys) {
+                          val cap = nk.replaceFirstChar { it.uppercaseChar() }
+                          val m = runCatching { cls.methods.firstOrNull { it.parameterCount == 0 && (it.name == "get$cap" || it.name == nk) } }.getOrNull()
+                          val child = runCatching { m?.invoke(obj) }.getOrNull()
+                          if (child != null) visit(child, depth + 1)
+                      }
+                  }
+                  roots.forEach { visit(it, 0) }
+                  return result
               }
 
               private fun extractVideoUrlFromCandidates(candidates: List<Any?>): String {
                   val urlRegex = Regex("""https?://[^\s"'<>\]\)]+""")
-                  val propNames = arrayOf(
+                  val explicitVideoProps = arrayOf(
                       "videoUrl", "videoUri", "clipUrl", "mvUrl", "musicVideoUrl",
-                      "streamVideoUrl", "videoStreamUrl", "video", "clip", "mv",
-                      "mediaUrl", "streamUrl", "playUrl", "watchUrl", "url", "uri"
+                      "streamVideoUrl", "videoStreamUrl", "canvasUrl", "canvasVideoUrl",
+                      "youtubeUrl", "ytUrl", "officialVideoUrl", "videoLink", "clipLink", "mvLink",
+                      "video_url", "clip_url", "mv_url", "canvas_url", "youtube_url",
+                      "videoId", "youtubeId", "youtubeVideoId", "ytVideoId", "ytId",
+                      "mvId", "clipId", "canvasId", "video_id", "youtube_id",
+                      "video", "clip", "mv", "canvas"
                   )
-                  for (cand in candidates) {
-                      if (cand == null) continue
-                      for (pn in propNames) {
+                  val genericUrlProps = arrayOf("mediaUrl", "streamUrl", "playUrl", "watchUrl", "url", "uri")
+                  val allObjs = collectNestedObjects(candidates)
+                  for (cand in allObjs) {
+                      for (pn in explicitVideoProps) {
                           val v = readProp(cand, pn)
-                          if (v.isNotEmpty() && isLikelyVideoUrl(v)) {
-                              return v
-                          }
+                          val norm = normalizeCandidateVideoValue(v, fromExplicitVideoKey = true)
+                          if (norm.isNotEmpty()) return norm
+                      }
+                      for (pn in genericUrlProps) {
+                          val v = readProp(cand, pn)
+                          val norm = normalizeCandidateVideoValue(v, fromExplicitVideoKey = false)
+                          if (norm.isNotEmpty()) return norm
                       }
                       val rawStr = cand.toString()
-                      if (rawStr.contains("video", ignoreCase = true) || rawStr.contains("clip", ignoreCase = true) || rawStr.contains("mv", ignoreCase = true)) {
-                          urlRegex.findAll(rawStr).map { it.value }.firstOrNull(::isLikelyVideoUrl)?.let { return it }
+                      if (rawStr.contains("video", ignoreCase = true) || rawStr.contains("clip", ignoreCase = true) ||
+                          rawStr.contains("mv", ignoreCase = true) || rawStr.contains("youtube", ignoreCase = true)) {
+                          urlRegex.findAll(rawStr).mapNotNull {
+                              normalizeCandidateVideoValue(it.value, fromExplicitVideoKey = false).takeIf { u -> u.isNotEmpty() }
+                          }.firstOrNull()?.let { return it }
                       }
                   }
                   return ""
@@ -3289,7 +3488,7 @@ jobs:
                       ind = m_ctx.group(1)
                       observer = (
                           f"{ind}val vnPlaybackStateObserver = state\n"
-                          f"{ind}androidx.compose.runtime.LaunchedEffect(state.title, state.artist, state.coverUrl, com.music.spotui.ui.screens.VnFpsPref.playbackAlertsEnabled) {{\n"
+                          f"{ind}androidx.compose.runtime.LaunchedEffect(state, state.title, state.artist, state.coverUrl, com.music.spotui.ui.screens.VnFpsPref.playbackAlertsEnabled) {{\n"
                           f"{ind}    com.music.spotui.ui.screens.VnFpsPref.onActiveTrackChanged(context, \"\", state.title, state.artist)\n"
                           f"{ind}    com.music.spotui.ui.screens.VnPlaybackMonitor.inspectAndReport(context, vnPlaybackStateObserver)\n"
                           f"{ind}    com.music.spotui.ui.screens.VnPlaybackMonitor.checkOrderMismatchOnly(context)\n"
@@ -3557,7 +3756,7 @@ jobs:
                           return i
               return -1
 
-          def patch_lyric_text_call(call_block: str, is_player: bool) -> tuple[str, bool]:
+          def patch_lyric_text_call(call_block: str, is_player: bool, is_active_line: bool = True) -> tuple[str, bool]:
               m_head = re.match(r'^(\s*Text\s*\()', call_block)
               if not m_head:
                   return call_block, False
@@ -3569,6 +3768,7 @@ jobs:
               body = call_block[m_head.end():close_paren]
               tail = call_block[close_paren:]
               is_player_lit = "true" if is_player else "false"
+              is_active_lit = "true" if is_active_line else "false"
 
               args = split_top_level_args(body)
               if not args:
@@ -3591,25 +3791,25 @@ jobs:
                       pval = stripped[eq + 1:].strip()
                       if pname == "text":
                           if not pval.startswith('"') and "vnCaptureAndStyleLyric" not in pval and "vnStyleLyricAnnotatedString" not in pval and "vnCaptureLyricText" not in pval:
-                              pval = f"com.music.spotui.ui.screens.vnCaptureAndStyleLyric({pval}, isPlayer = {is_player_lit})"
+                              pval = f"com.music.spotui.ui.screens.vnCaptureAndStyleLyric({pval}, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
                               modified = True
                           rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
                       elif pname == "color":
                           has_color = True
                           if "vnPlayerInlineLyricColor" not in pval:
-                              pval = f"com.music.spotui.ui.screens.vnPlayerInlineLyricColor({pval}, isPlayer = {is_player_lit})"
+                              pval = f"com.music.spotui.ui.screens.vnPlayerInlineLyricColor({pval}, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
                               modified = True
                           rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
                       elif pname == "style":
                           if "vnPlayerInlineLyricStyle" not in pval:
-                              pval = f"com.music.spotui.ui.screens.vnPlayerInlineLyricStyle({pval}, isPlayer = {is_player_lit})"
+                              pval = f"com.music.spotui.ui.screens.vnPlayerInlineLyricStyle({pval}, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
                               modified = True
                           rebuilt_segments.append(f"{lead_ws}{pname} = {pval}{trail_ws}")
                       else:
                           rebuilt_segments.append(seg)
                   else:
                       if idx_a == 0 and not stripped.startswith('"') and "vnCaptureAndStyleLyric" not in stripped and "vnStyleLyricAnnotatedString" not in stripped and "vnCaptureLyricText" not in stripped:
-                          pval = f"com.music.spotui.ui.screens.vnCaptureAndStyleLyric({stripped}, isPlayer = {is_player_lit})"
+                          pval = f"com.music.spotui.ui.screens.vnCaptureAndStyleLyric({stripped}, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
                           modified = True
                           rebuilt_segments.append(f"{lead_ws}{pval}{trail_ws}")
                       else:
@@ -3617,7 +3817,7 @@ jobs:
 
               new_body = ",".join(rebuilt_segments)
               if not has_color:
-                  color_arg = f"color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current, isPlayer = {is_player_lit})"
+                  color_arg = f"color = com.music.spotui.ui.screens.vnPlayerInlineLyricColor(androidx.compose.material3.LocalContentColor.current, isPlayer = {is_player_lit}, isActiveLine = {is_active_lit})"
                   if new_body.strip():
                       m_trail = re.search(r'(,\s*)$', new_body)
                       if m_trail:
@@ -3731,7 +3931,10 @@ jobs:
 
               lines = src.splitlines(keepends=True)
               k = 0
+              active_lyric_texts_seen = 0
               while k < len(lines):
+                  if re.search(r'^\s*(?:@Composable\b|(?:private\s+|internal\s+|public\s+)?fun\s+)', lines[k]):
+                      active_lyric_texts_seen = 0
                   if re.search(r'(?<![.\w])Text\s*\(', lines[k]) and '">"' not in lines[k] and '"›"' not in lines[k]:
                       ctx_win = "".join(lines[max(0, k - 28):min(len(lines), k + 18)])
                       has_lyric_ctx = is_lyric_comp or bool(
@@ -3750,8 +3953,24 @@ jobs:
                                   t_end = j
                                   break
                           call_block = "".join(lines[k:t_end + 1])
-                          new_block, did_patch = patch_lyric_text_call(call_block, is_player=is_player_scope)
+                          prev_ctx = "".join(lines[max(0, k - 8):k])
+                          has_secondary_hint = bool(
+                              re.search(r'\b(?:nextLine|nextLyric|upcoming|bottomLine|secondLine|secondary|inactive|prevLine|previousLine|unsung|background|baseLine|shadow|onSurfaceVariant|outline)\b', call_block + "\n" + prev_ctx, re.I)
+                          )
+                          explicit_active_hint = bool(
+                              re.search(r'\b(?:active|current|karaoke|swept|annotated)\b', call_block, re.I)
+                          )
+                          is_active_call = not has_secondary_hint and not (
+                              is_player_scope and active_lyric_texts_seen >= 1 and not explicit_active_hint
+                          )
+                          new_block, did_patch = patch_lyric_text_call(
+                              call_block,
+                              is_player=is_player_scope,
+                              is_active_line=is_active_call
+                          )
                           if did_patch:
+                              if is_active_call:
+                                  active_lyric_texts_seen += 1
                               lines[k:t_end + 1] = [new_block]
                               k = t_end + 1
                               continue
