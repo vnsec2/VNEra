@@ -112,8 +112,13 @@ jobs:
           import android.app.*
           import android.content.*
           import android.media.AudioManager
+          import android.net.Uri
           import android.os.*
           import android.view.*
+          import android.webkit.WebChromeClient
+          import android.webkit.WebSettings
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
           import android.widget.Toast
           import androidx.activity.compose.BackHandler
           import androidx.compose.animation.AnimatedVisibility
@@ -132,6 +137,7 @@ jobs:
           import androidx.compose.material.icons.rounded.Check
           import androidx.compose.material.icons.rounded.Close
           import androidx.compose.material.icons.rounded.Fullscreen
+          import androidx.compose.material.icons.rounded.PlayArrow
           import androidx.compose.material3.*
           import androidx.compose.runtime.*
           import androidx.compose.ui.*
@@ -149,6 +155,7 @@ jobs:
           import androidx.compose.ui.text.buildAnnotatedString
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.unit.*
+          import androidx.compose.ui.viewinterop.AndroidView
           import androidx.compose.ui.window.Dialog
           import androidx.compose.ui.window.DialogProperties
           import androidx.compose.ui.window.DialogWindowProvider
@@ -168,6 +175,7 @@ jobs:
           object VnFpsPref {
               const val PREFS_NAME = "vnera_display_prefs"
               const val KEY_TARGET_FPS = "target_fps"
+              const val KEY_APP_FULLSCREEN = "app_fullscreen_enabled"
               const val KEY_LYRICS_IMMERSIVE = "lyrics_immersive_fullscreen"
               const val KEY_LYRICS_OFFSET_CONTROLS = "lyrics_offset_controls_enabled"
               const val KEY_CUSTOM_COLOR = "custom_accent_color_argb"
@@ -193,6 +201,7 @@ jobs:
               private var prefListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
 
               var targetFps by mutableIntStateOf(0); private set
+              var appFullscreenEnabled by mutableStateOf(false); private set
               var lyricsImmersiveEnabled by mutableStateOf(false); private set
               var lyricsOffsetControlsEnabled by mutableStateOf(true); private set
               var lyricsBarsHidden by mutableStateOf(false)
@@ -201,6 +210,9 @@ jobs:
               var immersivePanelActive by mutableStateOf(false)
               var onExternalOpenLyrics: (() -> Unit)? = null
               var onExternalCloseLyrics: (() -> Unit)? = null
+
+              var currentVideoClipUrl by mutableStateOf("")
+              var videoclipDialogOpen by mutableStateOf(false)
 
               var activeLyricsScrollState: ScrollableState? = null
               var savedPlayerLyricText by mutableStateOf("")
@@ -257,6 +269,32 @@ jobs:
                   val ac = c.applicationContext ?: c
                   if (appCtx == null) appCtx = ac
                   return ac.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+              }
+
+              fun updateVideoClipUrl(url: String?) {
+                  val cleaned = url?.trim().orEmpty()
+                  val valid = if (
+                      cleaned.startsWith("http://", ignoreCase = true) ||
+                      cleaned.startsWith("https://", ignoreCase = true) ||
+                      cleaned.startsWith("content://", ignoreCase = true) ||
+                      cleaned.startsWith("file://", ignoreCase = true)
+                  ) cleaned else ""
+                  if (currentVideoClipUrl != valid) {
+                      currentVideoClipUrl = valid
+                      if (valid.isEmpty()) {
+                          videoclipDialogOpen = false
+                      }
+                  }
+              }
+
+              fun openVideoclipScreen() {
+                  if (currentVideoClipUrl.isNotBlank()) {
+                      videoclipDialogOpen = true
+                  }
+              }
+
+              fun closeVideoclipScreen() {
+                  videoclipDialogOpen = false
               }
 
               private fun parseLyricOffsetsJsonIntoMap(raw: String) {
@@ -324,6 +362,7 @@ jobs:
                   if (newKey != currentTrackOffsetKey) {
                       currentTrackOffsetKey = newKey
                       currentTrackDisplayTitle = title.trim()
+                      updateVideoClipUrl("")
                       synchronized(lyricOffsetsMap) {
                           currentLyricOffsetMs = lyricOffsetsMap[newKey] ?: 0
                       }
@@ -395,6 +434,7 @@ jobs:
 
               private fun loadFromPrefs(sp: SharedPreferences) {
                   targetFps = sp.getInt(KEY_TARGET_FPS, 0)
+                  appFullscreenEnabled = sp.getBoolean(KEY_APP_FULLSCREEN, false)
                   lyricsImmersiveEnabled = false
                   lyricsOffsetControlsEnabled = sp.getBoolean(KEY_LYRICS_OFFSET_CONTROLS, true)
                   customAccentColorArgb = sp.getLong(KEY_CUSTOM_COLOR, 0L)
@@ -434,9 +474,6 @@ jobs:
               }
 
               fun init(c: Context) {
-                  // ensureInit() performs the first load and installs the preference listener.
-                  // Loading again here duplicated all SharedPreferences reads and lyric-offset
-                  // JSON parsing during the first Compose frame.
                   ensureInit(c)
               }
 
@@ -448,6 +485,14 @@ jobs:
               }
 
               fun update(c: Context, fps: Int) { targetFps = fps; prefs(c).edit().putInt(KEY_TARGET_FPS, fps).apply(); c.findActivity()?.let { applyWindowFrameRate(it, fps, true) } }
+              fun updateAppFullscreen(c: Context, enabled: Boolean) {
+                  ensureInit(c)
+                  appFullscreenEnabled = enabled
+                  prefs(c).edit().putBoolean(KEY_APP_FULLSCREEN, enabled).apply()
+                  val act = c.findActivity()
+                  val shouldHide = enabled || (lyricsFullscreenOpen && lyricsImmersiveEnabled)
+                  setSystemBarsHidden(act, shouldHide, act?.window?.decorView)
+              }
               fun updateLyricsImmersive(c: Context, en: Boolean) { lyricsImmersiveEnabled = en; prefs(c).edit().putBoolean(KEY_LYRICS_IMMERSIVE, en).apply() }
               fun updateLyricsOffsetControls(c: Context, en: Boolean) { lyricsOffsetControlsEnabled = en; prefs(c).edit().putBoolean(KEY_LYRICS_OFFSET_CONTROLS, en).apply() }
               fun updateCustomColor(c: Context, argb: Long) { customAccentColorArgb = argb; prefs(c).edit().putLong(KEY_CUSTOM_COLOR, argb).apply() }
@@ -560,14 +605,14 @@ jobs:
 
               fun openLyricsFullscreen(act: Activity?, onExpand: (() -> Unit)? = null) {
                   lyricsFullscreenOpen = true
-                  if (lyricsImmersiveEnabled) setSystemBarsHidden(act, true)
+                  if (lyricsImmersiveEnabled || appFullscreenEnabled) setSystemBarsHidden(act, true)
                   runCatching { onExpand?.invoke() }
                   runCatching { onExternalOpenLyrics?.invoke() }
               }
 
               fun closeLyricsFullscreen(act: Activity?, onCollapse: (() -> Unit)? = null) {
                   lyricsFullscreenOpen = false
-                  setSystemBarsHidden(act, false)
+                  setSystemBarsHidden(act, appFullscreenEnabled)
                   runCatching { onCollapse?.invoke() }
                   runCatching { onExternalCloseLyrics?.invoke() }
               }
@@ -614,22 +659,29 @@ jobs:
               }
 
               fun setSystemBarsHidden(act: Activity?, hidden: Boolean, view: View? = null) {
-                  lyricsBarsHidden = hidden
+                  val effectiveHidden = hidden || appFullscreenEnabled
+                  lyricsBarsHidden = effectiveHidden
                   val dialogWin = view?.let { findWindowFromParent(it.parent) }
                   val actWin = act?.window
                   if (dialogWin != null) {
-                      applySystemBarsToWindow(dialogWin, view, hidden)
+                      applySystemBarsToWindow(dialogWin, view, effectiveHidden)
                   }
                   if (actWin != null && actWin !== dialogWin) {
-                      applySystemBarsToWindow(actWin, actWin.decorView, hidden)
+                      applySystemBarsToWindow(actWin, actWin.decorView, effectiveHidden)
                   }
               }
 
-              fun toggleSystemBars(act: Activity?, view: View? = null) =
+              fun toggleSystemBars(act: Activity?, view: View? = null) {
+                  if (appFullscreenEnabled) {
+                      setSystemBarsHidden(act, true, view)
+                      return
+                  }
                   setSystemBarsHidden(act, !lyricsBarsHidden, view)
+              }
 
               private val vneraBackupKeys = setOf(
                   KEY_TARGET_FPS,
+                  KEY_APP_FULLSCREEN,
                   KEY_LYRICS_IMMERSIVE,
                   KEY_LYRICS_OFFSET_CONTROLS,
                   KEY_CUSTOM_COLOR,
@@ -1077,9 +1129,9 @@ jobs:
               val isDimBackground = original.isSpecified && original.alpha > 0.01f && original.alpha < 0.78f
               if (isDimBackground) {
                   return if (hasCustomBg) {
-                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
+                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
                   } else {
-                      chosen.copy(alpha = 0.42f)
+                      original.copy(alpha = minOf(original.alpha, 0.42f))
                   }
               }
               if (!hasCustomActive) return original
@@ -1104,12 +1156,12 @@ jobs:
               }
               if (style.brush != null && hasCustomActive) {
                   val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
-                  val bgTint = if (hasCustomBg) {
-                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
+                  val dimChosen = if (hasCustomBg) {
+                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
                   } else {
-                      activeChosen.copy(alpha = 0.42f)
+                      activeChosen.copy(alpha = 0.35f)
                   }
-                  updated = updated.copy(brush = Brush.horizontalGradient(listOf(activeChosen, bgTint)))
+                  updated = updated.copy(brush = Brush.horizontalGradient(listOf(activeChosen, dimChosen)))
               }
               return updated
           }
@@ -1127,10 +1179,10 @@ jobs:
               if (raw.spanStyles.isEmpty()) return raw
 
               val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
-              val bgTint = if (hasCustomBg) {
-                  Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.78f)
+              val inactiveChosen = if (hasCustomBg) {
+                  Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
               } else {
-                  activeChosen.copy(alpha = 0.42f)
+                  Color.Unspecified
               }
 
               return buildAnnotatedString {
@@ -1140,17 +1192,25 @@ jobs:
                       val span = range.item
                       val c = span.color
                       var styledSpan = span
-                      if (span.brush != null && hasCustomActive) {
+                      if (span.brush != null && hasCustomActive && isLineActive) {
+                          val stopTint = if (hasCustomBg) {
+                              Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
+                          } else {
+                              activeChosen.copy(alpha = 0.35f)
+                          }
                           styledSpan = styledSpan.copy(
-                              brush = Brush.horizontalGradient(listOf(activeChosen, bgTint))
+                              brush = Brush.horizontalGradient(listOf(activeChosen, stopTint))
                           )
                       } else if (c.isSpecified && c.alpha > 0.01f) {
-                          val newColor = if (c.alpha < 0.78f) {
-                              if (hasCustomBg || hasCustomActive) bgTint else c
-                          } else {
-                              if (hasCustomActive) activeChosen else c
+                          if (c.alpha < 0.78f) {
+                              if (inactiveChosen.isSpecified) {
+                                  styledSpan = styledSpan.copy(color = inactiveChosen)
+                              } else {
+                                  styledSpan = styledSpan.copy(color = c.copy(alpha = minOf(c.alpha, 0.42f)))
+                              }
+                          } else if (hasCustomActive) {
+                              styledSpan = styledSpan.copy(color = activeChosen)
                           }
-                          styledSpan = styledSpan.copy(color = newColor)
                       }
                       addStyle(styledSpan, range.start, range.end)
                   }
@@ -1200,24 +1260,167 @@ jobs:
               val c = LocalContext.current
               val act = remember(c) { c.findActivity() }
               val view = LocalView.current
-              LaunchedEffect(act, view, hidden) {
-                  VnFpsPref.setSystemBarsHidden(act, hidden, view)
-                  if (hidden) {
+              val effectiveHidden = hidden || VnFpsPref.appFullscreenEnabled
+              LaunchedEffect(act, view, effectiveHidden) {
+                  if (effectiveHidden) {
+                      VnFpsPref.setSystemBarsHidden(act, true, view)
                       view.post { VnFpsPref.setSystemBarsHidden(act, true, view) }
                       delay(120L)
                       VnFpsPref.setSystemBarsHidden(act, true, view)
+                  } else {
+                      VnFpsPref.setSystemBarsHidden(act, false, view)
                   }
               }
-              DisposableEffect(act, view) {
+              DisposableEffect(act, view, effectiveHidden) {
                   val observer = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
-                      if (hasFocus && VnFpsPref.lyricsBarsHidden) {
+                      if (hasFocus && (effectiveHidden || VnFpsPref.appFullscreenEnabled)) {
                           VnFpsPref.setSystemBarsHidden(act, true, view)
                       }
                   }
                   view.viewTreeObserver.addOnWindowFocusChangeListener(observer)
                   onDispose {
                       view.viewTreeObserver.removeOnWindowFocusChangeListener(observer)
-                      VnFpsPref.setSystemBarsHidden(act, false, view)
+                      if (!VnFpsPref.appFullscreenEnabled) {
+                          VnFpsPref.setSystemBarsHidden(act, false, view)
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun VnVideoclipButtonBelowSync(modifier: Modifier = Modifier) {
+              val videoUrl = VnFpsPref.currentVideoClipUrl
+              if (!VnFpsPref.immersivePanelActive || videoUrl.isBlank()) return
+              val primary = MaterialTheme.colorScheme.primary
+              Surface(
+                  onClick = { VnFpsPref.openVideoclipScreen() },
+                  modifier = modifier,
+                  shape = RoundedCornerShape(14.dp),
+                  color = Color(0xE6161820),
+                  border = BorderStroke(1.dp, primary.copy(alpha = 0.55f)),
+                  shadowElevation = 8.dp
+              ) {
+                  Row(
+                      modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                      Icon(
+                          imageVector = Icons.Rounded.PlayArrow,
+                          contentDescription = "Άνοιγμα videoclip",
+                          tint = primary,
+                          modifier = Modifier.size(18.dp)
+                      )
+                      Text(
+                          text = "Videoclip",
+                          style = MaterialTheme.typography.labelLarge,
+                          fontWeight = FontWeight.SemiBold,
+                          color = Color.White,
+                          maxLines = 1
+                      )
+                  }
+              }
+          }
+
+          @Composable
+          fun VnVideoclipPlayerDialog() {
+              val videoUrl = VnFpsPref.currentVideoClipUrl
+              if (!VnFpsPref.videoclipDialogOpen || videoUrl.isBlank()) return
+              val context = LocalContext.current
+              val title = VnFpsPref.currentTrackDisplayTitle.ifBlank { "Videoclip" }
+
+              Dialog(
+                  onDismissRequest = { VnFpsPref.closeVideoclipScreen() },
+                  properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+              ) {
+                  BackHandler { VnFpsPref.closeVideoclipScreen() }
+                  Box(
+                      modifier = Modifier
+                          .fillMaxSize()
+                          .background(Color(0xF207090F))
+                          .statusBarsPadding()
+                          .navigationBarsPadding()
+                          .padding(16.dp),
+                      contentAlignment = Alignment.Center
+                  ) {
+                      Surface(
+                          modifier = Modifier
+                              .fillMaxWidth()
+                              .wrapContentHeight(),
+                          shape = RoundedCornerShape(24.dp),
+                          color = Color(0xFF121622),
+                          border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+                          shadowElevation = 16.dp
+                      ) {
+                          Column(
+                              modifier = Modifier.padding(14.dp),
+                              verticalArrangement = Arrangement.spacedBy(12.dp)
+                          ) {
+                              Row(
+                                  modifier = Modifier.fillMaxWidth(),
+                                  verticalAlignment = Alignment.CenterVertically,
+                                  horizontalArrangement = Arrangement.SpaceBetween
+                              ) {
+                                  Text(
+                                      text = title,
+                                      style = MaterialTheme.typography.titleMedium,
+                                      fontWeight = FontWeight.Bold,
+                                      color = Color.White,
+                                      maxLines = 1,
+                                      modifier = Modifier.weight(1f)
+                                  )
+                                  IconButton(onClick = { VnFpsPref.closeVideoclipScreen() }) {
+                                      Icon(
+                                          imageVector = Icons.Rounded.Close,
+                                          contentDescription = "Κλείσιμο videoclip",
+                                          tint = Color.White
+                                      )
+                                  }
+                              }
+
+                              Box(
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .aspectRatio(16f / 9f)
+                                      .clip(RoundedCornerShape(18.dp))
+                                      .background(Color.Black)
+                              ) {
+                                  AndroidView(
+                                      factory = { ctx ->
+                                          WebView(ctx).apply {
+                                              settings.javaScriptEnabled = true
+                                              settings.mediaPlaybackRequiresUserGesture = false
+                                              settings.domStorageEnabled = true
+                                              settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                              webChromeClient = WebChromeClient()
+                                              webViewClient = object : WebViewClient() {
+                                                  override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                                                      if (!url.isNullOrBlank() && (url.startsWith("vnd.") || url.startsWith("intent://"))) {
+                                                          runCatching {
+                                                              context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                                          }
+                                                          return true
+                                                      }
+                                                      return false
+                                                  }
+                                              }
+                                              loadUrl(videoUrl)
+                                          }
+                                      },
+                                      update = { wv ->
+                                          if (wv.url != videoUrl) {
+                                              wv.loadUrl(videoUrl)
+                                          }
+                                      },
+                                      onRelease = { wv ->
+                                          wv.stopLoading()
+                                          wv.destroy()
+                                      },
+                                      modifier = Modifier.fillMaxSize()
+                                  )
+                              }
+                          }
+                      }
                   }
               }
           }
@@ -1349,9 +1552,14 @@ jobs:
               modifier: Modifier = Modifier
           ) {
               Box(modifier = modifier.zIndex(99f)) {
-                  VnLyricsOffsetControlPill(
-                      modifier = Modifier.align(Alignment.TopEnd).offset(x = 8.dp)
-                  )
+                  Column(
+                      modifier = Modifier.align(Alignment.TopEnd).offset(x = 8.dp),
+                      horizontalAlignment = Alignment.End,
+                      verticalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                      VnLyricsOffsetControlPill()
+                      VnVideoclipButtonBelowSync()
+                  }
               }
           }
 
@@ -1381,7 +1589,7 @@ jobs:
                   onDismissRequest = closeOverlay,
                   properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
               ) {
-                  VnKeepSystemBarsHidden(VnFpsPref.lyricsImmersiveEnabled)
+                  VnKeepSystemBarsHidden(VnFpsPref.lyricsImmersiveEnabled || VnFpsPref.appFullscreenEnabled)
                   CompositionLocalProvider(LocalVnIsPlayerInlineLyric provides false, LocalVnFullscreenOverlayContent provides true) {
                       BackHandler(onBack = closeOverlay)
                       Box(
@@ -1458,7 +1666,6 @@ jobs:
               onCollapseToPlayer: (() -> Unit)? = null
           ): Modifier = composed {
               val c = LocalContext.current
-              val view = LocalView.current
               val density = LocalDensity.current
               val thresholdPx = with(density) { 48.dp.toPx() }
               var accumDown by remember { mutableFloatStateOf(0f) }
@@ -1505,16 +1712,7 @@ jobs:
                   }
               }
 
-              this
-                  .nestedScroll(nested)
-                  .pointerInput(act, view) {
-                      detectTapGestures { offset ->
-                          val w = size.width.toFloat()
-                          if (w > 0f && offset.x in (w * 0.25f)..(w * 0.75f)) {
-                              VnFpsPref.toggleSystemBars(act, view)
-                          }
-                      }
-                  }
+              this.nestedScroll(nested)
           }
 
           object VnShuffleGuard {
@@ -1792,6 +1990,27 @@ jobs:
                   return runCatching { field?.get(obj) as? Bundle }.getOrNull()
               }
 
+              private fun extractVideoUrlFromCandidates(candidates: List<Any?>): String {
+                  val urlRegex = Regex("""https?://[^\s"'<>\]\)]+""")
+                  for (cand in candidates) {
+                      if (cand == null) continue
+                      val direct = readProp(
+                          cand,
+                          "videoUrl", "videoUri", "clipUrl", "mvUrl", "musicVideoUrl",
+                          "streamVideoUrl", "videoStreamUrl", "video"
+                      )
+                      if (direct.startsWith("http://") || direct.startsWith("https://")) {
+                          return direct
+                      }
+                      val rawStr = cand.toString()
+                      if (rawStr.contains("video", ignoreCase = true) || rawStr.contains("mv", ignoreCase = true)) {
+                          val match = urlRegex.find(rawStr)?.value.orEmpty()
+                          if (match.isNotEmpty()) return match
+                      }
+                  }
+                  return ""
+              }
+
               fun inspectAndReportAuto(vararg candidates: Any?) {
                   val c = VnFpsPref.resolveAppContext() ?: return
                   inspectAndReport(c, *candidates)
@@ -1811,6 +2030,10 @@ jobs:
                           expanded.add(cand)
                           readExtrasBundle(cand)?.let { expanded.add(it) }
                       }
+                  }
+                  val detectedVideoUrl = extractVideoUrlFromCandidates(expanded)
+                  if (detectedVideoUrl.isNotEmpty()) {
+                      VnFpsPref.updateVideoClipUrl(detectedVideoUrl)
                   }
                   for (cand in expanded) {
                       if (cand == null) continue
@@ -1832,6 +2055,9 @@ jobs:
                   }
                   if (title.isNotEmpty() || id.isNotEmpty()) {
                       VnFpsPref.onActiveTrackChanged(c, id, title, artist)
+                      if (detectedVideoUrl.isNotEmpty()) {
+                          VnFpsPref.updateVideoClipUrl(detectedVideoUrl)
+                      }
                   }
                   val key = (id.ifBlank { title }).trim()
                   if (key.isNotEmpty() || quality.isNotEmpty() || kbps > 0) {
@@ -1983,7 +2209,7 @@ jobs:
           fun VnLyricsFullscreenEffect() {
               val c = LocalContext.current
               VnFpsPref.ensureInit(c)
-              val imm = VnFpsPref.lyricsImmersiveEnabled
+              val imm = VnFpsPref.lyricsImmersiveEnabled || VnFpsPref.appFullscreenEnabled
               VnKeepSystemBarsHidden(imm)
               DisposableEffect(Unit) {
                   VnFpsPref.nativeLyricsScreenActive = true
@@ -2050,6 +2276,7 @@ jobs:
               val c = LocalContext.current; val act = remember(c) { c.findActivity() }
               VnFpsPref.ensureInit(c)
               val fps = VnFpsPref.targetFps
+              val appFs = VnFpsPref.appFullscreenEnabled
               val pArgb = MaterialTheme.colorScheme.primary.toArgb().toLong()
               val bgArgb = MaterialTheme.colorScheme.background.toArgb().toLong()
               LaunchedEffect(c) {
@@ -2058,6 +2285,9 @@ jobs:
                   if (VnFpsPref.playerBackgroundColorArgb == 0L && bgArgb != 0L) VnFpsPref.playerBackgroundColorArgb = bgArgb
                   act?.let { applyWindowFrameRate(it, VnFpsPref.targetFps, true) }
                   VnPlaybackMonitor.checkOrderMismatchOnly(c)
+              }
+              LaunchedEffect(act, appFs) {
+                  VnFpsPref.setSystemBarsHidden(act, appFs, act?.window?.decorView)
               }
               LaunchedEffect(act, fps) { act?.let { applyWindowFrameRate(it, fps, true) } }
               LaunchedEffect(c) {
@@ -2090,13 +2320,25 @@ jobs:
                   val cb = object : Application.ActivityLifecycleCallbacks {
                       override fun onActivityCreated(x: Activity, b: Bundle?) {}
                       override fun onActivityStarted(x: Activity) { if (x === a) applyWindowFrameRate(a, VnFpsPref.targetFps, true) }
-                      override fun onActivityResumed(x: Activity) { if (x === a) applyWindowFrameRate(a, VnFpsPref.targetFps, true) }
+                      override fun onActivityResumed(x: Activity) {
+                          if (x === a) {
+                              applyWindowFrameRate(a, VnFpsPref.targetFps, true)
+                              VnFpsPref.setSystemBarsHidden(a, VnFpsPref.appFullscreenEnabled, a.window?.decorView)
+                          }
+                      }
                       override fun onActivityPaused(x: Activity) {}
                       override fun onActivityStopped(x: Activity) {}
                       override fun onActivitySaveInstanceState(x: Activity, o: Bundle) {}
                       override fun onActivityDestroyed(x: Activity) {}
                   }
-                  val fl = ViewTreeObserver.OnWindowFocusChangeListener { if (it) applyWindowFrameRate(a, VnFpsPref.targetFps, true) }
+                  val fl = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+                      if (hasFocus) {
+                          applyWindowFrameRate(a, VnFpsPref.targetFps, true)
+                          if (VnFpsPref.appFullscreenEnabled || VnFpsPref.lyricsBarsHidden) {
+                              VnFpsPref.setSystemBarsHidden(a, true, a.window?.decorView)
+                          }
+                      }
+                  }
                   a.application.registerActivityLifecycleCallbacks(cb); a.window?.decorView?.viewTreeObserver?.addOnWindowFocusChangeListener(fl)
                   onDispose { a.application.unregisterActivityLifecycleCallbacks(cb); a.window?.decorView?.viewTreeObserver?.removeOnWindowFocusChangeListener(fl) }
               }
@@ -2114,6 +2356,7 @@ jobs:
                   }
               }
               VnFullscreenLyricsOverlay(fromImmersivePanel = false)
+              VnVideoclipPlayerDialog()
               VnPlaybackMonitorDialog()
               VnShuffleNotificationBanner()
           }
@@ -2273,6 +2516,15 @@ jobs:
               val rates = remember(c) { c.findActivity()?.let(::getSupportedRefreshRates).orEmpty() }
 
               VnSectionBlock(sectionTitle = "VNERA · ΕΜΦΑΝΙΣΗ", modifier = modifier) {
+                  VnNativeSwitchRow(
+                      title = "Κρατά σε πλήρη οθόνη",
+                      subtitle = "Κρατά την οθόνη Σε fullscreen για καλύτερη αναδιάταξη εφαρμογής",
+                      checked = VnFpsPref.appFullscreenEnabled,
+                      onCheckedChange = { VnFpsPref.updateAppFullscreen(c, it) }
+                  )
+
+                  VnCardDivider()
+
                   Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
                       Text(
                           text = "Χρώμα Εμφάνισης",
@@ -2372,8 +2624,6 @@ jobs:
                       checked = VnFpsPref.keepShuffleEnabled,
                       onCheckedChange = { VnFpsPref.updateKeepShuffle(c, it) }
                   )
-
-                  // Playback quality/order alerts removed from settings and disabled.
               }
           }
 
@@ -2734,13 +2984,11 @@ jobs:
                   tn = re.sub(r'(compileSdk|targetSdk)\.set\(37\)', rf'\g<1>.set({fallback_sdk})', re.sub(r'(compileSdk|targetSdk)\s*=\s*37', rf'\g<1> = {fallback_sdk}', t))
                   if t != tn: gf.write_text(tn)
 
-          # Rebrand app_name across ALL source sets (main, debug, release)
           for sp in Path("app/src").rglob("strings.xml"):
               sx = sp.read_text()
               sxn = re.sub(r'<string\s+name="app_name[^"]*"[^>]*>.*?</string>', '<string name="app_name">VNEra</string>', sx, flags=re.DOTALL)
               if sx != sxn: sp.write_text(sxn)
 
-          # Force <application android:label="@string/app_name"> in ALL AndroidManifest.xml files
           for mf in Path("app/src").rglob("AndroidManifest.xml"):
               mt = mf.read_text()
               def repl_app_tag(m):
@@ -2924,13 +3172,11 @@ jobs:
           def apply_lyric_timing_offset_hooks(src: str) -> str:
               if "vnApplyLyricOffset" in src:
                   return src
-              # 1) Wrap property reads like state.position / playerState.currentPositionMs / uiState.position
               src = re.sub(
                   r'\b((?:state|playerState|playbackState|uiState)\.(?:positionMs|currentPositionMs|currentPosition|position|currentTimeMs|progressMs|elapsedMs))\b(?!\s*=[^=])',
                   r'com.music.spotui.ui.screens.vnApplyLyricOffset(\1)',
                   src
               )
-              # 2) Wrap local `val position = ...` or `val position by ...` (supporting single-line & multi-line { ... } lambdas)
               lines = src.splitlines(keepends=True)
               out = []
               pos_names = r'(?:positionMs|currentPositionMs|currentPosition|position|currentTimeMs|elapsedMs)'
@@ -2974,7 +3220,6 @@ jobs:
                   out.append(ln)
                   i += 1
               res = "".join(out)
-              # 3) Fallback only if no hook matched yet: shadow parameter in top-level composable
               if "vnApplyLyricOffset" not in res:
                   lines2 = res.splitlines(keepends=True)
                   for idx, l in enumerate(lines2):
@@ -3030,10 +3275,8 @@ jobs:
                           f"{ind}val vnPlaybackStateObserver = state\n"
                           f"{ind}androidx.compose.runtime.LaunchedEffect(state.title, state.artist, state.coverUrl, com.music.spotui.ui.screens.VnFpsPref.playbackAlertsEnabled) {{\n"
                           f"{ind}    com.music.spotui.ui.screens.VnFpsPref.onActiveTrackChanged(context, \"\", state.title, state.artist)\n"
-                          f"{ind}    if (com.music.spotui.ui.screens.VnFpsPref.playbackAlertsEnabled) {{\n"
-                          f"{ind}        com.music.spotui.ui.screens.VnPlaybackMonitor.inspectAndReport(context, vnPlaybackStateObserver)\n"
-                          f"{ind}        com.music.spotui.ui.screens.VnPlaybackMonitor.checkOrderMismatchOnly(context)\n"
-                          f"{ind}    }}\n"
+                          f"{ind}    com.music.spotui.ui.screens.VnPlaybackMonitor.inspectAndReport(context, vnPlaybackStateObserver)\n"
+                          f"{ind}    com.music.spotui.ui.screens.VnPlaybackMonitor.checkOrderMismatchOnly(context)\n"
                           f"{ind}}}\n"
                       )
                       ps = ps.replace(m_ctx.group(0), m_ctx.group(0) + "\n" + observer.rstrip(), 1)
@@ -3113,9 +3356,6 @@ jobs:
               t0 = il.read_text()
               t1 = hook_lazy_cols(t0, "VnRegisterLyricsScrollState")
               t1 = suppress_duplicate_top_fullscreen_icons(t1)
-              # ImmersiveLyricClock already applies currentLyricOffsetMs at the playhead
-              # source. Wrapping positions again here double-shifts karaoke word timing.
-              # Keep the application original LyricsToggle fullscreen button intact.
               if "VnLyricsTopRightControls" not in t1:
                   lines = t1.splitlines(keepends=True)
                   for i in range(len(lines)):
@@ -3139,7 +3379,7 @@ jobs:
                                       "    val vnImmScope = androidx.compose.runtime.rememberCoroutineScope()\n"
                                       "    val vnIsFullscreen = com.music.spotui.ui.screens.VnFpsPref.lyricsFullscreenOpen\n"
                                       "    if (vnIsFullscreen && !com.music.spotui.ui.screens.LocalVnFullscreenOverlayContent.current) {\n"
-                                      "        com.music.spotui.ui.screens.VnKeepSystemBarsHidden(com.music.spotui.ui.screens.VnFpsPref.lyricsImmersiveEnabled)\n"
+                                      "        com.music.spotui.ui.screens.VnKeepSystemBarsHidden(com.music.spotui.ui.screens.VnFpsPref.lyricsImmersiveEnabled || com.music.spotui.ui.screens.VnFpsPref.appFullscreenEnabled)\n"
                                       "    }\n"
                                       "    androidx.compose.runtime.DisposableEffect(Unit) {\n"
                                       "        com.music.spotui.ui.screens.VnFpsPref.immersivePanelActive = true\n"
@@ -3167,9 +3407,14 @@ jobs:
                                       "    ) {\n"
                                   )
                                   lines.insert(se + 1,
-                                      "        com.music.spotui.ui.screens.VnLyricsOffsetControlPill(\n"
-                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = 12.dp, end = 12.dp)\n"
-                                      "        )\n"
+                                      "        androidx.compose.foundation.layout.Column(\n"
+                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = 12.dp, end = 12.dp),\n"
+                                      "            horizontalAlignment = androidx.compose.ui.Alignment.End,\n"
+                                      "            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)\n"
+                                      "        ) {\n"
+                                      "            com.music.spotui.ui.screens.VnLyricsOffsetControlPill()\n"
+                                      "            com.music.spotui.ui.screens.VnVideoclipButtonBelowSync()\n"
+                                      "        }\n"
                                   )
                                   be += 1
                                   lines[be] = (
@@ -3189,9 +3434,6 @@ jobs:
                                   break
               if t1 != t0: il.write_text(t1)
 
-          # Karaoke timing: do not use the line-sync lead for word-synced lyrics.
-          # The 150 ms lead made the following row activate before its first word,
-          # while the previous karaoke row could still appear highlighted.
           lf = next(Path("app/src/main/java").rglob("LyricsScreen.kt"), None)
           if lf is not None:
               src = lf.read_text()
@@ -3213,8 +3455,6 @@ jobs:
               )
               lf.write_text(src)
 
-          # Apply the offset at the playhead source. All immersive consumers (active row,
-          # word reveal, predictive focus and auto-scroll) now observe one identical clock.
           clock_file = next(Path("app/src/main/java").rglob("ImmersiveLyricClock.kt"), None)
           if clock_file is not None:
               src = clock_file.read_text()
@@ -3231,7 +3471,6 @@ jobs:
                       "head.clock.longValue = head.engine.frame(",
                       "val vnFramePosition = head.engine.frame("
                   )
-                  # Apply the offset only after playback has actually left position zero.
                   src, frame_match_count = re.subn(
                       r'(val vnFramePosition = head\.engine\.frame\(.*?discontinuity = head\.discontinuity,\n\s*\))',
                       r'\1\n                        head.clock.longValue = if (vnFramePosition <= 0L) vnFramePosition else (vnFramePosition + com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L)',
