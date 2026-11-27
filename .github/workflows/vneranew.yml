@@ -3120,23 +3120,7 @@ jobs:
               t1 = hook_lazy_cols(t0, "VnRegisterLyricsScrollState")
               t1 = suppress_duplicate_top_fullscreen_icons(t1)
               t1 = apply_lyric_timing_offset_hooks(t1)
-              # The immersive lyrics panel uses head.clock, not a local "position" variable.
-              # Apply the per-track offset to the exact clock consumed by active-row/word rendering.
-              clock_needle = "    val clock = head.clock\n"
-              if clock_needle in t1 and "val vnRawLyricsClock = head.clock" not in t1:
-                  t1 = t1.replace(
-                      clock_needle,
-                      "    val vnRawLyricsClock = head.clock\n"
-                      "    val vnLyricsOffsetMs = com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs\n"
-                      "    val clock = remember(vnRawLyricsClock) { androidx.compose.runtime.mutableLongStateOf(vnRawLyricsClock.longValue) }\n"
-                      "    androidx.compose.runtime.LaunchedEffect(vnRawLyricsClock, vnLyricsOffsetMs) {\n"
-                      "        androidx.compose.runtime.snapshotFlow { vnRawLyricsClock.longValue }.collect { raw ->\n"
-                      "            clock.longValue = (raw + vnLyricsOffsetMs).coerceAtLeast(0L)\n"
-                      "        }\n"
-                      "    }\n",
-                      1
-                  )
-              # Fullscreen stays accessible through the existing swipe gesture; remove its button.
+              # Offset is applied directly by ImmersiveLyricClock; avoid a second asynchronous clock.\n              # Fullscreen stays accessible through the existing swipe gesture; remove its button.
               t1, removed_fs_button = re.subn(
                   r'(?ms)^[ \t]*if \(onExpand != null\) LyricsToggle\(\n.*?^[ \t]*\)\n',
                   "                             // Fullscreen remains available through the existing swipe gesture.\n",
@@ -3218,6 +3202,61 @@ jobs:
                                   ])
                                   break
               if t1 != t0: il.write_text(t1)
+
+          # Karaoke timing: do not use the line-sync lead for word-synced lyrics.
+          # The 150 ms lead made the following row activate before its first word,
+          # while the previous karaoke row could still appear highlighted.
+          lf = next(Path("app/src/main/java").rglob("LyricsScreen.kt"), None)
+          if lf is not None:
+              src = lf.read_text()
+              old = "    var found = -1\\n    while (lo <= hi) {"
+              new = (
+                  "    var found = -1\\n"
+                  "    val lineLeadMs = if (lyrics.lines.any { !it.words.isNullOrEmpty() }) 0L else LINE_LEAD_MS\\n"
+                  "    while (lo <= hi) {"
+              )
+              if old in src and "val lineLeadMs = if (lyrics.lines.any" not in src:
+                  src = src.replace(old, new, 1)
+              src = src.replace(
+                  "if (lyrics.lines[mid].timeMs <= positionMs + LINE_LEAD_MS)",
+                  "if (lyrics.lines[mid].timeMs <= positionMs + lineLeadMs)"
+              )
+              src = src.replace(
+                  "sungChars(words, starts, position() + LINE_LEAD_MS)",
+                  "sungChars(words, starts, position())"
+              )
+              lf.write_text(src)
+
+          # Apply the offset at the playhead source. All immersive consumers (active row,
+          # word reveal, predictive focus and auto-scroll) now observe one identical clock.
+          clock_file = next(Path("app/src/main/java").rglob("ImmersiveLyricClock.kt"), None)
+          if clock_file is not None:
+              src = clock_file.read_text()
+              if "import com.music.spotui.ui.screens.VnFpsPref" not in src:
+                  src = src.replace(
+                      "import com.music.spotui.di.SongPlayer\\n",
+                      "import com.music.spotui.di.SongPlayer\\nimport com.music.spotui.ui.screens.VnFpsPref\\n",
+                      1
+                  )
+              src = src.replace(
+                  "val clock: MutableLongState = mutableLongStateOf(startMs)",
+                  "val clock: MutableLongState = mutableLongStateOf(if (startMs <= 0L) startMs else (startMs + VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L))"
+              )
+              src = src.replace(
+                  "head.clock.longValue = position",
+                  "head.clock.longValue = if (position <= 0L) position else (position + VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L)"
+              )
+              if "head.clock.longValue = head.engine.frame(" in src:
+                  src = src.replace(
+                      "head.clock.longValue = head.engine.frame(",
+                      "val vnFramePosition = head.engine.frame("
+                  )
+                  # Apply the offset only after playback has actually left position zero.
+                  src = src.replace(
+                      "discontinuity = head.discontinuity,\\n                        )",
+                      "discontinuity = head.discontinuity,\\n                        )\\n                        head.clock.longValue = if (vnFramePosition <= 0L) vnFramePosition else (vnFramePosition + VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L)"
+                  )
+              clock_file.write_text(src)
 
           def split_top_level_args(arg_body: str) -> list[tuple[int, int, str]]:
               parts = []
