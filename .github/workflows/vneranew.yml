@@ -297,35 +297,7 @@ jobs:
               }
 
               fun openVideoclipScreen() {
-                  runCatching {
-                      val ctrlClass = Class.forName("com.music.spotui.ui.immersive.video.MusicVideoController")
-                      val inst = ctrlClass.getField("INSTANCE").get(null)
-                      val st = ctrlClass.getMethod("getState").invoke(inst)?.let { stateFlow ->
-                          stateFlow.javaClass.getMethod("getValue").invoke(stateFlow)
-                      }
-                      if (st != null && st.javaClass.simpleName == "Ready") {
-                          val vidId = runCatching {
-                              st.javaClass.getMethod("getVideoId").invoke(st)?.toString().orEmpty()
-                          }.getOrDefault("")
-                          if (vidId.isNotBlank()) {
-                              updateVideoClipUrl("https://www.youtube.com/watch?v=$vidId")
-                          }
-                      }
-                  }
-                  if (currentVideoClipUrl.isBlank()) {
-                      val titlePart = currentTrackDisplayTitle.trim()
-                      val artistPart = currentTrackOffsetKey.substringAfter("|", "").trim()
-                      val query = listOf(titlePart, artistPart, "official video")
-                          .filter { it.isNotBlank() }
-                          .joinToString(" ")
-                      if (query.isNotBlank()) {
-                          val q = Uri.encode(query)
-                          currentVideoClipUrl = "https://m.youtube.com/results?search_query=$q"
-                      }
-                  }
-                  if (currentVideoClipUrl.isNotBlank()) {
-                      videoclipDialogOpen = true
-                  }
+                  com.music.spotui.video.MusicVideoController.vnToggleOrOpenVideo()
               }
 
               fun closeVideoclipScreen() {
@@ -1426,7 +1398,13 @@ jobs:
 
           @Composable
           fun VnVideoclipButtonBelowSync(modifier: Modifier = Modifier) {
-              if (!VnFpsPref.immersivePanelActive) return
+              val readyVideo = com.music.spotui.video.MusicVideoController.state.value as? com.music.spotui.video.MusicVideoController.State.Ready
+              val videoAvailable = readyVideo != null &&
+                  readyVideo.trackId == com.music.spotui.di.SongPlayer.currentTrackId &&
+                  com.music.spotui.di.SongPlayer.activeDevice.value == null &&
+                  com.music.spotui.data.preferences.MusicVideoPref.on &&
+                  !com.music.spotui.data.DataSaver.active
+              if (!VnFpsPref.immersivePanelActive || !videoAvailable) return
               val primary = vnResolveSelectedLyricColor()
               Surface(
                   onClick = { VnFpsPref.openVideoclipScreen() },
@@ -3682,7 +3660,7 @@ jobs:
                                   )
                                   lines.insert(se + 1,
                                       "        androidx.compose.foundation.layout.Column(\n"
-                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = 12.dp, end = 12.dp),\n"
+                                      "            modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.TopEnd).padding(top = 12.dp, end = 12.dp).zIndex(100f),\n"
                                       "            horizontalAlignment = androidx.compose.ui.Alignment.End,\n"
                                       "            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)\n"
                                       "        ) {\n"
@@ -3704,6 +3682,7 @@ jobs:
                                       "com.music.spotui.ui.screens.vnFullscreenSlideContainer",
                                       "com.music.spotui.ui.screens.vnSmartLyricsSwipe",
                                       "kotlinx.coroutines.launch",
+                                      "androidx.compose.ui.zIndex",
                                   ])
                                   break
               if t1 != t0: il.write_text(t1)
@@ -3733,37 +3712,26 @@ jobs:
               csrc = ctrl_path.read_text(encoding="utf-8")
               if "fun vnToggleOrOpenVideo(" not in csrc:
                   hook = """
-          fun vnIsVideoReady(): Boolean = state.value is State.Ready
+          fun vnIsVideoReady(): Boolean {
+              val ready = state.value as? State.Ready ?: return false
+              return ready.trackId == SongPlayer.currentTrackId &&
+                  SongPlayer.activeDevice.value == null &&
+                  com.music.spotui.data.preferences.MusicVideoPref.on &&
+                  !com.music.spotui.data.DataSaver.active
+          }
 
           fun vnToggleOrOpenVideo() {
-              when (val st = state.value) {
-                  is State.Ready -> {
-                      if (!on.value) {
-                          setOn(true)
-                      } else {
-                          fullscreen.value = !fullscreen.value
-                      }
-                      val vidId = runCatching {
-                          st.javaClass.getMethod("getVideoId").invoke(st)?.toString().orEmpty()
-                      }.getOrDefault("")
-                      if (vidId.isNotBlank()) {
-                          com.music.spotui.ui.screens.VnFpsPref.updateVideoClipUrl("https://www.youtube.com/watch?v=" + vidId)
-                      }
-                  }
-                  is State.Searching -> {
-                      if (currentTrackId.isNotBlank()) {
-                          prepare(currentTrackId, currentTitle, currentArtist, currentDuration)
-                      }
-                  }
-                  else -> {
-                      if (currentTrackId.isNotBlank()) {
-                          failedUntil.remove(currentTrackId)
-                          nextPrepareAt = 0L
-                          state.value = State.Idle
-                          prepare(currentTrackId, currentTitle, currentArtist, currentDuration)
-                      }
-                  }
-              }
+              val ready = state.value as? State.Ready ?: return
+              if (ready.trackId != SongPlayer.currentTrackId) return
+              if (SongPlayer.activeDevice.value != null ||
+                  !com.music.spotui.data.preferences.MusicVideoPref.on ||
+                  com.music.spotui.data.DataSaver.active
+              ) return
+
+              // Keep Spotify audio as the source of truth; MusicVideoController's own
+              // ExoPlayer sync loop maps and follows the current Spotify position.
+              if (!on.value) setOn(true)
+              fullscreen.value = true
           }
           """
                   idx_c = csrc.rfind("}")
@@ -3779,48 +3747,19 @@ jobs:
           clock_file = next(Path("app/src/main/java").rglob("ImmersiveLyricClock.kt"), None)
           if clock_file is not None:
               src = clock_file.read_text()
+              # Apply the offset once to the raw provider before it enters LyricsPlayhead.
+              # Do not offset the clock's initial value or rendered frame a second time.
               src = src.replace(
-                  "private fun playerPosition(): Long = SongPlayer.getCurrentPosition().coerceAtLeast(0L)",
-                  "private fun playerPosition(): Long = com.music.spotui.ui.screens.vnApplyLyricOffset(SongPlayer.getCurrentPosition())"
-              )
-              src = src.replace(
-                  "val clock: MutableLongState = mutableLongStateOf(startMs)",
-                  "val clock: MutableLongState = mutableLongStateOf(if (startMs <= 0L) startMs else (startMs + com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L))"
+                  "val head = remember(trackKey) { LyricsPlayhead(lyricsPosition()) }",
+                  """val head = remember(trackKey) { LyricsPlayhead(com.music.spotui.ui.screens.vnApplyLyricOffset(lyricsPosition())) }
+              androidx.compose.runtime.LaunchedEffect(head, com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs) {
+                  head.announceJump()
+              }"""
               )
               src = src.replace(
                   "val position = lyricsPosition()",
                   "val position = com.music.spotui.ui.screens.vnApplyLyricOffset(lyricsPosition())"
               )
-              src = src.replace(
-                  "val head = remember(trackKey) { LyricsPlayhead(lyricsPosition()) }",
-                  """val head = remember(trackKey) { LyricsPlayhead(com.music.spotui.ui.screens.vnApplyLyricOffset(lyricsPosition())) }
-          val appliedOffset = remember(trackKey) { androidx.compose.runtime.mutableIntStateOf(com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs) }"""
-              )
-              src = src.replace(
-                  "head.announceJump()",
-                  """if (appliedOffset.intValue != com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs) {
-              appliedOffset.intValue = com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs
-              head.engine.restart()
-          }
-          head.announceJump()"""
-              )
-              src = src.replace(
-                  "head.clock.longValue = position",
-                  "head.clock.longValue = if (position <= 0L) position else (position + com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L)"
-              )
-              if "head.clock.longValue = head.engine.frame(" in src:
-                  src = src.replace(
-                      "head.clock.longValue = head.engine.frame(",
-                      "val vnFramePosition = head.engine.frame("
-                  )
-                  src, frame_match_count = re.subn(
-                      r'(val vnFramePosition = head\.engine\.frame\(.*?discontinuity = head\.discontinuity,\n\s*\))',
-                      r'\1\n                        head.clock.longValue = if (vnFramePosition <= 0L) vnFramePosition else (vnFramePosition + com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs).coerceAtLeast(0L)',
-                      src,
-                      count=1,
-                      flags=re.S
-                  )
-                  print(f"Applied Karaoke clock offset to frame updates: {frame_match_count}")
               clock_file.write_text(src)
 
           def split_top_level_args(arg_body: str) -> list[tuple[int, int, str]]:
