@@ -313,6 +313,10 @@ jobs:
                           }
                       }
                   }
+                  if (currentVideoClipUrl.isBlank() && currentTrackDisplayTitle.isNotBlank()) {
+                      val q = Uri.encode("${currentTrackDisplayTitle.trim()} official video")
+                      currentVideoClipUrl = "https://www.youtube.com/results?search_query=$q"
+                  }
                   if (currentVideoClipUrl.isNotBlank()) {
                       videoclipDialogOpen = true
                   }
@@ -1107,7 +1111,7 @@ jobs:
           }
 
           fun vnCaptureLyricTextWithColor(rawText: String, color: Color): String {
-              val active = !color.isSpecified || color.alpha >= 0.78f
+              val active = !color.isSpecified || color.alpha >= 0.65f
               VnFpsPref.captureLyricLine(rawText, isActive = active)
               return rawText
           }
@@ -1115,7 +1119,7 @@ jobs:
           fun vnCaptureLyricText(rawText: AnnotatedString, isActive: Boolean = true): AnnotatedString {
               val hasColorSpans = rawText.spanStyles.any { it.item.color.isSpecified }
               val detectedActive = if (hasColorSpans) {
-                  rawText.spanStyles.any { it.item.color.isSpecified && it.item.color.alpha >= 0.78f }
+                  rawText.spanStyles.any { it.item.color.isSpecified && it.item.color.alpha >= 0.65f }
               } else {
                   isActive
               }
@@ -1162,10 +1166,10 @@ jobs:
 
           private fun vnIsDimOrInactiveColor(c: Color): Boolean {
               if (!c.isSpecified || c.alpha <= 0.01f) return false
-              if (c.alpha < 0.92f) return true
+              if (c.alpha < 0.72f) return true
               val maxCh = maxOf(c.red, c.green, c.blue)
               val minCh = minOf(c.red, c.green, c.blue)
-              return maxCh <= 0.88f && (maxCh - minCh) < 0.14f
+              return maxCh <= 0.55f && (maxCh - minCh) < 0.08f
           }
 
           @Composable
@@ -1173,13 +1177,13 @@ jobs:
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
               if (hasCustomBg) {
-                  return Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
+                  return Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.85f)
               }
               if (!original.isSpecified) return original
-              return if (original.alpha >= 0.92f) {
-                  original.copy(alpha = 0.45f)
+              return if (original.alpha >= 0.75f) {
+                  original.copy(alpha = 0.85f)
               } else {
-                  original.copy(alpha = minOf(original.alpha, 0.45f))
+                  original.copy(alpha = maxOf(original.alpha, 0.78f))
               }
           }
 
@@ -1192,12 +1196,16 @@ jobs:
               val effectivePlayer = isPlayer || LocalVnIsPlayerInlineLyric.current
               val hasCustomBg = effectivePlayer && VnFpsPref.playerKaraokeBgColorArgb != 0L
               val hasCustomActive = vnHasCustomLyricColorEnabled()
-              if (!hasCustomBg && !hasCustomActive) return original
+              if (!hasCustomBg && !hasCustomActive) {
+                  return if (original.isSpecified && original.alpha < 0.75f) original.copy(alpha = 0.85f) else original
+              }
 
               if (!isActiveLine || vnIsDimOrInactiveColor(original)) {
                   return vnLyricSecondaryColor(original, effectivePlayer)
               }
-              if (!hasCustomActive) return original
+              if (!hasCustomActive) {
+                  return if (original.isSpecified && original.alpha < 0.85f) original.copy(alpha = 0.92f) else original
+              }
               val chosen = vnResolveSelectedLyricColor()
               val animatedActiveColor by animateColorAsState(
                   targetValue = chosen.copy(alpha = 1.0f),
@@ -1231,9 +1239,9 @@ jobs:
               if (style.brush != null && hasCustomActive && isActiveLine) {
                   val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
                   val dimChosen = if (hasCustomBg) {
-                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
+                      Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.85f)
                   } else {
-                      activeChosen.copy(alpha = 0.35f)
+                      activeChosen.copy(alpha = 0.82f)
                   }
                   updated = updated.copy(brush = Brush.horizontalGradient(listOf(activeChosen, dimChosen)))
               }
@@ -1260,7 +1268,7 @@ jobs:
 
               val activeChosen = vnResolveSelectedLyricColor().copy(alpha = 1.0f)
               val inactiveChosen = if (hasCustomBg) {
-                  Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
+                  Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.85f)
               } else {
                   Color.Unspecified
               }
@@ -1274,9 +1282,9 @@ jobs:
                       var styledSpan = span
                       if (span.brush != null && hasCustomActive && isLineActive) {
                           val stopTint = if (hasCustomBg) {
-                              Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.45f)
+                              Color(VnFpsPref.playerKaraokeBgColorArgb).copy(alpha = 0.85f)
                           } else {
-                              activeChosen.copy(alpha = 0.35f)
+                              activeChosen.copy(alpha = 0.82f)
                           }
                           styledSpan = styledSpan.copy(
                               brush = Brush.horizontalGradient(listOf(activeChosen, stopTint))
@@ -1286,7 +1294,7 @@ jobs:
                               styledSpan = if (inactiveChosen.isSpecified) {
                                   styledSpan.copy(color = inactiveChosen)
                               } else {
-                                  styledSpan.copy(color = c.copy(alpha = minOf(c.alpha, 0.45f)))
+                                  styledSpan.copy(color = c.copy(alpha = maxOf(c.alpha, 0.82f)))
                               }
                           } else if (hasCustomActive) {
                               styledSpan = styledSpan.copy(color = activeChosen)
@@ -1412,20 +1420,14 @@ jobs:
 
           @Composable
           fun VnVideoclipButtonBelowSync(modifier: Modifier = Modifier) {
-              val hasReadyVideo = runCatching {
-                  val ctrlClass = Class.forName("com.music.spotui.ui.immersive.video.MusicVideoController")
-                  val inst = ctrlClass.getField("INSTANCE").get(null)
-                  ctrlClass.getMethod("vnIsVideoReady").invoke(inst) as? Boolean ?: false
-              }.getOrDefault(false)
-              val videoUrl = VnFpsPref.currentVideoClipUrl
-              if (!VnFpsPref.immersivePanelActive || (!hasReadyVideo && videoUrl.isBlank())) return
+              if (!VnFpsPref.immersivePanelActive) return
               val primary = vnResolveSelectedLyricColor()
               Surface(
                   onClick = { VnFpsPref.openVideoclipScreen() },
                   modifier = modifier.zIndex(99f),
                   shape = RoundedCornerShape(13.dp),
                   color = Color(0xE6161820),
-                  border = BorderStroke(1.dp, primary.copy(alpha = 0.65f)),
+                  border = BorderStroke(1.dp, primary.copy(alpha = 0.72f)),
                   shadowElevation = 10.dp
               ) {
                   Row(
@@ -1721,7 +1723,7 @@ jobs:
           ) {
               Box(modifier = modifier.zIndex(99f)) {
                   Column(
-                      modifier = Modifier.align(Alignment.TopEnd).offset(x = 8.dp),
+                      modifier = Modifier.align(Alignment.TopEnd),
                       horizontalAlignment = Alignment.End,
                       verticalArrangement = Arrangement.spacedBy(8.dp)
                   ) {
@@ -4667,7 +4669,7 @@ jobs:
                           new_lines[ins_li:ins_li] = ins_block
                           return new_lines
                   child_ind = cont["base_indent"] + "    "
-                  ins_block = [f"{child_ind}{call}\n" for call in comp_calls]
+                  ins_block = [f"{ind}{call}\n" for call in comp_calls]
                   new_lines[cont["close_li"]:cont["close_li"]] = ins_block
                   return new_lines
 
