@@ -300,7 +300,6 @@ jobs:
                   runCatching {
                       val ctrlClass = Class.forName("com.music.spotui.ui.immersive.video.MusicVideoController")
                       val inst = ctrlClass.getField("INSTANCE").get(null)
-                      ctrlClass.getMethod("vnToggleOrOpenVideo").invoke(inst)
                       val st = ctrlClass.getMethod("getState").invoke(inst)?.let { stateFlow ->
                           stateFlow.javaClass.getMethod("getValue").invoke(stateFlow)
                       }
@@ -313,9 +312,16 @@ jobs:
                           }
                       }
                   }
-                  if (currentVideoClipUrl.isBlank() && currentTrackDisplayTitle.isNotBlank()) {
-                      val q = Uri.encode("${currentTrackDisplayTitle.trim()} official video")
-                      currentVideoClipUrl = "https://www.youtube.com/results?search_query=$q"
+                  if (currentVideoClipUrl.isBlank()) {
+                      val titlePart = currentTrackDisplayTitle.trim()
+                      val artistPart = currentTrackOffsetKey.substringAfter("|", "").trim()
+                      val query = listOf(titlePart, artistPart, "official video")
+                          .filter { it.isNotBlank() }
+                          .joinToString(" ")
+                      if (query.isNotBlank()) {
+                          val q = Uri.encode(query)
+                          currentVideoClipUrl = "https://m.youtube.com/results?search_query=$q"
+                      }
                   }
                   if (currentVideoClipUrl.isNotBlank()) {
                       videoclipDialogOpen = true
@@ -1545,12 +1551,22 @@ jobs:
                                   AndroidView(
                                       factory = { ctx ->
                                           WebView(ctx).apply {
+                                              layoutParams = android.view.ViewGroup.LayoutParams(
+                                                  android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                                  android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                              )
                                               setBackgroundColor(android.graphics.Color.BLACK)
                                               settings.javaScriptEnabled = true
                                               settings.mediaPlaybackRequiresUserGesture = false
                                               settings.domStorageEnabled = true
+                                              settings.databaseEnabled = true
                                               settings.loadWithOverviewMode = true
                                               settings.useWideViewPort = true
+                                              settings.setSupportZoom(false)
+                                              settings.builtInZoomControls = false
+                                              settings.displayZoomControls = false
+                                              settings.userAgentString =
+                                                  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
                                               settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                                               webChromeClient = WebChromeClient()
                                               webViewClient = object : WebViewClient() {
@@ -1584,6 +1600,9 @@ jobs:
                                       },
                                       onRelease = { wv ->
                                           wv.stopLoading()
+                                          wv.loadUrl("about:blank")
+                                          wv.clearHistory()
+                                          wv.removeAllViews()
                                           wv.destroy()
                                       },
                                       modifier = Modifier.fillMaxSize()
