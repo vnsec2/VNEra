@@ -151,7 +151,6 @@ jobs:
           import androidx.compose.ui.platform.LocalView
           import androidx.compose.ui.text.AnnotatedString
           import androidx.compose.ui.text.TextStyle
-          import androidx.compose.ui.text.buildAnnotatedString
           import androidx.compose.ui.text.font.FontWeight
           import androidx.compose.ui.unit.*
           import androidx.compose.ui.viewinterop.AndroidView
@@ -270,7 +269,7 @@ jobs:
                   return ac.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
               }
 
-              fun normalizeYoutubeWatchOrEmbedUrl(raw: String): String {
+              fun normalizeValidVideoClipUrl(raw: String): String {
                   val t = raw.trim()
                   if (t.isEmpty()) return ""
                   if (Regex("""^[A-Za-z0-9_-]{11}$""").matches(t)) {
@@ -281,26 +280,36 @@ jobs:
                       t.startsWith("https://", ignoreCase = true) ||
                       t.startsWith("content://", ignoreCase = true) ||
                       t.startsWith("file://", ignoreCase = true)
-                  ) return t
+                  ) {
+                      val l = t.lowercase(Locale.ROOT)
+                      if (l.contains("/results") || l.contains("search_query=")) return ""
+                      return t
+                  }
                   return ""
               }
 
               fun updateVideoClipUrl(url: String?) {
-                  val valid = normalizeYoutubeWatchOrEmbedUrl(url.orEmpty())
-                  if (valid.isNotEmpty() && currentVideoClipUrl != valid) {
-                      currentVideoClipUrl = valid
-                  } else if (valid.isEmpty() && currentVideoClipUrl.isNotEmpty()) {
-                      currentVideoClipUrl = ""
+                  val valid = normalizeValidVideoClipUrl(url.orEmpty())
+                  if (valid.isNotEmpty()) {
+                      if (currentVideoClipUrl != valid) {
+                          currentVideoClipUrl = valid
+                      }
+                  } else {
+                      if (currentVideoClipUrl.isNotEmpty()) {
+                          currentVideoClipUrl = ""
+                      }
                       videoclipDialogOpen = false
                   }
               }
 
               fun openVideoclipScreen() {
-                  val targetUrl = currentVideoClipUrl.ifBlank {
-                      val q = Uri.encode(currentTrackDisplayTitle.ifBlank { "official music video" })
-                      "https://m.youtube.com/results?search_query=$q"
+                  val valid = normalizeValidVideoClipUrl(currentVideoClipUrl)
+                  if (valid.isEmpty()) {
+                      currentVideoClipUrl = ""
+                      videoclipDialogOpen = false
+                      return
                   }
-                  currentVideoClipUrl = targetUrl
+                  currentVideoClipUrl = valid
                   videoclipDialogOpen = true
               }
 
@@ -1143,14 +1152,6 @@ jobs:
           fun vnHasCustomLyricColorEnabled(): Boolean =
               VnFpsPref.lyricsBeautifulEnabled || VnFpsPref.lyricsCustomColorArgb != 0L
 
-          private fun vnIsDimOrInactiveColor(c: Color): Boolean {
-              if (!c.isSpecified || c.alpha <= 0.01f) return false
-              if (c.alpha < 0.92f) return true
-              val maxCh = maxOf(c.red, c.green, c.blue)
-              val minCh = minOf(c.red, c.green, c.blue)
-              return maxCh <= 0.88f && (maxCh - minCh) < 0.14f
-          }
-
           @Composable
           fun vnLyricSecondaryColor(original: Color, isPlayer: Boolean = true): Color {
               return original
@@ -1300,6 +1301,8 @@ jobs:
 
           @Composable
           fun VnVideoclipButtonBelowSync(modifier: Modifier = Modifier) {
+              val validUrl = VnFpsPref.normalizeValidVideoClipUrl(VnFpsPref.currentVideoClipUrl)
+              if (validUrl.isEmpty()) return
               val primary = vnResolveSelectedLyricColor()
               Surface(
                   onClick = { VnFpsPref.openVideoclipScreen() },
@@ -1335,9 +1338,10 @@ jobs:
           @Composable
           fun VnVideoclipPlayerDialog() {
               if (!VnFpsPref.videoclipDialogOpen) return
-              val videoUrl = VnFpsPref.currentVideoClipUrl.ifBlank {
-                  val q = Uri.encode(VnFpsPref.currentTrackDisplayTitle.ifBlank { "official music video" })
-                  "https://m.youtube.com/results?search_query=$q"
+              val videoUrl = VnFpsPref.normalizeValidVideoClipUrl(VnFpsPref.currentVideoClipUrl)
+              if (videoUrl.isEmpty()) {
+                  LaunchedEffect(Unit) { VnFpsPref.closeVideoclipScreen() }
+                  return
               }
               val context = LocalContext.current
               val isLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
@@ -2051,8 +2055,8 @@ jobs:
                   }
                   if (!t.startsWith("http://", true) && !t.startsWith("https://", true) &&
                       !t.startsWith("content://", true) && !t.startsWith("file://", true)) return ""
-                  if (fromExplicitVideoKey) return t
                   val l = t.lowercase(Locale.ROOT)
+                  if (l.contains("/results") || l.contains("search_query=")) return ""
                   if (l.contains("youtube.com/watch") || l.contains("music.youtube.com/watch") ||
                       l.contains("youtu.be/") || l.contains("youtube.com/shorts") ||
                       l.contains("youtube.com/embed") || l.contains("youtube-nocookie.com/embed") ||
@@ -2061,7 +2065,8 @@ jobs:
                       l.endsWith(".webm") || l.endsWith(".mkv") || l.endsWith(".mov") ||
                       (l.contains("googlevideo.com/videoplayback") && l.contains("mime=video")) ||
                       l.contains("canvaz") || l.contains("canvas") ||
-                      l.contains("video") || l.contains("clip") || l.contains("/mv")) {
+                      (fromExplicitVideoKey && (l.contains("video") || l.contains("clip") || l.contains("/mv"))) ||
+                      l.startsWith("content://") || l.startsWith("file://")) {
                       return t
                   }
                   return ""
@@ -2123,9 +2128,10 @@ jobs:
                           if (norm.isNotEmpty()) return norm
                       }
                       val rawStr = cand.toString()
-                      if (rawStr.contains("video", ignoreCase = true) || rawStr.contains("clip", ignoreCase = true) ||
-                          rawStr.contains("mv", ignoreCase = true) || rawStr.contains("canvas", ignoreCase = true) ||
-                          rawStr.contains("youtube", ignoreCase = true)) {
+                      if (rawStr.contains("canvaz", ignoreCase = true) || rawStr.contains("canvas", ignoreCase = true) ||
+                          rawStr.contains("videoplayback", ignoreCase = true) || rawStr.contains(".mp4", ignoreCase = true) ||
+                          rawStr.contains(".m3u8", ignoreCase = true) || rawStr.contains("youtube.com/watch", ignoreCase = true) ||
+                          rawStr.contains("youtu.be/", ignoreCase = true)) {
                           urlRegex.findAll(rawStr).mapNotNull {
                               normalizeCandidateVideoValue(it.value, fromExplicitVideoKey = false).takeIf { u -> u.isNotEmpty() }
                           }.firstOrNull()?.let { return it }
@@ -2155,9 +2161,6 @@ jobs:
                       }
                   }
                   val detectedVideoUrl = extractVideoUrlFromCandidates(expanded)
-                  if (detectedVideoUrl.isNotEmpty()) {
-                      VnFpsPref.updateVideoClipUrl(detectedVideoUrl)
-                  }
                   for (cand in expanded) {
                       if (cand == null) continue
                       if (cand is String) {
@@ -2178,10 +2181,8 @@ jobs:
                   }
                   if (title.isNotEmpty() || id.isNotEmpty()) {
                       VnFpsPref.onActiveTrackChanged(c, id, title, artist)
-                      if (detectedVideoUrl.isNotEmpty()) {
-                          VnFpsPref.updateVideoClipUrl(detectedVideoUrl)
-                      }
                   }
+                  VnFpsPref.updateVideoClipUrl(detectedVideoUrl)
                   val key = (id.ifBlank { title }).trim()
                   if (key.isNotEmpty() || quality.isNotEmpty() || kbps > 0) {
                       onTrackPlaybackObserved(c, key.ifBlank { "track_${title.hashCode()}" }, title, source, quality, kbps, artist)
