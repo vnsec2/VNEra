@@ -3705,7 +3705,12 @@ jobs:
                       } else {
                           fullscreen.value = !fullscreen.value
                       }
-                      com.music.spotui.ui.screens.VnFpsPref.updateVideoClipUrl("https://www.youtube.com/watch?v=" + st.videoId)
+                      val vidId = runCatching {
+                          st.javaClass.getMethod("getVideoId").invoke(st)?.toString().orEmpty()
+                      }.getOrDefault("")
+                      if (vidId.isNotBlank()) {
+                          com.music.spotui.ui.screens.VnFpsPref.updateVideoClipUrl("https://www.youtube.com/watch?v=" + vidId)
+                      }
                   }
                   is State.Searching -> {
                       if (currentTrackId.isNotBlank()) {
@@ -3751,12 +3756,12 @@ jobs:
               src = src.replace(
                   "val head = remember(trackKey) { LyricsPlayhead(lyricsPosition()) }",
                   """val head = remember(trackKey) { LyricsPlayhead(com.music.spotui.ui.screens.vnApplyLyricOffset(lyricsPosition())) }
-          val appliedOffset = remember(trackKey) { androidx.compose.runtime.mutableLongStateOf(com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs) }"""
+          val appliedOffset = remember(trackKey) { androidx.compose.runtime.mutableIntStateOf(com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs) }"""
               )
               src = src.replace(
                   "head.announceJump()",
-                  """if (appliedOffset.longValue != com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs) {
-              appliedOffset.longValue = com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs
+                  """if (appliedOffset.intValue != com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs) {
+              appliedOffset.intValue = com.music.spotui.ui.screens.VnFpsPref.currentLyricOffsetMs
               head.engine.restart()
           }
           head.announceJump()"""
