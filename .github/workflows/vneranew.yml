@@ -1548,65 +1548,82 @@ jobs:
                                       .clip(RoundedCornerShape(16.dp))
                                       .background(Color.Black)
                               ) {
-                                  AndroidView(
-                                      factory = { ctx ->
-                                          WebView(ctx).apply {
-                                              layoutParams = android.view.ViewGroup.LayoutParams(
-                                                  android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                                                  android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                                              )
-                                              setBackgroundColor(android.graphics.Color.BLACK)
-                                              settings.javaScriptEnabled = true
-                                              settings.mediaPlaybackRequiresUserGesture = false
-                                              settings.domStorageEnabled = true
-                                              settings.databaseEnabled = true
-                                              settings.loadWithOverviewMode = true
-                                              settings.useWideViewPort = true
-                                              settings.setSupportZoom(false)
-                                              settings.builtInZoomControls = false
-                                              settings.displayZoomControls = false
-                                              settings.userAgentString =
-                                                  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-                                              settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                                              webChromeClient = WebChromeClient()
-                                              webViewClient = object : WebViewClient() {
-                                                  override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                                                      if (!url.isNullOrBlank() && (url.startsWith("vnd.") || url.startsWith("intent://"))) {
-                                                          runCatching {
-                                                              context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                  key(videoUrl, useInlineHtml) {
+                                      AndroidView(
+                                          factory = { ctx ->
+                                              WebView(ctx).apply {
+                                                  layoutParams = android.view.ViewGroup.LayoutParams(
+                                                      android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                                      android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                                  )
+                                                  setBackgroundColor(android.graphics.Color.BLACK)
+                                                  setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                                                  settings.javaScriptEnabled = true
+                                                  settings.mediaPlaybackRequiresUserGesture = false
+                                                  settings.domStorageEnabled = true
+                                                  settings.databaseEnabled = true
+                                                  settings.loadWithOverviewMode = useInlineHtml
+                                                  settings.useWideViewPort = useInlineHtml
+                                                  if (!useInlineHtml) {
+                                                      setInitialScale(100)
+                                                  }
+                                                  settings.setSupportZoom(false)
+                                                  settings.builtInZoomControls = false
+                                                  settings.displayZoomControls = false
+                                                  settings.userAgentString =
+                                                      "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                                                  settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                                  webChromeClient = WebChromeClient()
+                                                  webViewClient = object : WebViewClient() {
+                                                      override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                                                          if (!url.isNullOrBlank() && (url.startsWith("vnd.") || url.startsWith("intent://"))) {
+                                                              runCatching {
+                                                                  context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                                              }
+                                                              return true
                                                           }
-                                                          return true
+                                                          return false
                                                       }
-                                                      return false
+
+                                                      override fun onPageFinished(view: WebView?, url: String?) {
+                                                          super.onPageFinished(view, url)
+                                                          if (!useInlineHtml && view != null) {
+                                                              view.evaluateJavascript(
+                                                                  """
+                                                                  (function(){
+                                                                    try {
+                                                                      document.documentElement.style.overflowX = 'hidden';
+                                                                      document.body.style.overflowX = 'hidden';
+                                                                      document.body.style.margin = '0';
+                                                                      document.body.style.padding = '0';
+                                                                      document.querySelectorAll('ytm-pivot-bar-renderer, ytm-mobile-topbar-renderer').forEach(function(el){
+                                                                        if (el.getAttribute('aria-hidden') === 'true') el.style.display = 'none';
+                                                                      });
+                                                                    } catch(e) {}
+                                                                  })();
+                                                                  """.trimIndent(),
+                                                                  null
+                                                              )
+                                                          }
+                                                      }
+                                                  }
+                                                  if (useInlineHtml) {
+                                                      loadDataWithBaseURL("https://www.youtube-nocookie.com", embedHtml, "text/html", "utf-8", null)
+                                                  } else {
+                                                      loadUrl(videoUrl)
                                                   }
                                               }
-                                              tag = videoUrl
-                                              if (useInlineHtml) {
-                                                  loadDataWithBaseURL("https://www.youtube-nocookie.com", embedHtml, "text/html", "utf-8", null)
-                                              } else {
-                                                  loadUrl(videoUrl)
-                                              }
-                                          }
-                                      },
-                                      update = { wv ->
-                                          if (wv.tag != videoUrl) {
-                                              wv.tag = videoUrl
-                                              if (useInlineHtml) {
-                                                  wv.loadDataWithBaseURL("https://www.youtube-nocookie.com", embedHtml, "text/html", "utf-8", null)
-                                              } else {
-                                                  wv.loadUrl(videoUrl)
-                                              }
-                                          }
-                                      },
-                                      onRelease = { wv ->
-                                          wv.stopLoading()
-                                          wv.loadUrl("about:blank")
-                                          wv.clearHistory()
-                                          wv.removeAllViews()
-                                          wv.destroy()
-                                      },
-                                      modifier = Modifier.fillMaxSize()
-                                  )
+                                          },
+                                          onRelease = { wv ->
+                                              wv.stopLoading()
+                                              wv.loadUrl("about:blank")
+                                              wv.clearHistory()
+                                              wv.removeAllViews()
+                                              wv.destroy()
+                                          },
+                                          modifier = Modifier.fillMaxSize()
+                                      )
+                                  }
                               }
                           }
                       }
